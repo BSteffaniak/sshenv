@@ -1,9 +1,14 @@
+use std::collections::HashSet;
+
 use anyhow::Result;
 use sshenv_shims::{default_bindings_path, load_bindings, resolve_shim_dir};
 use sshenv_vault::Vault;
 
 use crate::commands::Context as CmdContext;
-use crate::identity::{describe_available_identities, load_identities};
+use crate::identity::{
+    discover_private_key_paths, load_identities, load_identities_for_vault,
+    public_fingerprint_for_private_key,
+};
 
 pub fn run(ctx: &CmdContext) -> Result<()> {
     let mut ok = true;
@@ -14,17 +19,18 @@ pub fn run(ctx: &CmdContext) -> Result<()> {
 
     // Vault.
     println!("Vault path: {}", ctx.vault_path.display());
-    if !ctx.vault_path.exists() {
-        println!("  - vault file does not exist; run `sshenv init` first.");
-        ok = false;
-    } else {
+    let mut vault_recipient_fps: Option<HashSet<String>> = None;
+    if ctx.vault_path.exists() {
         match Vault::load_ciphertext(&ctx.vault_path) {
             Ok(ct) => {
                 println!("  - parses OK");
                 println!("  - recipients: {}", ct.recipients.len());
+                let mut fps = HashSet::new();
                 for r in &ct.recipients {
                     println!("      {}", r.fingerprint);
+                    fps.insert(r.fingerprint.clone());
                 }
+                vault_recipient_fps = Some(fps);
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::PermissionsExt;
@@ -43,35 +49,53 @@ pub fn run(ctx: &CmdContext) -> Result<()> {
                 ok = false;
             }
         }
+    } else {
+        println!("  - vault file does not exist; run `sshenv init` first.");
+        ok = false;
     }
 
-    // Identities.
+    // Identities — annotate each with authorization status when we have a
+    // vault to compare against.
     println!();
     println!("Available SSH private keys:");
-    let paths = describe_available_identities();
-    if paths.is_empty() {
+    let key_paths = discover_private_key_paths();
+    if key_paths.is_empty() {
         println!("  (none found in ~/.ssh/ or ~/.ssh/config)");
     } else {
-        for p in &paths {
-            println!("  {p}");
+        for path in &key_paths {
+            let annotation = match (
+                &vault_recipient_fps,
+                public_fingerprint_for_private_key(path),
+            ) {
+                (Some(recipients), Some(fp)) => {
+                    if recipients.contains(&fp) {
+                        format!("  {fp}  (authorized)")
+                    } else {
+                        format!("  {fp}  (not a recipient)")
+                    }
+                }
+                (_, Some(fp)) => format!("  {fp}"),
+                (_, None) => "  (no .pub sibling)".to_string(),
+            };
+            println!("  {}{annotation}", path.display());
         }
     }
 
     // Try unlocking.
-    if ctx.vault_path.exists() {
+    if let Some(fps) = &vault_recipient_fps {
         println!();
         print!("Unlock check: ");
-        let id_result = load_identities();
+        let id_result = load_identities_for_vault(fps);
         match id_result {
             Ok(ids) if ids.is_empty() => {
-                println!("no usable identities");
+                println!("no SSH key on this host matches a vault recipient");
                 ok = false;
             }
             Ok(ids) => match Vault::load_ciphertext(&ctx.vault_path) {
                 Ok(ct) => match Vault::unlock(ct, &ids) {
                     Ok(_) => println!("ok"),
                     Err(_) => {
-                        println!("no identity could unwrap the vault");
+                        println!("a matching key was found but decryption failed");
                         ok = false;
                     }
                 },
@@ -80,6 +104,22 @@ pub fn run(ctx: &CmdContext) -> Result<()> {
                     ok = false;
                 }
             },
+            Err(err) => {
+                println!("error: {err}");
+                ok = false;
+            }
+        }
+    } else if ctx.vault_path.exists() {
+        // Vault exists but couldn't be parsed above; fall back to the
+        // unfiltered identity loader purely so we can report something.
+        println!();
+        print!("Unlock check: ");
+        match load_identities() {
+            Ok(ids) if ids.is_empty() => {
+                println!("no SSH identities available");
+                ok = false;
+            }
+            Ok(_) => println!("(skipped; vault not parseable)"),
             Err(err) => {
                 println!("error: {err}");
                 ok = false;

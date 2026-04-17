@@ -93,3 +93,9 @@ single_match = "allow"
 single_match_else = "allow"
 needless_bool_assign = "allow"
 if_not_else = "allow"
+# Allow: internal helpers use HashSet<String> with the default hasher;
+# generalizing over arbitrary hashers is overkill for a binary crate.
+implicit_hasher = "allow"
+# Allow: doc first-paragraph length isn't a useful constraint for us.
+doc_markdown = "allow"
+too_long_first_doc_paragraph = "allow"

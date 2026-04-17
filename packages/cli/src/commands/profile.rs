@@ -1,21 +1,13 @@
 use anyhow::{Context, Result, bail};
 use sshenv_cli_models::{ListArgs, RmProfileArgs, SetArgs, ShowArgs, UnsetArgs};
-use sshenv_vault::Vault;
 use zeroize::Zeroizing;
 
-use crate::commands::Context as CmdContext;
-use crate::identity::{error_no_identity_unlocked, load_identities};
+use crate::commands::{Context as CmdContext, load_and_unlock};
 
 pub fn set(ctx: &CmdContext, args: SetArgs) -> Result<()> {
     let value = resolve_value(&args)?;
 
-    let ciphertext = Vault::load_ciphertext(&ctx.vault_path)?;
-    let identities = load_identities()?;
-    if identities.is_empty() {
-        return Err(error_no_identity_unlocked());
-    }
-    let (mut vault, key) =
-        Vault::unlock(ciphertext, &identities).map_err(|_| error_no_identity_unlocked())?;
+    let (mut vault, key) = load_and_unlock(&ctx.vault_path)?;
 
     vault
         .profiles
@@ -38,13 +30,7 @@ fn resolve_value(args: &SetArgs) -> Result<Zeroizing<String>> {
 }
 
 pub fn unset(ctx: &CmdContext, args: UnsetArgs) -> Result<()> {
-    let ciphertext = Vault::load_ciphertext(&ctx.vault_path)?;
-    let identities = load_identities()?;
-    if identities.is_empty() {
-        return Err(error_no_identity_unlocked());
-    }
-    let (mut vault, key) =
-        Vault::unlock(ciphertext, &identities).map_err(|_| error_no_identity_unlocked())?;
+    let (mut vault, key) = load_and_unlock(&ctx.vault_path)?;
 
     if !vault.profiles.unset(&args.profile, &args.var) {
         bail!("no such variable: {}/{}", args.profile, args.var);
@@ -55,13 +41,7 @@ pub fn unset(ctx: &CmdContext, args: UnsetArgs) -> Result<()> {
 }
 
 pub fn list(ctx: &CmdContext, args: ListArgs) -> Result<()> {
-    let ciphertext = Vault::load_ciphertext(&ctx.vault_path)?;
-    let identities = load_identities()?;
-    if identities.is_empty() {
-        return Err(error_no_identity_unlocked());
-    }
-    let (vault, _key) =
-        Vault::unlock(ciphertext, &identities).map_err(|_| error_no_identity_unlocked())?;
+    let (vault, _key) = load_and_unlock(&ctx.vault_path)?;
 
     match args.profile {
         Some(profile) => {
@@ -87,13 +67,7 @@ pub fn list(ctx: &CmdContext, args: ListArgs) -> Result<()> {
 }
 
 pub fn show(ctx: &CmdContext, args: ShowArgs) -> Result<()> {
-    let ciphertext = Vault::load_ciphertext(&ctx.vault_path)?;
-    let identities = load_identities()?;
-    if identities.is_empty() {
-        return Err(error_no_identity_unlocked());
-    }
-    let (vault, _key) =
-        Vault::unlock(ciphertext, &identities).map_err(|_| error_no_identity_unlocked())?;
+    let (vault, _key) = load_and_unlock(&ctx.vault_path)?;
 
     let Some(vars) = vault.profiles.get(&args.profile) else {
         bail!("no such profile: {}", args.profile);
@@ -110,13 +84,7 @@ pub fn show(ctx: &CmdContext, args: ShowArgs) -> Result<()> {
 }
 
 pub fn rm(ctx: &CmdContext, args: RmProfileArgs) -> Result<()> {
-    let ciphertext = Vault::load_ciphertext(&ctx.vault_path)?;
-    let identities = load_identities()?;
-    if identities.is_empty() {
-        return Err(error_no_identity_unlocked());
-    }
-    let (mut vault, key) =
-        Vault::unlock(ciphertext, &identities).map_err(|_| error_no_identity_unlocked())?;
+    let (mut vault, key) = load_and_unlock(&ctx.vault_path)?;
 
     if !vault.profiles.remove_profile(&args.profile) {
         bail!("no such profile: {}", args.profile);

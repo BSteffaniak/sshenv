@@ -5,18 +5,13 @@ use anyhow::{Context, Result, bail};
 use sshenv_cli_models::{AddRecipientArgs, ListRecipientsArgs, RemoveRecipientArgs};
 use sshenv_vault::{Vault, recipient::fingerprint_from_line};
 
-use crate::commands::Context as CmdContext;
-use crate::identity::{discover_public_key_paths, error_no_identity_unlocked, load_identities};
+use crate::commands::{Context as CmdContext, load_ciphertext_and_fps, unlock_ciphertext};
+use crate::identity::discover_public_key_paths;
 use crate::picker::{PubkeyCandidate, select_pubkey_interactive};
 use crate::pubkey::load_public_key;
 
 pub fn add(ctx: &CmdContext, args: AddRecipientArgs) -> Result<()> {
-    let ciphertext = Vault::load_ciphertext(&ctx.vault_path)?;
-    let existing: HashSet<String> = ciphertext
-        .recipients
-        .iter()
-        .map(|r| r.fingerprint.clone())
-        .collect();
+    let (ciphertext, existing) = load_ciphertext_and_fps(&ctx.vault_path)?;
 
     let (pubkey_line, incoming_fp) = resolve_new_recipient(args.key.as_deref(), &existing)?;
 
@@ -26,12 +21,7 @@ pub fn add(ctx: &CmdContext, args: AddRecipientArgs) -> Result<()> {
         bail!("recipient {incoming_fp} is already registered; nothing to do");
     }
 
-    let identities = load_identities()?;
-    if identities.is_empty() {
-        return Err(error_no_identity_unlocked());
-    }
-    let (mut vault, key) =
-        Vault::unlock(ciphertext, &identities).map_err(|_| error_no_identity_unlocked())?;
+    let (mut vault, key) = unlock_ciphertext(ciphertext, &existing)?;
 
     let entry = vault.add_recipient(&pubkey_line, &key)?;
     let fingerprint = entry.fingerprint.clone();
@@ -105,7 +95,7 @@ pub fn list(ctx: &CmdContext, args: ListRecipientsArgs) -> Result<()> {
 }
 
 pub fn remove(ctx: &CmdContext, args: RemoveRecipientArgs) -> Result<()> {
-    let ciphertext = Vault::load_ciphertext(&ctx.vault_path)?;
+    let (ciphertext, existing) = load_ciphertext_and_fps(&ctx.vault_path)?;
 
     // Reject removing the last recipient — that would brick the vault.
     if ciphertext.recipients.len() <= 1 {
@@ -115,12 +105,7 @@ pub fn remove(ctx: &CmdContext, args: RemoveRecipientArgs) -> Result<()> {
         );
     }
 
-    let identities = load_identities()?;
-    if identities.is_empty() {
-        return Err(error_no_identity_unlocked());
-    }
-    let (mut vault, key) =
-        Vault::unlock(ciphertext, &identities).map_err(|_| error_no_identity_unlocked())?;
+    let (mut vault, key) = unlock_ciphertext(ciphertext, &existing)?;
 
     if !vault.remove_recipient(&args.fingerprint) {
         bail!("no recipient with fingerprint {}", args.fingerprint);
