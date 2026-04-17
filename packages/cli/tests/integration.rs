@@ -328,3 +328,141 @@ fn binary_unlock_no_matching_key_errors_helpfully() {
         "backtrace leaked: {stderr}"
     );
 }
+
+/// Regression test for the infinite-loop bug: if a shim at
+/// `~/.sshenv/bin/<cmd>` invokes `sshenv run <profile> -- <cmd>`, and
+/// `~/.sshenv/bin` is first in PATH, the naive `Command::new(<cmd>)`
+/// would re-find the shim and loop forever. `sshenv run` must resolve
+/// the target by PATH-skipping the shim directory.
+#[test]
+fn binary_shim_does_not_self_invoke() {
+    let bin = cargo_bin();
+    if !bin.exists() {
+        eprintln!("skipping: {} does not exist", bin.display());
+        return;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    std::fs::create_dir_all(home.join(".ssh")).unwrap();
+
+    // Authorized key.
+    let _k = write_named_keypair(&home.join(".ssh"), "id_ed25519");
+
+    // Init vault.
+    let vault_path = home.join(".sshenv").join("vault");
+    let init_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("init")
+        .arg("--recipient-key")
+        .arg(home.join(".ssh").join("id_ed25519.pub"))
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run init");
+    assert!(
+        init_out.status.success(),
+        "init failed: {}",
+        String::from_utf8_lossy(&init_out.stderr)
+    );
+
+    // Set a profile variable.
+    let set_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("set")
+        .arg("shim-test")
+        .arg("MYVAR")
+        .arg("--value")
+        .arg("hello-from-sshenv")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run set");
+    assert!(
+        set_out.status.success(),
+        "set failed: {}",
+        String::from_utf8_lossy(&set_out.stderr)
+    );
+
+    // Create a fake "real" binary at $HOME/real_bin/test-cmd that prints
+    // the value of MYVAR. This is what sshenv's PATH-skipping resolver
+    // must find instead of re-finding the shim.
+    let real_bin_dir = home.join("real_bin");
+    std::fs::create_dir_all(&real_bin_dir).unwrap();
+    let real_cmd = real_bin_dir.join("test-cmd");
+    std::fs::write(
+        &real_cmd,
+        "#!/bin/sh\nprintf 'env-check:%s\\n' \"$MYVAR\"\n",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&real_cmd, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    // Bind a shim: shim-test -> profile "shim-test", command "test-cmd".
+    let shim_dir = home.join(".sshenv").join("bin");
+    let bindings_path = home.join(".sshenv").join("bindings.toml");
+    let bind_out = Command::new(&bin)
+        .arg("shims")
+        .arg("bind")
+        .arg("shim-test")
+        .arg("--command")
+        .arg("test-cmd")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .env("SSHENV_BINDINGS", &bindings_path)
+        .env("SSHENV_SHIM_DIR", &shim_dir)
+        .output()
+        .expect("run shims bind");
+    assert!(
+        bind_out.status.success(),
+        "shims bind failed: {}",
+        String::from_utf8_lossy(&bind_out.stderr)
+    );
+
+    // The shim should now exist at $shim_dir/test-cmd.
+    let shim_path = shim_dir.join("test-cmd");
+    assert!(
+        shim_path.exists(),
+        "shim not created at {}",
+        shim_path.display()
+    );
+
+    // Invoke the shim directly. Set PATH so the shim dir is FIRST (mimics
+    // the production configuration), the dir containing the sshenv
+    // binary is included (so the shim's `exec sshenv run ...` resolves),
+    // and the real bin follows. If the infinite-loop bug regressed,
+    // execvp would find the shim again, sshenv run would re-exec the
+    // shim, and so on.
+    let sshenv_bin_dir = bin.parent().expect("sshenv bin has a parent dir");
+    let path_value = format!(
+        "{}:{}:{}",
+        shim_dir.display(),
+        sshenv_bin_dir.display(),
+        real_bin_dir.display()
+    );
+    let run_out = Command::new(&shim_path)
+        .env("HOME", &home)
+        .env("PATH", &path_value)
+        .env("SSHENV_VAULT", &vault_path)
+        .env("SSHENV_BINDINGS", &bindings_path)
+        .env("SSHENV_SHIM_DIR", &shim_dir)
+        .output()
+        .expect("run shim");
+
+    assert!(
+        run_out.status.success(),
+        "shim invocation failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&run_out.stdout),
+        String::from_utf8_lossy(&run_out.stderr),
+    );
+    let stdout = String::from_utf8_lossy(&run_out.stdout);
+    assert!(
+        stdout.contains("env-check:hello-from-sshenv"),
+        "expected env var to be injected into real binary; got stdout: {stdout}"
+    );
+}
