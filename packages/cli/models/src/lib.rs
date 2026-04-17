@@ -68,7 +68,8 @@ pub enum Command {
 #[derive(Debug, clap::Args)]
 pub struct InitArgs {
     /// Path to an SSH public key file, or the public key line itself
-    /// (`ssh-ed25519 AAAA...`).
+    /// (`ssh-ed25519 AAAA...`). If omitted, sshenv will prompt
+    /// interactively to pick a pubkey from `~/.ssh/` (requires a TTY).
     #[arg(long, value_name = "PATH_OR_LINE")]
     pub recipient_key: Option<String>,
 }
@@ -76,8 +77,10 @@ pub struct InitArgs {
 #[derive(Debug, clap::Args)]
 pub struct AddRecipientArgs {
     /// Path to an SSH public key file, or the public key line itself.
+    /// If omitted, sshenv will prompt interactively to pick a pubkey
+    /// from `~/.ssh/` (requires a TTY).
     #[arg(long, value_name = "PATH_OR_LINE")]
-    pub key: String,
+    pub key: Option<String>,
 }
 
 #[derive(Debug, clap::Args)]

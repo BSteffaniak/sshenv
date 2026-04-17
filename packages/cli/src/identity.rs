@@ -56,6 +56,73 @@ pub fn discover_private_key_paths() -> Vec<PathBuf> {
     out
 }
 
+/// Discover SSH public-key file paths in the conventional locations.
+///
+/// The returned list is ordered: well-known keys (`id_ed25519.pub`,
+/// `id_rsa.pub`) first in that order, then every other `*.pub` in
+/// `~/.ssh/` that has a matching private-key sibling, sorted
+/// alphabetically, then `<IdentityFile>.pub` entries from `~/.ssh/config`
+/// that exist on disk.
+///
+/// Duplicates are removed while preserving first occurrence.
+#[must_use]
+pub fn discover_public_key_paths() -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = Vec::new();
+
+    let Some(home) = dirs::home_dir() else {
+        return out;
+    };
+    let ssh_dir = home.join(".ssh");
+
+    // Well-known first, in deterministic order.
+    for name in &["id_ed25519.pub", "id_rsa.pub"] {
+        let p = ssh_dir.join(name);
+        if p.is_file() && !out.contains(&p) {
+            out.push(p);
+        }
+    }
+
+    // Everything else alphabetically.
+    let mut extras: Vec<PathBuf> = Vec::new();
+    if let Ok(entries) = fs::read_dir(&ssh_dir) {
+        for entry in entries.flatten() {
+            let pub_path = entry.path();
+            let Some(ext) = pub_path.extension().and_then(|e| e.to_str()) else {
+                continue;
+            };
+            if !ext.eq_ignore_ascii_case("pub") {
+                continue;
+            }
+            // Require a matching private key sibling so we don't surface
+            // random .pub files that have no corresponding identity.
+            let priv_path = pub_path.with_extension("");
+            if !priv_path.is_file() {
+                continue;
+            }
+            if out.contains(&pub_path) {
+                continue;
+            }
+            extras.push(pub_path);
+        }
+    }
+    extras.sort();
+    for p in extras {
+        if !out.contains(&p) {
+            out.push(p);
+        }
+    }
+
+    // IdentityFile entries: derive .pub path and keep if present.
+    for cfg_identity in parse_identity_files_from_ssh_config() {
+        let pub_path = cfg_identity.with_extension("pub");
+        if pub_path.is_file() && !out.contains(&pub_path) {
+            out.push(pub_path);
+        }
+    }
+
+    out
+}
+
 /// Load all discoverable private keys as `age` identities.
 ///
 /// For unencrypted keys, loading is silent. For encrypted keys, we prompt

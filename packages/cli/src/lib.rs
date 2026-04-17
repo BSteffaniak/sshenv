@@ -5,6 +5,7 @@
 
 pub mod commands;
 pub mod identity;
+pub mod picker;
 pub mod pubkey;
 
 use anyhow::Result;

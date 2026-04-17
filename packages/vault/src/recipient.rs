@@ -50,6 +50,17 @@ fn split_public_key_line(line: &str) -> Result<(&str, &str)> {
     Ok((kt, body))
 }
 
+/// Compute the `SHA256:<base64>` fingerprint from a full SSH public key
+/// line (e.g. `ssh-ed25519 AAAA... optional-comment`).
+///
+/// # Errors
+///
+/// Returns an error if the line is empty or missing key material.
+pub fn fingerprint_from_line(public_key_line: &str) -> Result<String> {
+    let (_, body) = split_public_key_line(public_key_line)?;
+    Ok(fingerprint_for_public_key(body))
+}
+
 /// Build a new [`RecipientEntry`] by wrapping `data_key` to the given SSH
 /// public key line.
 ///
@@ -169,5 +180,26 @@ mod tests {
         let fp2 = fingerprint_for_public_key(b64);
         assert_eq!(fp1, fp2);
         assert!(fp1.starts_with("SHA256:"));
+    }
+
+    #[test]
+    fn fingerprint_from_line_matches_fingerprint_for_public_key() {
+        let line = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIF1r4mXp9V1d6JEcv5m5d8ONnuQVpMb1i+B7ifqWeu6w braden@test";
+        let from_line = fingerprint_from_line(line).unwrap();
+        let from_body = fingerprint_for_public_key(
+            "AAAAC3NzaC1lZDI1NTE5AAAAIF1r4mXp9V1d6JEcv5m5d8ONnuQVpMb1i+B7ifqWeu6w",
+        );
+        assert_eq!(from_line, from_body);
+    }
+
+    #[test]
+    fn fingerprint_from_line_rejects_empty() {
+        assert!(fingerprint_from_line("").is_err());
+        assert!(fingerprint_from_line("   ").is_err());
+    }
+
+    #[test]
+    fn fingerprint_from_line_rejects_missing_body() {
+        assert!(fingerprint_from_line("ssh-ed25519").is_err());
     }
 }
