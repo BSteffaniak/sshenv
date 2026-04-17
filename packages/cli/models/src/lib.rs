@@ -1,0 +1,177 @@
+//! Shared CLI argument types for `sshenv`.
+
+#![allow(clippy::multiple_crate_versions)]
+
+use std::path::PathBuf;
+
+use clap::{Parser, Subcommand};
+
+/// SSH-key-backed encrypted vault for environment variables.
+#[derive(Debug, Parser)]
+#[command(
+    name = "sshenv",
+    version,
+    about = "SSH-key-backed encrypted vault for environment variables",
+    long_about = "sshenv manages an encrypted vault of environment variables, \
+                  unlocked by any of the SSH keys on your machine. Run shell \
+                  commands with per-profile env vars injected via `sshenv run` \
+                  or via PATH shims bound with `sshenv shims bind`.",
+    propagate_version = true,
+    disable_help_subcommand = true
+)]
+pub struct Cli {
+    /// Override the vault file path (default: `~/.sshenv/vault` or
+    /// `$SSHENV_VAULT`).
+    #[arg(long, global = true, value_name = "PATH")]
+    pub vault: Option<PathBuf>,
+
+    #[command(subcommand)]
+    pub command: Command,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum Command {
+    /// Create a new vault.
+    Init(InitArgs),
+    /// Run checks on the vault, recipients, and shim setup.
+    Doctor,
+
+    /// Add an SSH public key as a recipient authorized to unlock the
+    /// vault.
+    AddRecipient(AddRecipientArgs),
+    /// List all recipients.
+    ListRecipients(ListRecipientsArgs),
+    /// Remove a recipient by fingerprint.
+    RemoveRecipient(RemoveRecipientArgs),
+
+    /// Set a variable in a profile.
+    Set(SetArgs),
+    /// Remove a variable from a profile.
+    Unset(UnsetArgs),
+    /// List profile names, or variables in a profile.
+    List(ListArgs),
+    /// Print the values of every variable in a profile to stdout.
+    Show(ShowArgs),
+    /// Delete an entire profile.
+    RmProfile(RmProfileArgs),
+
+    /// Run a command with a profile's environment vars loaded.
+    Run(RunArgs),
+    /// Print `export VAR=value` lines for a profile to stdout.
+    Export(ExportArgs),
+
+    /// Manage PATH shims.
+    #[command(subcommand)]
+    Shims(ShimsCommand),
+}
+
+#[derive(Debug, clap::Args)]
+pub struct InitArgs {
+    /// Path to an SSH public key file, or the public key line itself
+    /// (`ssh-ed25519 AAAA...`).
+    #[arg(long, value_name = "PATH_OR_LINE")]
+    pub recipient_key: Option<String>,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct AddRecipientArgs {
+    /// Path to an SSH public key file, or the public key line itself.
+    #[arg(long, value_name = "PATH_OR_LINE")]
+    pub key: String,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct ListRecipientsArgs {
+    /// Print the full public key line for each recipient.
+    #[arg(long)]
+    pub verbose: bool,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct RemoveRecipientArgs {
+    /// Fingerprint of the recipient to remove (as printed by
+    /// `list-recipients`).
+    #[arg(long, value_name = "SHA256:...")]
+    pub fingerprint: String,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct SetArgs {
+    /// Profile name (free-form; `/` allowed as a convention).
+    pub profile: String,
+    /// Environment variable name (upper-case recommended).
+    pub var: String,
+    /// Value. If omitted, read from a hidden stdin prompt.
+    #[arg(long)]
+    pub value: Option<String>,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct UnsetArgs {
+    pub profile: String,
+    pub var: String,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct ListArgs {
+    /// If given, list variable names in this profile. Otherwise, list
+    /// all profile names.
+    pub profile: Option<String>,
+    /// When listing profile names, filter to names starting with this
+    /// prefix.
+    #[arg(long)]
+    pub prefix: Option<String>,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct ShowArgs {
+    pub profile: String,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct RmProfileArgs {
+    pub profile: String,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct RunArgs {
+    pub profile: String,
+    /// Command and its arguments. Use `--` to separate from sshenv's own
+    /// flags.
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
+    pub command: Vec<String>,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct ExportArgs {
+    pub profile: String,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ShimsCommand {
+    /// Bind a command to a profile. Auto-regenerates shims.
+    Bind(ShimsBindArgs),
+    /// Unbind a command. Auto-regenerates shims.
+    Unbind(ShimsUnbindArgs),
+    /// List current bindings.
+    List,
+    /// Regenerate all shim files from the bindings file.
+    Sync,
+    /// Print the resolved shim output directory.
+    Dir,
+    /// Print a `PATH=...` snippet suitable for adding to your shell rc.
+    Path,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct ShimsBindArgs {
+    pub profile: String,
+    #[arg(long, value_name = "NAME")]
+    pub command: String,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct ShimsUnbindArgs {
+    #[arg(long, value_name = "NAME")]
+    pub command: String,
+}

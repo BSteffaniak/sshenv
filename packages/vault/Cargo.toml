@@ -1,0 +1,43 @@
+[package]
+name = "sshenv_vault"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "sshenv vault file I/O, crypto, and recipient management"
+
+[dependencies]
+sshenv_vault_models = { workspace = true }
+
+age = { workspace = true }
+aes-siv = { workspace = true, features = ["alloc"] }
+hkdf = { workspace = true }
+sha2 = { workspace = true }
+ssh-key = { workspace = true, features = ["ed25519"] }
+
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+zeroize = { workspace = true }
+tempfile = { workspace = true }
+hex = { workspace = true }
+dirs = { workspace = true }
+rand_core = { version = "0.6", default-features = false, features = [
+  "std",
+  "getrandom",
+] }
+base64 = { version = "0.22", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+proptest = { workspace = true }
+ssh-key = { version = "0.6", default-features = false, features = [
+  "std",
+  "alloc",
+  "ed25519",
+  "rand_core",
+] }
+
+[lints]
+workspace = true

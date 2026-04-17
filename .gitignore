@@ -1,0 +1,21 @@
+# Rust
+/target
+/packages/*/target
+/packages/*/*/target
+
+# macOS
+.DS_Store
+
+# Editor state
+.idea/
+.vscode/
+*.swp
+*~
+
+# Nix / direnv
+result
+result-*
+.direnv/
+
+# Local state (never commit)
+.sshenv/

@@ -1,0 +1,47 @@
+//! sshenv binary crate. All command dispatch lives under
+//! [`commands`]; this module exposes a single [`run`] entry point.
+
+#![allow(clippy::multiple_crate_versions)]
+
+pub mod commands;
+pub mod identity;
+pub mod pubkey;
+
+use anyhow::Result;
+use sshenv_cli_models::{Cli, Command, ShimsCommand};
+
+/// Dispatch a parsed [`Cli`] to the appropriate command handler.
+///
+/// # Errors
+///
+/// Propagates the handler's error.
+pub fn run(cli: Cli) -> Result<()> {
+    let ctx = commands::Context::from_cli(&cli);
+
+    match cli.command {
+        Command::Init(args) => commands::init::run(&ctx, args),
+        Command::Doctor => commands::doctor::run(&ctx),
+
+        Command::AddRecipient(args) => commands::recipient::add(&ctx, args),
+        Command::ListRecipients(args) => commands::recipient::list(&ctx, args),
+        Command::RemoveRecipient(args) => commands::recipient::remove(&ctx, args),
+
+        Command::Set(args) => commands::profile::set(&ctx, args),
+        Command::Unset(args) => commands::profile::unset(&ctx, args),
+        Command::List(args) => commands::profile::list(&ctx, args),
+        Command::Show(args) => commands::profile::show(&ctx, args),
+        Command::RmProfile(args) => commands::profile::rm(&ctx, args),
+
+        Command::Run(args) => commands::run::run(&ctx, args),
+        Command::Export(args) => commands::export::run(&ctx, args),
+
+        Command::Shims(sub) => match sub {
+            ShimsCommand::Bind(args) => commands::shims::bind(&ctx, args),
+            ShimsCommand::Unbind(args) => commands::shims::unbind(&ctx, args),
+            ShimsCommand::List => commands::shims::list(&ctx),
+            ShimsCommand::Sync => commands::shims::sync(&ctx),
+            ShimsCommand::Dir => commands::shims::dir(&ctx),
+            ShimsCommand::Path => commands::shims::path(&ctx),
+        },
+    }
+}

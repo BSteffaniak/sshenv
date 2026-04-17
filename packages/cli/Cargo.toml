@@ -1,0 +1,40 @@
+[package]
+name = "sshenv"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "SSH-key-backed encrypted vault for environment variables"
+
+[[bin]]
+name = "sshenv"
+path = "src/main.rs"
+
+[dependencies]
+sshenv_cli_models = { workspace = true }
+sshenv_vault = { workspace = true }
+sshenv_shims = { workspace = true }
+
+age = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+rpassword = { workspace = true }
+zeroize = { workspace = true }
+dirs = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+ssh-key = { version = "0.6", default-features = false, features = [
+  "std",
+  "alloc",
+  "ed25519",
+  "rand_core",
+] }
+rand_core = { version = "0.6", default-features = false, features = [
+  "std",
+  "getrandom",
+] }
+
+[lints]
+workspace = true

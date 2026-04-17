@@ -1,0 +1,15 @@
+[package]
+name = "sshenv_shims_models"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "sshenv shim-binding data types"
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

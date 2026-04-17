@@ -1,0 +1,229 @@
+//! Data structures and constants for the sshenv vault file format.
+//!
+//! The on-disk vault format is:
+//!
+//! ```text
+//! MAGIC       b"SSHE"          (4 bytes)
+//! VERSION     0x01             (1 byte)
+//! FLAGS       0x00             (1 byte, reserved)
+//! RECIP_LEN   u32 BE           (4 bytes)
+//! RECIPIENTS  (variable)       array of RecipientEntry on-wire form
+//! PAYLOAD_LEN u32 BE           (4 bytes)
+//! PAYLOAD     (variable)       AES-256-SIV ciphertext, AAD = "sshenv:v1:payload"
+//! ```
+//!
+//! Each `RecipientEntry` on wire is:
+//!
+//! ```text
+//! FP_LEN    u16 BE
+//! FP        utf8 bytes
+//! WRAP_LEN  u32 BE
+//! WRAP      age-wrapped data-key bytes
+//! ```
+//!
+//! Decrypted payload is JSON: `{ "profiles": { "<name>": { "<VAR>": "<value>" } } }`.
+
+use std::collections::BTreeMap;
+
+use serde::{Deserialize, Serialize};
+
+/// Magic bytes at the head of every vault file.
+pub const MAGIC: [u8; 4] = *b"SSHE";
+
+/// Current on-disk format version.
+pub const VERSION: u8 = 1;
+
+/// AAD tag used for AES-SIV payload encryption. Binds ciphertext to format
+/// version so a downgrade attack that swaps in an older vault's body is
+/// rejected.
+pub const PAYLOAD_AAD: &[u8] = b"sshenv:v1:payload";
+
+/// HKDF salt for deriving the AES-SIV key from the 32-byte data key.
+pub const HKDF_SALT: &[u8] = b"sshenv:v1";
+
+/// HKDF info for deriving the AES-SIV key.
+pub const HKDF_INFO: &[u8] = b"payload";
+
+/// Size of the vault data key, in bytes.
+pub const DATA_KEY_LEN: usize = 32;
+
+/// Size of the AES-256-SIV key material, in bytes. AES-SIV uses two keys
+/// (MAC + encryption) which together make 64 bytes for AES-256.
+pub const SIV_KEY_LEN: usize = 64;
+
+/// Errors produced while parsing or building vault structures.
+#[derive(Debug, thiserror::Error)]
+pub enum VaultModelsError {
+    #[error("not a sshenv vault file (bad magic)")]
+    BadMagic,
+    #[error("unsupported sshenv vault version {0} (expected {VERSION})")]
+    UnsupportedVersion(u8),
+    #[error("reserved flags byte must be zero, got {0:#x}")]
+    BadFlags(u8),
+    #[error("recipient block truncated")]
+    TruncatedRecipients,
+    #[error("payload block truncated")]
+    TruncatedPayload,
+    #[error("invalid fingerprint UTF-8")]
+    InvalidFingerprintUtf8,
+    #[error("vault file is truncated (expected at least {expected} more bytes, had {had})")]
+    Truncated { expected: usize, had: usize },
+    #[error("duplicate recipient fingerprint: {0}")]
+    DuplicateRecipient(String),
+}
+
+/// Parsed on-disk header bytes (magic + version + flags).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VaultHeader {
+    pub version: u8,
+    pub flags: u8,
+}
+
+impl Default for VaultHeader {
+    fn default() -> Self {
+        Self {
+            version: VERSION,
+            flags: 0,
+        }
+    }
+}
+
+/// A wrapped-key entry: one per recipient authorized to unwrap the vault.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecipientEntry {
+    /// SHA256 fingerprint of the SSH public key (e.g.
+    /// `SHA256:AAAA...`). Matches `ssh-keygen -lf`.
+    pub fingerprint: String,
+    /// Full SSH public key line (`ssh-ed25519 AAAA... optional-comment`).
+    /// Retained so `list-recipients` can display something meaningful
+    /// and `add-recipient` can avoid needing the file on disk.
+    pub public_key_line: String,
+    /// `age`-wrapped copy of the 32-byte data key, bytes as produced by
+    /// `age::Encryptor`.
+    pub wrapped_key: Vec<u8>,
+}
+
+impl RecipientEntry {
+    /// On-wire length of this recipient entry (without payload).
+    #[must_use]
+    pub const fn wire_len(&self) -> usize {
+        2 + self.fingerprint.len() + 4 + self.wrapped_key.len()
+    }
+}
+
+/// The plaintext payload of a vault: the full profile → var map.
+///
+/// Serialized as JSON into the encrypted body. Individual secret values
+/// are zeroized at the call-site via [`zeroize::Zeroizing<Vec<u8>>`] when
+/// they live in isolation; this map itself is not zeroized because
+/// `BTreeMap` cannot be cleanly zeroized in place.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProfileMap {
+    pub profiles: BTreeMap<String, BTreeMap<String, String>>,
+}
+
+impl ProfileMap {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Total number of profiles.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.profiles.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.profiles.is_empty()
+    }
+
+    /// Get (immutable) all vars for a profile.
+    #[must_use]
+    pub fn get(&self, profile: &str) -> Option<&BTreeMap<String, String>> {
+        self.profiles.get(profile)
+    }
+
+    /// Insert or replace a single `VAR = value` pair. Creates the profile
+    /// if it does not exist.
+    pub fn set(&mut self, profile: &str, var: &str, value: String) {
+        self.profiles
+            .entry(profile.to_string())
+            .or_default()
+            .insert(var.to_string(), value);
+    }
+
+    /// Remove a single `VAR` from a profile. If the profile becomes empty
+    /// it is also removed.
+    ///
+    /// Returns `true` if the var was present.
+    pub fn unset(&mut self, profile: &str, var: &str) -> bool {
+        let Some(vars) = self.profiles.get_mut(profile) else {
+            return false;
+        };
+        let removed = vars.remove(var).is_some();
+        if vars.is_empty() {
+            self.profiles.remove(profile);
+        }
+        removed
+    }
+
+    /// Remove an entire profile. Returns `true` if present.
+    pub fn remove_profile(&mut self, profile: &str) -> bool {
+        self.profiles.remove(profile).is_some()
+    }
+
+    /// Names of all profiles, sorted.
+    #[must_use]
+    pub fn profile_names(&self) -> Vec<String> {
+        self.profiles.keys().cloned().collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn header_default_uses_current_version() {
+        let h = VaultHeader::default();
+        assert_eq!(h.version, VERSION);
+        assert_eq!(h.flags, 0);
+    }
+
+    #[test]
+    fn profile_map_set_and_get() {
+        let mut m = ProfileMap::new();
+        m.set("pi-bedrock", "AWS_BEARER_TOKEN_BEDROCK", "abc".into());
+        assert_eq!(m.len(), 1);
+        let vars = m.get("pi-bedrock").unwrap();
+        assert_eq!(vars.get("AWS_BEARER_TOKEN_BEDROCK").unwrap(), "abc");
+    }
+
+    #[test]
+    fn profile_map_unset_empties_profile() {
+        let mut m = ProfileMap::new();
+        m.set("p", "K", "v".into());
+        assert!(m.unset("p", "K"));
+        assert!(m.get("p").is_none());
+        assert!(m.is_empty());
+    }
+
+    #[test]
+    fn profile_map_unset_missing_is_false() {
+        let mut m = ProfileMap::new();
+        assert!(!m.unset("nope", "K"));
+    }
+
+    #[test]
+    fn recipient_entry_wire_len_accounts_for_all_fields() {
+        let r = RecipientEntry {
+            fingerprint: "SHA256:abc".to_string(),
+            public_key_line: "ssh-ed25519 AAA".to_string(),
+            wrapped_key: vec![1, 2, 3, 4, 5],
+        };
+        // 2 + 10 + 4 + 5
+        assert_eq!(r.wire_len(), 21);
+    }
+}

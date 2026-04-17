@@ -1,0 +1,69 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            archive: sshenv-linux-x64.tar.gz
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-latest
+            archive: sshenv-linux-arm64.tar.gz
+            cross: true
+          - target: x86_64-apple-darwin
+            runner: macos-latest
+            archive: sshenv-darwin-x64.tar.gz
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+            archive: sshenv-darwin-arm64.tar.gz
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install cross (for cross-compiled Linux targets)
+        if: matrix.cross
+        run: cargo install cross --locked
+
+      - name: Build
+        shell: bash
+        run: |
+          if [ "${{ matrix.cross }}" = "true" ]; then
+            cross build --release --target "${{ matrix.target }}" --bin sshenv
+          else
+            cargo build --release --target "${{ matrix.target }}" --bin sshenv
+          fi
+
+      - name: Package
+        shell: bash
+        run: |
+          staging="sshenv-${{ matrix.target }}"
+          mkdir -p "$staging"
+          cp "target/${{ matrix.target }}/release/sshenv" "$staging/"
+          cp LICENSE README.md "$staging/"
+          tar czf "${{ matrix.archive }}" -C "$staging" .
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.archive }}
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-alpha') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-rc') }}
+          generate_release_notes: true

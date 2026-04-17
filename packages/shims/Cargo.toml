@@ -1,0 +1,21 @@
+[package]
+name = "sshenv_shims"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "sshenv shim generation and bindings file I/O"
+
+[dependencies]
+sshenv_shims_models = { workspace = true }
+
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+toml = { workspace = true }
+tempfile = { workspace = true }
+dirs = { workspace = true }
+
+[lints]
+workspace = true

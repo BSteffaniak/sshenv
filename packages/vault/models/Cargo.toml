@@ -1,0 +1,15 @@
+[package]
+name = "sshenv_vault_models"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "sshenv vault data structures and byte-format constants"
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true
