@@ -70,6 +70,10 @@ pub enum VaultModelsError {
     Truncated { expected: usize, had: usize },
     #[error("duplicate recipient fingerprint: {0}")]
     DuplicateRecipient(String),
+    #[error("no such profile: {0}")]
+    MissingProfile(String),
+    #[error("profile already exists: {0}")]
+    ProfileAlreadyExists(String),
 }
 
 /// Parsed on-disk header bytes (magic + version + flags).
@@ -174,6 +178,29 @@ impl ProfileMap {
         self.profiles.remove(profile).is_some()
     }
 
+    /// Rename an entire profile, preserving all variables.
+    ///
+    /// Returns `Ok(true)` when the map changed. Renaming a profile to itself
+    /// is treated as a successful no-op.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the source profile is missing or the destination
+    /// profile already exists.
+    pub fn rename_profile(&mut self, from: &str, to: &str) -> Result<bool, VaultModelsError> {
+        if from == to {
+            return Ok(false);
+        }
+        if self.profiles.contains_key(to) {
+            return Err(VaultModelsError::ProfileAlreadyExists(to.to_string()));
+        }
+        let Some(vars) = self.profiles.remove(from) else {
+            return Err(VaultModelsError::MissingProfile(from.to_string()));
+        };
+        self.profiles.insert(to.to_string(), vars);
+        Ok(true)
+    }
+
     /// Names of all profiles, sorted.
     #[must_use]
     pub fn profile_names(&self) -> Vec<String> {
@@ -214,6 +241,46 @@ mod tests {
     fn profile_map_unset_missing_is_false() {
         let mut m = ProfileMap::new();
         assert!(!m.unset("nope", "K"));
+    }
+
+    #[test]
+    fn profile_map_rename_moves_vars() {
+        let mut m = ProfileMap::new();
+        m.set("old", "K", "v".into());
+
+        assert!(m.rename_profile("old", "new").unwrap());
+
+        assert!(m.get("old").is_none());
+        assert_eq!(m.get("new").unwrap().get("K").unwrap(), "v");
+    }
+
+    #[test]
+    fn profile_map_rename_missing_errors() {
+        let mut m = ProfileMap::new();
+        let err = m.rename_profile("old", "new").unwrap_err();
+        assert!(matches!(err, VaultModelsError::MissingProfile(p) if p == "old"));
+    }
+
+    #[test]
+    fn profile_map_rename_existing_destination_errors() {
+        let mut m = ProfileMap::new();
+        m.set("old", "K", "v".into());
+        m.set("new", "OTHER", "value".into());
+
+        let err = m.rename_profile("old", "new").unwrap_err();
+
+        assert!(matches!(err, VaultModelsError::ProfileAlreadyExists(p) if p == "new"));
+        assert!(m.get("old").is_some());
+        assert_eq!(m.get("new").unwrap().get("OTHER").unwrap(), "value");
+    }
+
+    #[test]
+    fn profile_map_rename_same_name_is_noop() {
+        let mut m = ProfileMap::new();
+        m.set("same", "K", "v".into());
+
+        assert!(!m.rename_profile("same", "same").unwrap());
+        assert_eq!(m.get("same").unwrap().get("K").unwrap(), "v");
     }
 
     #[test]

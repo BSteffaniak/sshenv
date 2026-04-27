@@ -32,6 +32,7 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::List(args) => commands::profile::list(&ctx, args),
         Command::Show(args) => commands::profile::show(&ctx, args),
         Command::RmProfile(args) => commands::profile::rm(&ctx, args),
+        Command::RenameProfile(args) => commands::profile::rename(&ctx, args),
 
         Command::Run(args) => commands::run::run(&ctx, args),
         Command::Export(args) => commands::export::run(&ctx, args),

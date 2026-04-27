@@ -466,3 +466,143 @@ fn binary_shim_does_not_self_invoke() {
         "expected env var to be injected into real binary; got stdout: {stdout}"
     );
 }
+
+#[test]
+fn binary_rename_profile_moves_vars_and_updates_shim_bindings() {
+    let bin = cargo_bin();
+    if !bin.exists() {
+        eprintln!("skipping: {} does not exist", bin.display());
+        return;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    std::fs::create_dir_all(home.join(".ssh")).unwrap();
+    let _k = write_named_keypair(&home.join(".ssh"), "id_ed25519");
+
+    let vault_path = home.join(".sshenv").join("vault");
+    let bindings_path = home.join(".sshenv").join("bindings.toml");
+    let shim_dir = home.join(".sshenv").join("bin");
+
+    let init_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("init")
+        .arg("--recipient-key")
+        .arg(home.join(".ssh").join("id_ed25519.pub"))
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run init");
+    assert!(
+        init_out.status.success(),
+        "init failed: {}",
+        String::from_utf8_lossy(&init_out.stderr)
+    );
+
+    let set_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("set")
+        .arg("pi-bedrock")
+        .arg("AWS_BEARER_TOKEN_BEDROCK")
+        .arg("--value")
+        .arg("secret")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run set");
+    assert!(
+        set_out.status.success(),
+        "set failed: {}",
+        String::from_utf8_lossy(&set_out.stderr)
+    );
+
+    let bind_out = Command::new(&bin)
+        .arg("shims")
+        .arg("bind")
+        .arg("pi-bedrock")
+        .arg("--command")
+        .arg("pi-bedrock")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .env("SSHENV_BINDINGS", &bindings_path)
+        .env("SSHENV_SHIM_DIR", &shim_dir)
+        .output()
+        .expect("run shims bind");
+    assert!(
+        bind_out.status.success(),
+        "bind failed: {}",
+        String::from_utf8_lossy(&bind_out.stderr)
+    );
+
+    let rename_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("rename-profile")
+        .arg("pi-bedrock")
+        .arg("bedrock")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .env("SSHENV_BINDINGS", &bindings_path)
+        .env("SSHENV_SHIM_DIR", &shim_dir)
+        .output()
+        .expect("run rename-profile");
+    assert!(
+        rename_out.status.success(),
+        "rename-profile failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&rename_out.stdout),
+        String::from_utf8_lossy(&rename_out.stderr),
+    );
+
+    let list_profiles = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("list")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run list");
+    assert!(list_profiles.status.success());
+    let stdout = String::from_utf8_lossy(&list_profiles.stdout);
+    assert!(stdout.contains("bedrock"), "missing new profile: {stdout}");
+    assert!(
+        !stdout.contains("pi-bedrock"),
+        "old profile still listed: {stdout}"
+    );
+
+    let list_new_profile = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("list")
+        .arg("bedrock")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run list bedrock");
+    assert!(list_new_profile.status.success());
+    let stdout = String::from_utf8_lossy(&list_new_profile.stdout);
+    assert!(
+        stdout.contains("AWS_BEARER_TOKEN_BEDROCK"),
+        "missing renamed profile var: {stdout}"
+    );
+
+    let list_old_profile = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("list")
+        .arg("pi-bedrock")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run list pi-bedrock");
+    assert!(!list_old_profile.status.success());
+
+    let bindings = sshenv_shims::load_bindings(&bindings_path).unwrap();
+    let binding = bindings.find_by_command("pi-bedrock").unwrap();
+    assert_eq!(binding.profile, "bedrock");
+
+    let shim = std::fs::read_to_string(shim_dir.join("pi-bedrock")).unwrap();
+    assert!(shim.contains("profile: bedrock"));
+    assert!(shim.contains("exec sshenv run \"bedrock\" -- \"pi-bedrock\" \"$@\""));
+}

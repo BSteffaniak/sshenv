@@ -1,5 +1,8 @@
 use anyhow::{Context, Result, bail};
-use sshenv_cli_models::{ListArgs, RmProfileArgs, SetArgs, ShowArgs, UnsetArgs};
+use sshenv_cli_models::{ListArgs, RenameProfileArgs, RmProfileArgs, SetArgs, ShowArgs, UnsetArgs};
+use sshenv_shims::{
+    default_bindings_path, load_bindings, resolve_shim_dir, save_bindings, sync_shims,
+};
 use zeroize::Zeroizing;
 
 use crate::commands::{Context as CmdContext, load_and_unlock};
@@ -91,5 +94,36 @@ pub fn rm(ctx: &CmdContext, args: RmProfileArgs) -> Result<()> {
     }
     vault.save(&ctx.vault_path, &key)?;
     eprintln!("Removed profile {}.", args.profile);
+    Ok(())
+}
+
+pub fn rename(ctx: &CmdContext, args: RenameProfileArgs) -> Result<()> {
+    let (mut vault, key) = load_and_unlock(&ctx.vault_path)?;
+
+    let vault_changed = vault.profiles.rename_profile(&args.from, &args.to)?;
+    if vault_changed {
+        vault.save(&ctx.vault_path, &key)?;
+        eprintln!("Renamed profile {} -> {}.", args.from, args.to);
+    } else {
+        eprintln!(
+            "Profile {} is already named {}; no changes.",
+            args.from, args.to
+        );
+    }
+
+    let bindings_path = default_bindings_path();
+    let mut bindings = load_bindings(&bindings_path)?;
+    let changed_bindings = bindings.rename_profile(&args.from, &args.to);
+    if changed_bindings == 0 {
+        return Ok(());
+    }
+
+    save_bindings(&bindings_path, &bindings)?;
+    let shim_dir = resolve_shim_dir(&bindings);
+    let (wrote, removed) = sync_shims(&shim_dir, &bindings)?;
+    eprintln!(
+        "Updated {changed_bindings} shim binding(s). Regenerated shims in {} ({wrote} wrote, {removed} removed).",
+        shim_dir.display()
+    );
     Ok(())
 }

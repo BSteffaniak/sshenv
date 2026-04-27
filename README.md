@@ -70,6 +70,7 @@ sshenv unset <profile> <VAR>
 sshenv list [--prefix <p>]                         # profile names
 sshenv list <profile>                              # VAR names in profile
 sshenv show <profile>                              # values (warns loudly)
+sshenv rename-profile <old> <new>                  # rename profile + shim bindings
 sshenv rm-profile <profile>
 
 # Execution

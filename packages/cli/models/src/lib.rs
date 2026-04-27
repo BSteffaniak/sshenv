@@ -54,6 +54,8 @@ pub enum Command {
     Show(ShowArgs),
     /// Delete an entire profile.
     RmProfile(RmProfileArgs),
+    /// Rename an entire profile.
+    RenameProfile(RenameProfileArgs),
 
     /// Run a command with a profile's environment vars loaded.
     Run(RunArgs),
@@ -134,6 +136,12 @@ pub struct ShowArgs {
 #[derive(Debug, clap::Args)]
 pub struct RmProfileArgs {
     pub profile: String,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct RenameProfileArgs {
+    pub from: String,
+    pub to: String,
 }
 
 #[derive(Debug, clap::Args)]

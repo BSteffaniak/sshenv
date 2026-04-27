@@ -87,6 +87,28 @@ impl BindingsFile {
         self.bindings.len() < before
     }
 
+    /// Rename every binding that points at `from` to point at `to`.
+    ///
+    /// Returns the number of bindings changed. Renaming a profile to itself
+    /// is a no-op.
+    pub fn rename_profile(&mut self, from: &str, to: &str) -> usize {
+        if from == to {
+            return 0;
+        }
+
+        let mut changed = 0;
+        for binding in &mut self.bindings {
+            if binding.profile == from {
+                binding.profile = to.to_string();
+                changed += 1;
+            }
+        }
+        if changed > 0 {
+            self.sort();
+        }
+        changed
+    }
+
     fn sort(&mut self) {
         self.bindings.sort_by(|a, b| {
             a.profile
@@ -137,5 +159,28 @@ mod tests {
         f.add("p", "alpha").unwrap();
         f.add("p", "gamma").unwrap();
         assert_eq!(f.commands_for_profile("p"), vec!["alpha", "beta", "gamma"]);
+    }
+
+    #[test]
+    fn rename_profile_updates_matching_bindings() {
+        let mut f = BindingsFile::default();
+        f.add("old", "cmd-b").unwrap();
+        f.add("other", "cmd-c").unwrap();
+        f.add("old", "cmd-a").unwrap();
+
+        assert_eq!(f.rename_profile("old", "new"), 2);
+
+        assert_eq!(f.commands_for_profile("old"), Vec::<String>::new());
+        assert_eq!(f.commands_for_profile("new"), vec!["cmd-a", "cmd-b"]);
+        assert_eq!(f.find_by_command("cmd-c").unwrap().profile, "other");
+    }
+
+    #[test]
+    fn rename_profile_same_name_is_noop() {
+        let mut f = BindingsFile::default();
+        f.add("same", "cmd").unwrap();
+
+        assert_eq!(f.rename_profile("same", "same"), 0);
+        assert_eq!(f.find_by_command("cmd").unwrap().profile, "same");
     }
 }
