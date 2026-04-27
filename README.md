@@ -80,6 +80,7 @@ sshenv export <profile>                            # prints `export VAR=value` l
 # Shims (auto-sync after bind/unbind)
 sshenv shims bind <profile> --command <name>
 sshenv shims unbind --command <name>
+sshenv shims rename --command <old> --to <new>
 sshenv shims list
 sshenv shims sync
 sshenv shims dir

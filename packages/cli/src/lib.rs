@@ -40,6 +40,7 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::Shims(sub) => match sub {
             ShimsCommand::Bind(args) => commands::shims::bind(&ctx, args),
             ShimsCommand::Unbind(args) => commands::shims::unbind(&ctx, args),
+            ShimsCommand::Rename(args) => commands::shims::rename(&ctx, args),
             ShimsCommand::List => commands::shims::list(&ctx),
             ShimsCommand::Sync => commands::shims::sync(&ctx),
             ShimsCommand::Dir => commands::shims::dir(&ctx),

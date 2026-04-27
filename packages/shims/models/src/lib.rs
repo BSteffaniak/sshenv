@@ -31,6 +31,8 @@ pub struct BindingsFile {
 pub enum ShimsModelsError {
     #[error("command '{command}' is already bound to profile '{existing}'")]
     DuplicateCommand { command: String, existing: String },
+    #[error("command '{0}' is not bound")]
+    MissingCommand(String),
 }
 
 impl BindingsFile {
@@ -109,6 +111,34 @@ impl BindingsFile {
         changed
     }
 
+    /// Rename the command side of one binding, preserving the profile.
+    ///
+    /// Returns `Ok(true)` when the binding changed. Renaming a command to
+    /// itself is treated as a successful no-op.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the source command is missing or the destination
+    /// command is already bound.
+    pub fn rename_command(&mut self, from: &str, to: &str) -> Result<bool, ShimsModelsError> {
+        if from == to {
+            return Ok(false);
+        }
+        if let Some(existing) = self.find_by_command(to) {
+            return Err(ShimsModelsError::DuplicateCommand {
+                command: to.to_string(),
+                existing: existing.profile.clone(),
+            });
+        }
+        let Some(binding) = self.bindings.iter_mut().find(|b| b.command == from) else {
+            return Err(ShimsModelsError::MissingCommand(from.to_string()));
+        };
+
+        binding.command = to.to_string();
+        self.sort();
+        Ok(true)
+    }
+
     fn sort(&mut self) {
         self.bindings.sort_by(|a, b| {
             a.profile
@@ -182,5 +212,47 @@ mod tests {
 
         assert_eq!(f.rename_profile("same", "same"), 0);
         assert_eq!(f.find_by_command("cmd").unwrap().profile, "same");
+    }
+
+    #[test]
+    fn rename_command_preserves_profile() {
+        let mut f = BindingsFile::default();
+        f.add("p", "old").unwrap();
+
+        assert!(f.rename_command("old", "new").unwrap());
+
+        assert!(f.find_by_command("old").is_none());
+        assert_eq!(f.find_by_command("new").unwrap().profile, "p");
+    }
+
+    #[test]
+    fn rename_command_missing_source_errors() {
+        let mut f = BindingsFile::default();
+        let err = f.rename_command("old", "new").unwrap_err();
+        assert!(matches!(err, ShimsModelsError::MissingCommand(c) if c == "old"));
+    }
+
+    #[test]
+    fn rename_command_existing_destination_errors() {
+        let mut f = BindingsFile::default();
+        f.add("p1", "old").unwrap();
+        f.add("p2", "new").unwrap();
+
+        let err = f.rename_command("old", "new").unwrap_err();
+
+        assert!(
+            matches!(err, ShimsModelsError::DuplicateCommand { command, existing } if command == "new" && existing == "p2")
+        );
+        assert_eq!(f.find_by_command("old").unwrap().profile, "p1");
+        assert_eq!(f.find_by_command("new").unwrap().profile, "p2");
+    }
+
+    #[test]
+    fn rename_command_same_name_is_noop() {
+        let mut f = BindingsFile::default();
+        f.add("p", "same").unwrap();
+
+        assert!(!f.rename_command("same", "same").unwrap());
+        assert_eq!(f.find_by_command("same").unwrap().profile, "p");
     }
 }

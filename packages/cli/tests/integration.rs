@@ -606,3 +606,67 @@ fn binary_rename_profile_moves_vars_and_updates_shim_bindings() {
     assert!(shim.contains("profile: bedrock"));
     assert!(shim.contains("exec sshenv run \"bedrock\" -- \"pi-bedrock\" \"$@\""));
 }
+
+#[test]
+fn binary_shims_rename_updates_binding_and_regenerates_shims() {
+    let bin = cargo_bin();
+    if !bin.exists() {
+        eprintln!("skipping: {} does not exist", bin.display());
+        return;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let bindings_path = home.join(".sshenv").join("bindings.toml");
+    let shim_dir = home.join(".sshenv").join("bin");
+
+    let bind_out = Command::new(&bin)
+        .arg("shims")
+        .arg("bind")
+        .arg("bedrock")
+        .arg("--command")
+        .arg("pi-bedrock")
+        .env("HOME", &home)
+        .env("SSHENV_BINDINGS", &bindings_path)
+        .env("SSHENV_SHIM_DIR", &shim_dir)
+        .output()
+        .expect("run shims bind");
+    assert!(
+        bind_out.status.success(),
+        "bind failed: {}",
+        String::from_utf8_lossy(&bind_out.stderr)
+    );
+    assert!(shim_dir.join("pi-bedrock").exists());
+
+    let rename_out = Command::new(&bin)
+        .arg("shims")
+        .arg("rename")
+        .arg("--command")
+        .arg("pi-bedrock")
+        .arg("--to")
+        .arg("bedrock")
+        .env("HOME", &home)
+        .env("SSHENV_BINDINGS", &bindings_path)
+        .env("SSHENV_SHIM_DIR", &shim_dir)
+        .output()
+        .expect("run shims rename");
+    assert!(
+        rename_out.status.success(),
+        "shims rename failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&rename_out.stdout),
+        String::from_utf8_lossy(&rename_out.stderr),
+    );
+
+    let bindings = sshenv_shims::load_bindings(&bindings_path).unwrap();
+    assert!(bindings.find_by_command("pi-bedrock").is_none());
+    assert_eq!(
+        bindings.find_by_command("bedrock").unwrap().profile,
+        "bedrock"
+    );
+
+    assert!(!shim_dir.join("pi-bedrock").exists());
+    let shim = std::fs::read_to_string(shim_dir.join("bedrock")).unwrap();
+    assert!(shim.contains("profile: bedrock"));
+    assert!(shim.contains("command: bedrock"));
+    assert!(shim.contains("exec sshenv run \"bedrock\" -- \"bedrock\" \"$@\""));
+}

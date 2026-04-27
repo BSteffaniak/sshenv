@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use sshenv_cli_models::{ShimsBindArgs, ShimsUnbindArgs};
+use sshenv_cli_models::{ShimsBindArgs, ShimsRenameArgs, ShimsUnbindArgs};
 use sshenv_shims::{
     default_bindings_path, load_bindings, resolve_shim_dir, save_bindings, sync_shims,
 };
@@ -51,6 +51,38 @@ pub fn unbind(_ctx: &CmdContext, args: ShimsUnbindArgs) -> Result<()> {
     eprintln!(
         "Unbound '{}'. Regenerated shims in {} ({wrote} wrote, {removed} removed).",
         args.command,
+        shim_dir.display()
+    );
+    Ok(())
+}
+
+pub fn rename(_ctx: &CmdContext, args: ShimsRenameArgs) -> Result<()> {
+    let bindings_path = default_bindings_path();
+    let mut bindings = load_bindings(&bindings_path)?;
+    let changed = bindings
+        .rename_command(&args.command, &args.to)
+        .with_context(|| {
+            format!(
+                "failed to rename shim command '{}' to '{}'",
+                args.command, args.to
+            )
+        })?;
+
+    if !changed {
+        eprintln!(
+            "'{}' is already named '{}'; no changes.",
+            args.command, args.to
+        );
+        return Ok(());
+    }
+
+    save_bindings(&bindings_path, &bindings)?;
+    let shim_dir = resolve_shim_dir(&bindings);
+    let (wrote, removed) = sync_shims(&shim_dir, &bindings)?;
+    eprintln!(
+        "Renamed shim command '{}' -> '{}'. Regenerated shims in {} ({wrote} wrote, {removed} removed).",
+        args.command,
+        args.to,
         shim_dir.display()
     );
     Ok(())

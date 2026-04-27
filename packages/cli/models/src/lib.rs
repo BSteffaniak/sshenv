@@ -164,6 +164,8 @@ pub enum ShimsCommand {
     Bind(ShimsBindArgs),
     /// Unbind a command. Auto-regenerates shims.
     Unbind(ShimsUnbindArgs),
+    /// Rename a bound command. Auto-regenerates shims.
+    Rename(ShimsRenameArgs),
     /// List current bindings.
     List,
     /// Regenerate all shim files from the bindings file.
@@ -185,4 +187,12 @@ pub struct ShimsBindArgs {
 pub struct ShimsUnbindArgs {
     #[arg(long, value_name = "NAME")]
     pub command: String,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct ShimsRenameArgs {
+    #[arg(long, value_name = "OLD")]
+    pub command: String,
+    #[arg(long, value_name = "NEW")]
+    pub to: String,
 }
