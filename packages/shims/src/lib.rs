@@ -66,6 +66,75 @@ pub fn load_bindings(path: &Path) -> Result<BindingsFile> {
     Ok(parsed)
 }
 
+/// Returns the path to the `bindings.d` directory next to the primary bindings file.
+/// e.g. `~/.sshenv/bindings.d`
+#[must_use]
+pub fn bindings_d_dir() -> PathBuf {
+    let primary = default_bindings_path();
+    if let Some(parent) = primary.parent() {
+        parent.join("bindings.d")
+    } else {
+        PathBuf::from(".sshenv/bindings.d")
+    }
+}
+
+/// Discover and return all `*.toml` files in the `bindings.d` directory,
+/// sorted lexicographically by filename (for deterministic precedence).
+/// Returns an empty vec if the directory does not exist.
+///
+/// # Errors
+///
+/// Returns an error if the directory exists but cannot be read.
+pub fn discover_bindings_fragments() -> Result<Vec<PathBuf>> {
+    let dir = bindings_d_dir();
+    if !dir.exists() {
+        return Ok(vec![]);
+    }
+    let mut entries: Vec<PathBuf> = fs::read_dir(&dir)
+        .with_context(|| format!("failed to read {}", dir.display()))?
+        .filter_map(std::result::Result::ok)
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "toml"))
+        .map(|entry| entry.path())
+        .collect();
+    entries.sort();
+    Ok(entries)
+}
+
+/// Load the primary bindings file (or `$SSHENV_BINDINGS`) plus all
+/// `*.toml` fragments from the sibling `bindings.d/` directory and merge them.
+///
+/// Fragments are merged after the primary file. The existing
+/// `BindingsFile::add` logic is used, so duplicate command names bound to
+/// different profiles produce an error.
+///
+/// This is the function most consumers (run, doctor, shims list/sync, etc.)
+/// should use when they need the effective set of bindings.
+///
+/// # Errors
+///
+/// Returns an error on I/O, parse failures, or conflicting bindings.
+pub fn load_bindings_merged() -> Result<BindingsFile> {
+    let primary = default_bindings_path();
+    load_bindings_merged_from(&primary)
+}
+
+/// Same as `load_bindings_merged` but with an explicit primary path.
+pub fn load_bindings_merged_from(primary_path: &Path) -> Result<BindingsFile> {
+    let mut merged = load_bindings(primary_path)?;
+
+    let fragments = discover_bindings_fragments()?;
+    for frag_path in fragments {
+        let frag = load_bindings(&frag_path)?;
+        for b in &frag.bindings {
+            merged.add(&b.profile, &b.command)?;
+        }
+        if frag.shim_dir.is_some() {
+            merged.shim_dir.clone_from(&frag.shim_dir);
+        }
+    }
+    Ok(merged)
+}
+
 /// Save a bindings file to disk atomically with mode `0644`.
 ///
 /// # Errors

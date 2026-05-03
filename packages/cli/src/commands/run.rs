@@ -4,7 +4,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 use sshenv_cli_models::RunArgs;
-use sshenv_shims::{default_bindings_path, load_bindings, resolve_shim_dir};
+use sshenv_shims::{load_bindings_merged, resolve_shim_dir};
 
 use crate::commands::{Context as CmdContext, load_and_unlock};
 
@@ -63,7 +63,7 @@ pub fn run(ctx: &CmdContext, args: RunArgs) -> Result<()> {
 /// Determine the currently-configured sshenv shim directory by reading the
 /// bindings file (or falling back to `$SSHENV_SHIM_DIR` / `~/.sshenv/bin`).
 fn current_shim_dir() -> PathBuf {
-    let bindings = load_bindings(&default_bindings_path()).unwrap_or_default();
+    let bindings = load_bindings_merged().unwrap_or_default();
     resolve_shim_dir(&bindings)
 }
 

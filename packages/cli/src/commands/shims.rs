@@ -1,7 +1,8 @@
 use anyhow::{Context, Result};
 use sshenv_cli_models::{ShimsBindArgs, ShimsRenameArgs, ShimsUnbindArgs};
 use sshenv_shims::{
-    default_bindings_path, load_bindings, resolve_shim_dir, save_bindings, sync_shims,
+    default_bindings_path, load_bindings, load_bindings_merged, resolve_shim_dir, save_bindings,
+    sync_shims,
 };
 
 use crate::commands::Context as CmdContext;
@@ -89,8 +90,7 @@ pub fn rename(_ctx: &CmdContext, args: ShimsRenameArgs) -> Result<()> {
 }
 
 pub fn list(_ctx: &CmdContext) -> Result<()> {
-    let bindings_path = default_bindings_path();
-    let bindings = load_bindings(&bindings_path)?;
+    let bindings = load_bindings_merged()?;
     if bindings.bindings.is_empty() {
         eprintln!("(no bindings)");
         return Ok(());
@@ -102,8 +102,7 @@ pub fn list(_ctx: &CmdContext) -> Result<()> {
 }
 
 pub fn sync(_ctx: &CmdContext) -> Result<()> {
-    let bindings_path = default_bindings_path();
-    let bindings = load_bindings(&bindings_path)?;
+    let bindings = load_bindings_merged()?;
     let shim_dir = resolve_shim_dir(&bindings);
     let (wrote, removed) = sync_shims(&shim_dir, &bindings)?;
     eprintln!(
@@ -114,15 +113,13 @@ pub fn sync(_ctx: &CmdContext) -> Result<()> {
 }
 
 pub fn dir(_ctx: &CmdContext) -> Result<()> {
-    let bindings_path = default_bindings_path();
-    let bindings = load_bindings(&bindings_path).unwrap_or_default();
+    let bindings = load_bindings_merged().unwrap_or_default();
     println!("{}", resolve_shim_dir(&bindings).display());
     Ok(())
 }
 
 pub fn path(_ctx: &CmdContext) -> Result<()> {
-    let bindings_path = default_bindings_path();
-    let bindings = load_bindings(&bindings_path).unwrap_or_default();
+    let bindings = load_bindings_merged().unwrap_or_default();
     let dir = resolve_shim_dir(&bindings);
     println!(
         "# Add this to your shell rc to make sshenv shims active.\n\

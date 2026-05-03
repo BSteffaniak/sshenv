@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use anyhow::Result;
-use sshenv_shims::{default_bindings_path, load_bindings, resolve_shim_dir};
+use sshenv_shims::{default_bindings_path, load_bindings_merged, resolve_shim_dir};
 use sshenv_vault::Vault;
 
 use crate::commands::Context as CmdContext;
@@ -131,10 +131,20 @@ pub fn run(ctx: &CmdContext) -> Result<()> {
     println!();
     let bindings_path = default_bindings_path();
     println!("Bindings file: {}", bindings_path.display());
-    let bindings = load_bindings(&bindings_path).unwrap_or_default();
+    let bindings_d = sshenv_shims::bindings_d_dir();
+    if bindings_d.exists() {
+        println!(
+            "Bindings.d:    {} ({} fragments)",
+            bindings_d.display(),
+            sshenv_shims::discover_bindings_fragments()
+                .map(|v| v.len())
+                .unwrap_or(0)
+        );
+    }
+    let bindings = load_bindings_merged().unwrap_or_default();
     let shim_dir = resolve_shim_dir(&bindings);
     println!("Shim dir:      {}", shim_dir.display());
-    println!("Bindings:      {}", bindings.bindings.len());
+    println!("Effective bindings: {}", bindings.bindings.len());
 
     // PATH sanity.
     let path_env = std::env::var("PATH").unwrap_or_default();
