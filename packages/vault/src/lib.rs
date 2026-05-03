@@ -11,8 +11,10 @@
 
 pub mod crypto;
 pub mod format;
+pub mod identity;
 pub mod recipient;
 
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -27,9 +29,186 @@ pub use sshenv_vault_models as models;
 
 use crate::crypto::{decrypt_payload, encrypt_payload, generate_data_key};
 use crate::format::{encode, parse};
+use crate::identity::{
+    discover_private_key_paths, error_no_identity_unlocked_detailed,
+    load_identities_for_vault_from_paths,
+};
 
 /// Shorthand alias for the fixed-size, auto-zeroizing data key.
 pub type DataKey = Zeroizing<[u8; DATA_KEY_LEN]>;
+
+/// Configurable embeddable sshenv vault store.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SshenvStoreConfig {
+    pub vault_path: PathBuf,
+    pub private_key_paths: Vec<PathBuf>,
+}
+
+impl SshenvStoreConfig {
+    /// Create a store config for a specific vault path, using default SSH
+    /// identity discovery for unlock operations.
+    #[must_use]
+    pub fn new(vault_path: impl Into<PathBuf>) -> Self {
+        Self {
+            vault_path: vault_path.into(),
+            private_key_paths: discover_private_key_paths(),
+        }
+    }
+
+    /// Override private-key paths used to unlock the vault.
+    #[must_use]
+    pub fn with_private_key_paths(mut self, private_key_paths: Vec<PathBuf>) -> Self {
+        self.private_key_paths = private_key_paths;
+        self
+    }
+}
+
+impl Default for SshenvStoreConfig {
+    fn default() -> Self {
+        Self::new(default_vault_path())
+    }
+}
+
+/// Embeddable encrypted secret store backed by an sshenv vault file.
+#[derive(Debug, Clone)]
+pub struct SshenvStore {
+    config: SshenvStoreConfig,
+}
+
+impl SshenvStore {
+    /// Create an embeddable store from explicit configuration.
+    #[must_use]
+    pub const fn new(config: SshenvStoreConfig) -> Self {
+        Self { config }
+    }
+
+    /// Return this store's configuration.
+    #[must_use]
+    pub const fn config(&self) -> &SshenvStoreConfig {
+        &self.config
+    }
+
+    /// Initialize a vault at this store's configured path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the recipient public key cannot be parsed or the
+    /// vault cannot be written.
+    pub fn init(&self, recipient_public_key_line: &str) -> Result<()> {
+        let (vault, data_key) = Vault::create(recipient_public_key_line)?;
+        vault.save(&self.config.vault_path, &data_key)
+    }
+
+    /// Initialize the vault only when it does not already exist. Returns
+    /// `true` when a new vault was created.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if initialization fails.
+    pub fn init_if_missing(&self, recipient_public_key_line: &str) -> Result<bool> {
+        if self.config.vault_path.exists() {
+            return Ok(false);
+        }
+        self.init(recipient_public_key_line)?;
+        Ok(true)
+    }
+
+    /// Set or replace one secret value.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the vault cannot be unlocked or saved.
+    pub fn set_secret(&self, profile: &str, var: &str, value: Zeroizing<String>) -> Result<()> {
+        let (mut vault, data_key) = self.load_and_unlock()?;
+        vault.profiles.set(profile, var, value.as_str().to_string());
+        vault.save(&self.config.vault_path, &data_key)
+    }
+
+    /// Remove one secret value. Returns `true` when it existed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the vault cannot be unlocked or saved.
+    pub fn unset_secret(&self, profile: &str, var: &str) -> Result<bool> {
+        let (mut vault, data_key) = self.load_and_unlock()?;
+        let removed = vault.profiles.unset(profile, var);
+        if removed {
+            vault.save(&self.config.vault_path, &data_key)?;
+        }
+        Ok(removed)
+    }
+
+    /// Return one secret value, if present.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the vault cannot be unlocked.
+    pub fn get_secret(&self, profile: &str, var: &str) -> Result<Option<Zeroizing<String>>> {
+        let (vault, _data_key) = self.load_and_unlock()?;
+        Ok(vault
+            .profiles
+            .get(profile)
+            .and_then(|vars| vars.get(var))
+            .map(|value| Zeroizing::new(value.clone())))
+    }
+
+    /// Return all secrets for one profile.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the vault cannot be unlocked.
+    pub fn get_profile(
+        &self,
+        profile: &str,
+    ) -> Result<Option<BTreeMap<String, Zeroizing<String>>>> {
+        let (vault, _data_key) = self.load_and_unlock()?;
+        Ok(vault.profiles.get(profile).map(|vars| {
+            vars.iter()
+                .map(|(key, value)| (key.clone(), Zeroizing::new(value.clone())))
+                .collect()
+        }))
+    }
+
+    /// Unlock and return the full vault plus data key.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the vault cannot be read or no configured identity
+    /// can decrypt it.
+    pub fn load_and_unlock(&self) -> Result<(Vault, DataKey)> {
+        load_and_unlock_with_private_key_paths(
+            &self.config.vault_path,
+            &self.config.private_key_paths,
+        )
+    }
+}
+
+/// Load and unlock a vault using explicit private-key paths.
+///
+/// # Errors
+///
+/// Returns an error if the vault cannot be read or no configured identity can
+/// decrypt it.
+pub fn load_and_unlock_with_private_key_paths(
+    vault_path: &Path,
+    private_key_paths: &[PathBuf],
+) -> Result<(Vault, DataKey)> {
+    let ciphertext = Vault::load_ciphertext(vault_path)?;
+    let fingerprints: HashSet<String> = ciphertext
+        .recipients
+        .iter()
+        .map(|recipient| recipient.fingerprint.clone())
+        .collect();
+    let identities = load_identities_for_vault_from_paths(private_key_paths, &fingerprints)?;
+    if identities.is_empty() {
+        return Err(error_no_identity_unlocked_detailed(
+            private_key_paths,
+            &fingerprints,
+        ));
+    }
+    Vault::unlock(ciphertext, &identities)
+        .map_err(|_| error_no_identity_unlocked_detailed(private_key_paths, &fingerprints))
+}
 
 /// An in-memory, decrypted vault: header + recipients + profile map.
 #[derive(Debug, Clone)]

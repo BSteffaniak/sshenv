@@ -89,6 +89,29 @@ sshenv shims path
 
 Environment variables: `SSHENV_VAULT`, `SSHENV_SHIM_DIR`, `SSHENV_BINDINGS`.
 
+## Embedding sshenv in other apps
+
+Applications can use `sshenv_vault` directly without storing anything under
+`~/.sshenv/`. Construct an explicit store config with the vault path and SSH
+identity paths the application wants to use:
+
+```rust
+use sshenv_vault::{SshenvStore, SshenvStoreConfig};
+use zeroize::Zeroizing;
+
+let store = SshenvStore::new(
+    SshenvStoreConfig::new("/path/to/app/state/auth.vault")
+        .with_private_key_paths(vec!["/home/me/.ssh/id_ed25519".into()]),
+);
+
+store.init_if_missing("ssh-ed25519 AAAA...")?;
+store.set_secret("openai", "OPENAI_API_KEY", Zeroizing::new("sk-...".to_string()))?;
+let key = store.get_secret("openai", "OPENAI_API_KEY")?;
+```
+
+The CLI defaults remain `~/.sshenv/*`, but the library API does not require
+those paths.
+
 ## Status
 
 Early alpha (`0.0.1-alpha.0`). CLI surface is expected to be stable; vault
