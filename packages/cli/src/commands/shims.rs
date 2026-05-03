@@ -95,8 +95,20 @@ pub fn list(_ctx: &CmdContext) -> Result<()> {
         eprintln!("(no bindings)");
         return Ok(());
     }
-    for b in &bindings.bindings {
-        println!("{}\t{}", b.command, b.profile);
+
+    // Sort for stable, readable output
+    let mut items: Vec<_> = bindings.bindings.iter().collect();
+    items.sort_by(|a, b| a.command.cmp(&b.command));
+
+    let max_len = items.iter().map(|b| b.command.len()).max().unwrap_or(0);
+    let width = max_len.max(20);
+
+    // Header
+    println!("{:<width$}  PROFILE", "COMMAND", width = width);
+    println!("{:-<width$}  -------", "", width = width);
+
+    for b in items {
+        println!("{:<width$}  {}", b.command, b.profile, width = width);
     }
     Ok(())
 }
