@@ -43,6 +43,50 @@ fn write_named_keypair(dir: &std::path::Path, name: &str) -> (PathBuf, String) {
     (priv_path, pub_line)
 }
 
+fn init_vault_with_profile(
+    bin: &std::path::Path,
+    home: &std::path::Path,
+    vault_path: &std::path::Path,
+    profile: &str,
+) {
+    std::fs::create_dir_all(home.join(".ssh")).unwrap();
+    let _key = write_named_keypair(&home.join(".ssh"), "id_ed25519");
+
+    let init_out = Command::new(bin)
+        .arg("--vault")
+        .arg(vault_path)
+        .arg("init")
+        .arg("--recipient-key")
+        .arg(home.join(".ssh").join("id_ed25519.pub"))
+        .env("HOME", home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run init");
+    assert!(
+        init_out.status.success(),
+        "init failed: {}",
+        String::from_utf8_lossy(&init_out.stderr)
+    );
+
+    let set_out = Command::new(bin)
+        .arg("--vault")
+        .arg(vault_path)
+        .arg("set")
+        .arg(profile)
+        .arg("DUMMY")
+        .arg("--value")
+        .arg("value")
+        .env("HOME", home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run set");
+    assert!(
+        set_out.status.success(),
+        "set failed: {}",
+        String::from_utf8_lossy(&set_out.stderr)
+    );
+}
+
 /// Prove the `age` roundtrip works without invoking the binary. Keeps CI
 /// passing even when the binary hasn't been built yet (e.g. `cargo test
 /// --no-run` scenarios).
@@ -669,4 +713,147 @@ fn binary_shims_rename_updates_binding_and_regenerates_shims() {
     assert!(shim.contains("profile: bedrock"));
     assert!(shim.contains("command: bedrock"));
     assert!(shim.contains("exec sshenv run \"bedrock\" -- \"bedrock\" \"$@\""));
+}
+
+#[cfg(unix)]
+fn wait_for_stdout_contains(command: &mut Command, needle: &str) -> bool {
+    for _ in 0..40 {
+        let output = command.output().expect("run polling command");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if output.status.success() && stdout.contains(needle) {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    false
+}
+
+#[cfg(unix)]
+#[test]
+fn binary_sessions_list_and_kill_tracked_run() {
+    let bin = cargo_bin();
+    if !bin.exists() {
+        eprintln!("skipping: {} does not exist", bin.display());
+        return;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let vault_path = home.join(".sshenv").join("vault");
+    let sessions_path = dir.path().join("sessions.toml");
+    init_vault_with_profile(&bin, &home, &vault_path, "tracked");
+
+    let mut child = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("run")
+        .arg("tracked")
+        .arg("--")
+        .arg("/bin/sleep")
+        .arg("30")
+        .env("HOME", &home)
+        .env("SSHENV_SESSIONS", &sessions_path)
+        .spawn()
+        .expect("spawn tracked run");
+
+    let pid_text = child.id().to_string();
+    let mut list_cmd = Command::new(&bin);
+    list_cmd
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("sessions")
+        .arg("list")
+        .arg("--profile")
+        .arg("tracked")
+        .env("HOME", &home)
+        .env("SSHENV_SESSIONS", &sessions_path);
+    assert!(
+        wait_for_stdout_contains(&mut list_cmd, &pid_text),
+        "tracked session did not appear in sessions list"
+    );
+
+    let kill_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("sessions")
+        .arg("kill")
+        .arg("tracked")
+        .arg("--signal")
+        .arg("kill")
+        .env("HOME", &home)
+        .env("SSHENV_SESSIONS", &sessions_path)
+        .output()
+        .expect("run sessions kill");
+    assert!(
+        kill_out.status.success(),
+        "sessions kill failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&kill_out.stdout),
+        String::from_utf8_lossy(&kill_out.stderr)
+    );
+
+    for _ in 0..40 {
+        if child.try_wait().unwrap().is_some() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    child.kill().ok();
+    panic!("tracked child was not killed by sessions kill");
+}
+
+#[cfg(unix)]
+#[test]
+fn binary_run_incognito_is_not_tracked() {
+    let bin = cargo_bin();
+    if !bin.exists() {
+        eprintln!("skipping: {} does not exist", bin.display());
+        return;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let vault_path = home.join(".sshenv").join("vault");
+    let sessions_path = dir.path().join("sessions.toml");
+    init_vault_with_profile(&bin, &home, &vault_path, "hidden");
+
+    let mut child = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("run")
+        .arg("--incognito")
+        .arg("hidden")
+        .arg("--")
+        .arg("/bin/sleep")
+        .arg("30")
+        .env("HOME", &home)
+        .env("SSHENV_SESSIONS", &sessions_path)
+        .spawn()
+        .expect("spawn incognito run");
+
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    let list_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("sessions")
+        .arg("list")
+        .arg("--profile")
+        .arg("hidden")
+        .env("HOME", &home)
+        .env("SSHENV_SESSIONS", &sessions_path)
+        .output()
+        .expect("run sessions list");
+    child.kill().ok();
+    child.wait().ok();
+
+    assert!(
+        list_out.status.success(),
+        "sessions list failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&list_out.stdout),
+        String::from_utf8_lossy(&list_out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&list_out.stdout);
+    assert!(
+        !stdout.contains("hidden"),
+        "incognito run should not be listed: {stdout}"
+    );
 }

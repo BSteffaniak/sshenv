@@ -60,6 +60,7 @@ rpassword = { version = "7", default-features = false }
 dirs = { version = "6", default-features = false }
 hex = { version = "0.4", default-features = false, features = ["std"] }
 tempfile = { version = "3", default-features = false }
+libc = { version = "0.2", default-features = false }
 proptest = { version = "1", default-features = false, features = ["std"] }
 ssh-key = { version = "0.6", default-features = false, features = [
   "std",

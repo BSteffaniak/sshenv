@@ -6,10 +6,12 @@
 pub mod commands;
 pub mod identity;
 pub mod picker;
+pub mod process;
 pub mod pubkey;
+pub mod session_registry;
 
 use anyhow::Result;
-use sshenv_cli_models::{Cli, Command, ShimsCommand};
+use sshenv_cli_models::{Cli, Command, SessionsCommand, ShimsCommand};
 
 /// Dispatch a parsed [`Cli`] to the appropriate command handler.
 ///
@@ -36,6 +38,11 @@ pub fn run(cli: Cli) -> Result<()> {
 
         Command::Run(args) => commands::run::run(&ctx, args),
         Command::Export(args) => commands::export::run(&ctx, args),
+
+        Command::Sessions(sub) => match sub {
+            SessionsCommand::List(args) => commands::sessions::list(&ctx, args),
+            SessionsCommand::Kill(args) => commands::sessions::kill(&ctx, args),
+        },
 
         Command::Shims(sub) => match sub {
             ShimsCommand::Bind(args) => commands::shims::bind(&ctx, args),

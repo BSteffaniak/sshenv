@@ -1788,13 +1788,16 @@ dependencies = [
  "anyhow",
  "clap",
  "dirs",
+ "libc",
  "rand_core 0.6.4",
  "rpassword",
+ "serde",
  "ssh-key",
  "sshenv_cli_models",
  "sshenv_shims",
  "sshenv_vault",
  "tempfile",
+ "toml 0.8.23",
  "zeroize",
 ]
 

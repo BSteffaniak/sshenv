@@ -16,7 +16,8 @@ reporting contact.
    non-interactive wrappers can skip that path entirely.
 3. **Leakage via parent shell environment.** `sshenv run` uses `execve`
    semantics: the env is built for the child only. The parent shell's env
-   is unmodified.
+   is unmodified. By default, `run` writes non-secret session metadata
+   before `execve`; use `--incognito` to skip that registry entry.
 4. **Plaintext leftovers.** No temp files are written containing any
    plaintext secret. `sshenv edit` is intentionally not provided in v1 to
    avoid introducing such a temp file.
@@ -65,6 +66,19 @@ data key. Removing a recipient deletes their wrapped copy. **Past
 decrypts they performed are not revoked** — the data key has not
 changed. To revoke past access, rotate the data key (planned).
 
+## Session registry security considerations
+
+The session registry (`~/.sshenv/sessions.toml`, or `$SSHENV_SESSIONS`) is
+plaintext local state used only for listing and signaling tracked `run`
+executions. It contains profile names, vault path, PID, a process-start
+identity token, timestamp, and command name. It never contains env var
+names or values.
+
+`sshenv sessions kill` verifies the PID still has the recorded
+process-start token before signaling it, so a stale record should not kill
+an unrelated process after PID reuse. Records that cannot be verified are
+garbage-collected or skipped rather than signaled.
+
 ## Shim security considerations
 
 Shims are `sh` scripts in `~/.sshenv/bin/`. They:
@@ -82,7 +96,8 @@ Shims are `sh` scripts in `~/.sshenv/bin/`. They:
 ## Permissions enforcement
 
 On every vault write, after `rename(2)` we `chmod 0600`. On every
-bindings-file write, we `chmod 0644`.
+bindings-file write, we `chmod 0644`. On every sessions-file write, we
+`chmod 0600`.
 
 If the vault file exists but has unexpected permissions, `sshenv
 doctor` warns; we do not refuse to operate because the user may have

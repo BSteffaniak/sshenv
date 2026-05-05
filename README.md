@@ -75,7 +75,12 @@ sshenv rm-profile <profile>
 
 # Execution
 sshenv run <profile> -- <command> [args...]
+sshenv run --incognito <profile> -- <command>      # skip session tracking
 sshenv export <profile>                            # prints `export VAR=value` lines
+
+# Sessions (tracked `sshenv run` executions for the current vault)
+sshenv sessions list [--profile <profile>]
+sshenv sessions kill <profile> [--signal term|int|hup|kill]  # top-level tracked PIDs only
 
 # Shims (auto-sync after bind/unbind)
 sshenv shims bind <profile> --command <name>
@@ -87,7 +92,7 @@ sshenv shims dir
 sshenv shims path
 ```
 
-Environment variables: `SSHENV_VAULT`, `SSHENV_SHIM_DIR`, `SSHENV_BINDINGS`.
+Environment variables: `SSHENV_VAULT`, `SSHENV_SHIM_DIR`, `SSHENV_BINDINGS`, `SSHENV_SESSIONS`.
 
 ## Embedding sshenv in other apps
 

@@ -36,6 +36,14 @@ Tiny `sh` scripts, one per bound command. Each shim execs
 `sshenv run <profile> -- <command>`. Put `~/.sshenv/bin` at the front of
 `$PATH` and shim-bound commands transparently get their secrets.
 
+### Sessions (`~/.sshenv/sessions.toml`)
+
+Local per-host plaintext orchestration state for tracked `sshenv run`
+executions. Records contain profile name, vault path, PID,
+platform-specific process-start token, start timestamp, and command name.
+They do not contain secret values. `sshenv run --incognito ...` skips this
+registry.
+
 ## Flows
 
 ### `sshenv init --recipient-key KEY`
@@ -72,8 +80,31 @@ the ability to decrypt — classic asymmetric recipient model. Rotation
 1. Unwrap data key.
 2. Decrypt payload.
 3. Collect env vars for `PROFILE`.
-4. `execve(cmd, argv, env)` — the child replaces the sshenv process.
-   Parent shell never saw the secret.
+4. Unless `--incognito` was passed, record the current PID plus a
+   platform-specific process-start token in `sessions.toml`.
+5. `execve(cmd, argv, env)` — the child replaces the sshenv process while
+   keeping the same PID. Parent shell never saw the secret.
+
+### `sshenv sessions list [--profile PROFILE]`
+
+1. Lock and load `sessions.toml`.
+2. Drop stale records whose PID no longer matches the recorded
+   process-start token.
+3. Print live records for the current vault, optionally filtered by
+   profile.
+
+### `sshenv sessions kill PROFILE`
+
+1. Lock and load `sessions.toml`.
+2. Drop stale records whose PID no longer matches the recorded
+   process-start token.
+3. For records matching the current vault and profile, re-verify the PID
+   still has the recorded process-start token.
+4. Send the requested signal (`TERM` by default).
+
+This targets the tracked top-level exec PID only. If a command daemonizes,
+forks workers, or otherwise leaves descendants after that PID exits, those
+processes are not tracked by the v1 session registry.
 
 ### `sshenv shims bind PROFILE --command CMD`
 

@@ -7,6 +7,7 @@ use sshenv_cli_models::RunArgs;
 use sshenv_shims::{load_bindings_merged, resolve_shim_dir};
 
 use crate::commands::{Context as CmdContext, load_and_unlock};
+use crate::session_registry;
 
 pub fn run(ctx: &CmdContext, args: RunArgs) -> Result<()> {
     if args.command.is_empty() {
@@ -33,6 +34,23 @@ pub fn run(ctx: &CmdContext, args: RunArgs) -> Result<()> {
     // would again hit the shim.
     let shim_dir = current_shim_dir();
     let target = resolve_command_skipping_shim_dir(cmd_name, &shim_dir)?;
+
+    if !args.incognito {
+        let tracked = session_registry::register_current_process(
+            &args.profile,
+            &ctx.vault_path,
+            Path::new(cmd_name)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or(cmd_name),
+        )
+        .context("failed to record tracked session; use --incognito to run without tracking")?;
+        if !tracked {
+            eprintln!(
+                "warning: this platform cannot safely verify process identity; running untracked"
+            );
+        }
+    }
 
     let mut child = Command::new(&target);
     child.args(cmd_args);

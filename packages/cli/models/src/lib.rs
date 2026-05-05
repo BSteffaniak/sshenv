@@ -4,7 +4,7 @@
 
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 
 /// SSH-key-backed encrypted vault for environment variables.
 #[derive(Debug, Parser)]
@@ -61,6 +61,10 @@ pub enum Command {
     Run(RunArgs),
     /// Print `export VAR=value` lines for a profile to stdout.
     Export(ExportArgs),
+
+    /// List or signal tracked `sshenv run` executions.
+    #[command(subcommand)]
+    Sessions(SessionsCommand),
 
     /// Manage PATH shims.
     #[command(subcommand)]
@@ -146,6 +150,10 @@ pub struct RenameProfileArgs {
 
 #[derive(Debug, clap::Args)]
 pub struct RunArgs {
+    /// Do not add this execution to the local session registry.
+    #[arg(long)]
+    pub incognito: bool,
+
     pub profile: String,
     /// Command and its arguments. Use `--` to separate from sshenv's own
     /// flags.
@@ -156,6 +164,38 @@ pub struct RunArgs {
 #[derive(Debug, clap::Args)]
 pub struct ExportArgs {
     pub profile: String,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SessionsCommand {
+    /// List tracked live executions for the current vault.
+    List(SessionsListArgs),
+    /// Send a signal to tracked live executions for a profile in the current vault.
+    Kill(SessionsKillArgs),
+}
+
+#[derive(Debug, clap::Args)]
+pub struct SessionsListArgs {
+    /// Only show sessions for this profile.
+    #[arg(long)]
+    pub profile: Option<String>,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct SessionsKillArgs {
+    /// Profile whose tracked executions should receive the signal.
+    pub profile: String,
+    /// Signal to send.
+    #[arg(long, value_enum, default_value_t = SessionSignal::Term)]
+    pub signal: SessionSignal,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum SessionSignal {
+    Term,
+    Int,
+    Hup,
+    Kill,
 }
 
 #[derive(Debug, Subcommand)]
