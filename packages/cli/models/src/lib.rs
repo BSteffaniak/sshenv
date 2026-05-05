@@ -183,8 +183,14 @@ pub struct SessionsListArgs {
 
 #[derive(Debug, clap::Args)]
 pub struct SessionsKillArgs {
+    /// Kill tracked executions for all profiles in the current vault.
+    #[arg(long, conflicts_with = "profile")]
+    pub all: bool,
+
     /// Profile whose tracked executions should receive the signal.
-    pub profile: String,
+    #[arg(required_unless_present = "all")]
+    pub profile: Option<String>,
+
     /// Signal to send.
     #[arg(long, value_enum, default_value_t = SessionSignal::Term)]
     pub signal: SessionSignal,

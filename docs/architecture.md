@@ -93,13 +93,14 @@ the ability to decrypt — classic asymmetric recipient model. Rotation
 3. Print live records for the current vault, optionally filtered by
    profile.
 
-### `sshenv sessions kill PROFILE`
+### `sshenv sessions kill PROFILE` / `sshenv sessions kill --all`
 
 1. Lock and load `sessions.toml`.
 2. Drop stale records whose PID no longer matches the recorded
    process-start token.
-3. For records matching the current vault and profile, re-verify the PID
-   still has the recorded process-start token.
+3. For records matching the current vault and either the requested profile
+   or `--all`, re-verify the PID still has the recorded process-start
+   token.
 4. Send the requested signal (`TERM` by default).
 
 This targets the tracked top-level exec PID only. If a command daemonizes,

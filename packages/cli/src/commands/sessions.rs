@@ -69,6 +69,7 @@ pub fn list(ctx: &CmdContext, args: SessionsListArgs) -> Result<()> {
 pub fn kill(ctx: &CmdContext, args: SessionsKillArgs) -> Result<()> {
     let vault = session_registry::vault_id(&ctx.vault_path);
     let signal = signal_from_arg(args.signal);
+    let scope = kill_scope(&args);
 
     let mut registry = session_registry::open_locked()?;
     let removed = registry.gc_stale();
@@ -80,12 +81,16 @@ pub fn kill(ctx: &CmdContext, args: SessionsKillArgs) -> Result<()> {
         .data
         .sessions
         .iter()
-        .filter(|session| session.vault == vault && session.profile == args.profile)
+        .filter(|session| session.vault == vault)
+        .filter(|session| match &args.profile {
+            Some(profile) => session.profile == *profile,
+            None => args.all,
+        })
         .cloned()
         .collect();
 
     if matching.is_empty() {
-        eprintln!("No tracked live sessions for profile '{}'.", args.profile);
+        eprintln!("No tracked live sessions {scope}.");
         return Ok(());
     }
 
@@ -108,14 +113,20 @@ pub fn kill(ctx: &CmdContext, args: SessionsKillArgs) -> Result<()> {
     }
 
     eprintln!(
-        "Sent {} to {signaled} tracked session(s) for profile '{}'.",
-        signal.name(),
-        args.profile
+        "Sent {} to {signaled} tracked session(s) {scope}.",
+        signal.name()
     );
     if skipped > 0 {
         eprintln!("Skipped {skipped} unverifiable or stale session record(s).");
     }
     Ok(())
+}
+
+fn kill_scope(args: &SessionsKillArgs) -> String {
+    match &args.profile {
+        Some(profile) => format!("for profile '{profile}'"),
+        None => "for all profiles in the current vault".to_string(),
+    }
 }
 
 const fn signal_from_arg(signal: SessionSignal) -> Signal {

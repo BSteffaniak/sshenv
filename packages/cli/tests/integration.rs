@@ -857,3 +857,119 @@ fn binary_run_incognito_is_not_tracked() {
         "incognito run should not be listed: {stdout}"
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn binary_sessions_kill_all_targets_current_vault() {
+    let bin = cargo_bin();
+    if !bin.exists() {
+        eprintln!("skipping: {} does not exist", bin.display());
+        return;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let vault_path = home.join(".sshenv").join("vault");
+    let sessions_path = dir.path().join("sessions.toml");
+    init_vault_with_profile(&bin, &home, &vault_path, "one");
+
+    let set_two = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("set")
+        .arg("two")
+        .arg("DUMMY")
+        .arg("--value")
+        .arg("value")
+        .env("HOME", &home)
+        .output()
+        .expect("set second profile");
+    assert!(
+        set_two.status.success(),
+        "set second profile failed: {}",
+        String::from_utf8_lossy(&set_two.stderr)
+    );
+
+    let mut child_one = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("run")
+        .arg("one")
+        .arg("--")
+        .arg("/bin/sleep")
+        .arg("30")
+        .env("HOME", &home)
+        .env("SSHENV_SESSIONS", &sessions_path)
+        .spawn()
+        .expect("spawn profile one run");
+    let mut child_two = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("run")
+        .arg("two")
+        .arg("--")
+        .arg("/bin/sleep")
+        .arg("30")
+        .env("HOME", &home)
+        .env("SSHENV_SESSIONS", &sessions_path)
+        .spawn()
+        .expect("spawn profile two run");
+
+    let pid_one = child_one.id().to_string();
+    let pid_two = child_two.id().to_string();
+    let mut both_listed = false;
+    for _ in 0..40 {
+        let list_out = Command::new(&bin)
+            .arg("--vault")
+            .arg(&vault_path)
+            .arg("sessions")
+            .arg("list")
+            .env("HOME", &home)
+            .env("SSHENV_SESSIONS", &sessions_path)
+            .output()
+            .expect("run sessions list");
+        let stdout = String::from_utf8_lossy(&list_out.stdout);
+        if list_out.status.success() && stdout.contains(&pid_one) && stdout.contains(&pid_two) {
+            both_listed = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(
+        both_listed,
+        "both tracked sessions did not appear in sessions list"
+    );
+
+    let kill_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("sessions")
+        .arg("kill")
+        .arg("--all")
+        .arg("--signal")
+        .arg("kill")
+        .env("HOME", &home)
+        .env("SSHENV_SESSIONS", &sessions_path)
+        .output()
+        .expect("run sessions kill --all");
+    assert!(
+        kill_out.status.success(),
+        "sessions kill --all failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&kill_out.stdout),
+        String::from_utf8_lossy(&kill_out.stderr)
+    );
+
+    let mut one_exited = false;
+    let mut two_exited = false;
+    for _ in 0..40 {
+        one_exited |= child_one.try_wait().unwrap().is_some();
+        two_exited |= child_two.try_wait().unwrap().is_some();
+        if one_exited && two_exited {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    child_one.kill().ok();
+    child_two.kill().ok();
+    panic!("kill --all did not terminate both tracked children");
+}

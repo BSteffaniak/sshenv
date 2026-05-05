@@ -81,6 +81,7 @@ sshenv export <profile>                            # prints `export VAR=value` l
 # Sessions (tracked `sshenv run` executions for the current vault)
 sshenv sessions list [--profile <profile>]
 sshenv sessions kill <profile> [--signal term|int|hup|kill]  # top-level tracked PIDs only
+sshenv sessions kill --all [--signal term|int|hup|kill]       # all profiles in current vault
 
 # Shims (auto-sync after bind/unbind)
 sshenv shims bind <profile> --command <name>
