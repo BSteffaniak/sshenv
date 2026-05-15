@@ -21,7 +21,10 @@ reporting contact.
 4. **Plaintext leftovers.** No temp files are written containing any
    plaintext secret. `sshenv edit` is intentionally not provided in v1 to
    avoid introducing such a temp file.
-5. **Tamper detection.** AES-256-SIV with AAD-bound headers ensures that
+5. **Runtime dumps.** Default CLI builds disable core dumps before `run`
+   decrypts and injects secrets; Linux builds also request non-dumpable
+   process state where supported.
+6. **Tamper detection.** AES-256-SIV with AAD-bound headers ensures that
    a modified vault body fails to decrypt.
 
 ### What `sshenv` does not protect against
@@ -32,8 +35,9 @@ reporting contact.
    unlock factor.
 3. **A compromised SSH private key.** Same.
 4. **Memory-forensic attacks against a running process.** `zeroize`
-   scrubs known buffers on clean drops, but a hostile memory dump
-   captures anything live.
+   scrubs known buffers on clean drops, and runtime hardening reduces common
+   dump paths, but a sufficiently privileged hostile memory dump captures
+   anything live.
 5. **A user who runs `sshenv show <profile>` in a terminal that logs
    output.** Output hits stdout; what happens next is the user's
    responsibility. A stderr warning is printed before values.

@@ -8,14 +8,21 @@ repository.workspace = true
 version.workspace    = true
 
 [features]
-default             = ["ssh-hardening", "rekey", "passphrase-factor", "rollback-protection"]
-device-seal         = ["sshenv_vault/device-seal"]
-device-seal-file    = ["device-seal", "sshenv_vault/device-seal-file"]
-macos-keychain      = ["device-seal", "sshenv_vault/macos-keychain"]
-passphrase-factor   = ["sshenv_vault/passphrase-factor"]
-rekey               = ["sshenv_vault/rekey"]
+default = [
+    "ssh-hardening",
+    "rekey",
+    "passphrase-factor",
+    "rollback-protection",
+    "runtime-hardening",
+]
+device-seal = ["sshenv_vault/device-seal"]
+device-seal-file = ["device-seal", "sshenv_vault/device-seal-file"]
+macos-keychain = ["device-seal", "sshenv_vault/macos-keychain"]
+passphrase-factor = ["sshenv_vault/passphrase-factor"]
+rekey = ["sshenv_vault/rekey"]
 rollback-protection = []
-ssh-hardening       = ["sshenv_vault/ssh-hardening"]
+runtime-hardening = []
+ssh-hardening = ["sshenv_vault/ssh-hardening"]
 
 [[bin]]
 name = "sshenv"

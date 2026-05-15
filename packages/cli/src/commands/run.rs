@@ -10,6 +10,8 @@ use crate::commands::{Context as CmdContext, load_and_unlock};
 use crate::session_registry;
 
 pub fn run(ctx: &CmdContext, args: RunArgs) -> Result<()> {
+    apply_runtime_hardening()?;
+
     if args.command.is_empty() {
         bail!("no command provided; usage: sshenv run <profile> -- <cmd> [args...]");
     }
@@ -133,6 +135,17 @@ fn resolve_command_skipping_shim_dir_in(
          Aborting to prevent infinite shim recursion.",
         shim_dir.display()
     );
+}
+
+#[cfg(feature = "runtime-hardening")]
+fn apply_runtime_hardening() -> Result<()> {
+    crate::runtime_hardening::apply_for_secret_runtime()
+        .context("failed to apply runtime hardening")
+}
+
+#[cfg(not(feature = "runtime-hardening"))]
+fn apply_runtime_hardening() -> Result<()> {
+    Ok(())
 }
 
 #[cfg(unix)]

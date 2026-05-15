@@ -32,6 +32,9 @@
   them; no temp file is ever written.
 - **In memory**: wrapped in `Zeroizing` where practical. Drops scrub the
   memory. Heap reallocation during processing is the usual Rust caveat.
+- **Runtime hardening**: default CLI builds disable core dumps before `run`
+  decrypts and injects secrets. Linux builds also request non-dumpable process
+  state where supported.
 
 ## Vault file format
 

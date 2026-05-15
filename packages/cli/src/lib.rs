@@ -10,6 +10,8 @@ pub mod process;
 pub mod pubkey;
 #[cfg(feature = "rollback-protection")]
 pub mod rollback;
+#[cfg(feature = "runtime-hardening")]
+pub mod runtime_hardening;
 pub mod session_registry;
 
 use anyhow::Result;

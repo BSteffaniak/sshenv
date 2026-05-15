@@ -28,7 +28,8 @@ encrypted vault file.
   factor.
 - To run a command with a profile's env loaded, `sshenv run <profile> --
 <cmd> [args...]`. The command's env gets the profile's vars; your parent
-  shell never sees them.
+  shell never sees them. Default builds apply best-effort runtime hardening
+  such as disabling core dumps before injection.
 - To make invocation ergonomic, `sshenv shims bind <profile> --command <name>`
   writes a shim script at `~/.sshenv/bin/<name>` that execs
   `sshenv run <profile> -- <name> "$@"`. Add `~/.sshenv/bin` to the front of

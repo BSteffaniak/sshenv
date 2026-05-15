@@ -296,6 +296,10 @@ fn print_feature_status() {
         device_seal_backend_status(),
     );
     println!("hardware keys:  planned");
+    println!(
+        "runtime:       {}",
+        enabled_label(cfg!(feature = "runtime-hardening"))
+    );
     println!("threshold:      planned");
     println!(
         "rollback:       {}",
