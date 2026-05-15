@@ -61,6 +61,9 @@ rekey operations can preserve the intended recipient set safely.
   passphrase factor before payload encryption/decryption.
 - **Passphrase factor**: `argon2 0.5` using Argon2id. This is an opt-in v2
   factor; it requires both an authorized SSH recipient and the passphrase.
+- **Device-seal factor**: optional v2 factor plumbing. The macOS Keychain
+  backend stores a random factor in Keychain. The local-file backend is for
+  development/testing only and is not theft-resistant.
 - **RNG for data key**: `OsRng` at `init` time.
 
 ## Recipient semantics

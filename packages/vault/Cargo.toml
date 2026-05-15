@@ -11,6 +11,7 @@ version.workspace    = true
 default           = ["ssh-hardening", "rekey", "passphrase-factor"]
 device-seal       = []
 device-seal-file  = ["device-seal"]
+macos-keychain    = ["device-seal"]
 passphrase-factor = ["argon2"]
 rekey             = []
 ssh-hardening     = []

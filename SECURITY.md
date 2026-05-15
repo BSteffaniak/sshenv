@@ -69,6 +69,9 @@ private key (via `ssh-agent` or an on-disk identity) can unwrap.
 - **Argon2id passphrase factor** for opt-in v2 vaults. When enabled, the
   payload encryption key is derived from both the SSH-unwrapped data key and
   the passphrase-derived factor key, so either factor alone is insufficient.
+- **Device-seal factor** for opt-in v2 vaults. macOS builds can use Keychain;
+  the local-file backend exists only for development/testing and is not
+  theft-resistant.
 - **CSPRNG** (`OsRng` via `rand_core`) for the data key at `init` time.
 
 ## Recipient management
