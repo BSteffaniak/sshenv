@@ -66,7 +66,7 @@ pub fn load_and_unlock(vault_path: &Path) -> Result<(Vault, DataKey)> {
         ));
     }
     let requires_passphrase = ciphertext_requires_passphrase(&ciphertext);
-    let passphrase = passphrase_for_ciphertext(&ciphertext)?;
+    let passphrase = passphrase_for_ciphertext(&ciphertext, None)?;
     Vault::unlock_with_passphrase(
         ciphertext,
         &identities,
@@ -110,6 +110,21 @@ pub fn unlock_ciphertext(
     ciphertext: CiphertextVault,
     recipient_fingerprints: &HashSet<String>,
 ) -> Result<(Vault, DataKey)> {
+    unlock_ciphertext_with_passphrase(ciphertext, recipient_fingerprints, None)
+}
+
+/// Unlock a previously-loaded ciphertext vault, optionally providing an
+/// explicit sshenv passphrase-factor value.
+///
+/// # Errors
+///
+/// Fails with a detailed error if no key matches, decryption fails, or a
+/// required passphrase factor is unavailable.
+pub fn unlock_ciphertext_with_passphrase(
+    ciphertext: CiphertextVault,
+    recipient_fingerprints: &HashSet<String>,
+    explicit_passphrase: Option<&str>,
+) -> Result<(Vault, DataKey)> {
     let identities = load_identities_for_vault(recipient_fingerprints)?;
     if identities.is_empty() {
         return Err(error_no_identity_unlocked_detailed(
@@ -118,7 +133,7 @@ pub fn unlock_ciphertext(
         ));
     }
     let requires_passphrase = ciphertext_requires_passphrase(&ciphertext);
-    let passphrase = passphrase_for_ciphertext(&ciphertext)?;
+    let passphrase = passphrase_for_ciphertext(&ciphertext, explicit_passphrase)?;
     Vault::unlock_with_passphrase(
         ciphertext,
         &identities,
@@ -136,9 +151,16 @@ pub fn unlock_ciphertext(
     })
 }
 
-fn passphrase_for_ciphertext(ciphertext: &CiphertextVault) -> Result<Option<Zeroizing<String>>> {
+fn passphrase_for_ciphertext(
+    ciphertext: &CiphertextVault,
+    explicit_passphrase: Option<&str>,
+) -> Result<Option<Zeroizing<String>>> {
     if !ciphertext_requires_passphrase(ciphertext) {
         return Ok(None);
+    }
+
+    if let Some(value) = explicit_passphrase {
+        return Ok(Some(Zeroizing::new(value.to_string())));
     }
 
     if let Ok(value) = std::env::var("SSHENV_PASSPHRASE") {

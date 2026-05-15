@@ -61,6 +61,8 @@ sshenv init [--recipient-key <path-or-pubkey-line>] [--vault <path>]
 sshenv doctor
 sshenv security status
 sshenv security enable-passphrase [--passphrase <v>]
+sshenv security change-passphrase [--old-passphrase <v>] [--new-passphrase <v>]
+sshenv security disable-passphrase [--passphrase <v>]
 sshenv migrate-vault --to v2 [--recipient-key <path-or-pubkey-line>]...
 sshenv rotate-key [--recipient-key <path-or-pubkey-line>]...
 

@@ -108,11 +108,32 @@ pub enum SecurityCommand {
     Status,
     /// Require a passphrase factor in addition to SSH recipient unlock.
     EnablePassphrase(EnablePassphraseArgs),
+    /// Change the existing sshenv vault passphrase factor.
+    ChangePassphrase(ChangePassphraseArgs),
+    /// Remove the existing sshenv vault passphrase factor.
+    DisablePassphrase(DisablePassphraseArgs),
 }
 
 #[derive(Debug, clap::Args)]
 pub struct EnablePassphraseArgs {
     /// Passphrase value. If omitted, read from a hidden prompt.
+    #[arg(long)]
+    pub passphrase: Option<String>,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct ChangePassphraseArgs {
+    /// Current passphrase. If omitted, read from `$SSHENV_PASSPHRASE` or a hidden prompt.
+    #[arg(long)]
+    pub old_passphrase: Option<String>,
+    /// New passphrase. If omitted, read from a hidden prompt.
+    #[arg(long)]
+    pub new_passphrase: Option<String>,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct DisablePassphraseArgs {
+    /// Current passphrase. If omitted, read from `$SSHENV_PASSPHRASE` or a hidden prompt.
     #[arg(long)]
     pub passphrase: Option<String>,
 }

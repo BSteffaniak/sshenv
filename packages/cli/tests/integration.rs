@@ -444,6 +444,70 @@ fn binary_passphrase_factor_requires_passphrase_after_enable() {
         String::from_utf8_lossy(&show_out.stderr)
     );
     assert!(String::from_utf8_lossy(&show_out.stdout).contains("DUMMY=value"));
+
+    let change_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("security")
+        .arg("change-passphrase")
+        .arg("--old-passphrase")
+        .arg("correct horse battery staple")
+        .arg("--new-passphrase")
+        .arg("new horse battery staple")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run security change-passphrase");
+    assert!(
+        change_out.status.success(),
+        "change-passphrase failed: {}",
+        String::from_utf8_lossy(&change_out.stderr)
+    );
+
+    let old_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("show")
+        .arg("myprofile")
+        .env("HOME", &home)
+        .env("SSHENV_PASSPHRASE", "correct horse battery staple")
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run show with old passphrase");
+    assert!(!old_out.status.success());
+
+    let disable_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("security")
+        .arg("disable-passphrase")
+        .arg("--passphrase")
+        .arg("new horse battery staple")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run security disable-passphrase");
+    assert!(
+        disable_out.status.success(),
+        "disable-passphrase failed: {}",
+        String::from_utf8_lossy(&disable_out.stderr)
+    );
+
+    let disabled_show_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("show")
+        .arg("myprofile")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .env_remove("SSHENV_PASSPHRASE")
+        .output()
+        .expect("run show after disabling passphrase");
+    assert!(
+        disabled_show_out.status.success(),
+        "show failed after disabling passphrase: {}",
+        String::from_utf8_lossy(&disabled_show_out.stderr)
+    );
 }
 
 #[test]

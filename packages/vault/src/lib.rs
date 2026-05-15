@@ -449,22 +449,62 @@ impl Vault {
     /// already configured.
     #[cfg(feature = "passphrase-factor")]
     pub fn enable_passphrase_factor(&mut self, passphrase: &str) -> Result<()> {
-        if self.header.version != VERSION_V2 {
-            return Err(anyhow!(
-                "passphrase factors require v2; run `sshenv migrate-vault --to v2` first"
-            ));
+        ensure_v2_for_passphrase(self.header.version)?;
+        if self.passphrase_factor_enabled() {
+            return Err(anyhow!("passphrase factor is already enabled"));
         }
+        self.add_or_replace_passphrase_factor(passphrase)
+    }
+
+    /// Change the existing passphrase factor to a new passphrase.
+    ///
+    /// The vault must already be unlocked with the old passphrase.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the vault is not v2 or no passphrase factor is
+    /// enabled.
+    #[cfg(feature = "passphrase-factor")]
+    pub fn change_passphrase_factor(&mut self, new_passphrase: &str) -> Result<()> {
+        ensure_v2_for_passphrase(self.header.version)?;
+        if !self.remove_passphrase_factor_metadata() {
+            return Err(anyhow!("passphrase factor is not enabled"));
+        }
+        self.add_or_replace_passphrase_factor(new_passphrase)
+    }
+
+    /// Disable the existing passphrase factor.
+    ///
+    /// The vault must already be unlocked with the current passphrase. The
+    /// next save will re-encrypt the payload using only the SSH-unwrapped data
+    /// key.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the vault is not v2 or no passphrase factor is
+    /// enabled.
+    #[cfg(feature = "passphrase-factor")]
+    pub fn disable_passphrase_factor(&mut self) -> Result<()> {
+        ensure_v2_for_passphrase(self.header.version)?;
+        if !self.remove_passphrase_factor_metadata() {
+            return Err(anyhow!("passphrase factor is not enabled"));
+        }
+        self.payload_key_factor = None;
+        Ok(())
+    }
+
+    /// True when this vault metadata requires a passphrase factor.
+    #[cfg(feature = "passphrase-factor")]
+    #[must_use]
+    pub fn passphrase_factor_enabled(&self) -> bool {
+        metadata_has_passphrase_factor(self.policy_metadata.as_ref())
+    }
+
+    #[cfg(feature = "passphrase-factor")]
+    fn add_or_replace_passphrase_factor(&mut self, passphrase: &str) -> Result<()> {
         let metadata = self
             .policy_metadata
             .get_or_insert_with(|| policy_metadata_from_recipients(&self.recipients));
-        if metadata
-            .policies
-            .iter()
-            .flat_map(|policy| &policy.factors)
-            .any(passphrase::is_passphrase_factor)
-        {
-            return Err(anyhow!("passphrase factor is already enabled"));
-        }
         let (factor, factor_key) = passphrase::create_factor(passphrase)?;
         metadata.policies.push(sshenv_vault_models::UnlockPolicyV2 {
             id: "ssh+passphrase".to_string(),
@@ -473,6 +513,29 @@ impl Vault {
         });
         self.payload_key_factor = Some(factor_key);
         Ok(())
+    }
+
+    #[cfg(feature = "passphrase-factor")]
+    fn remove_passphrase_factor_metadata(&mut self) -> bool {
+        let Some(metadata) = &mut self.policy_metadata else {
+            return false;
+        };
+        let mut removed = false;
+        for policy in &mut metadata.policies {
+            let before = policy.factors.len();
+            policy.factors.retain(|factor| {
+                let keep = !passphrase::is_passphrase_factor(factor);
+                if !keep {
+                    removed = true;
+                }
+                keep
+            });
+            removed |= policy.factors.len() < before;
+        }
+        metadata
+            .policies
+            .retain(|policy| !policy.factors.is_empty());
+        removed
     }
 
     /// Attach public key lines to existing recipients without changing their
@@ -607,7 +670,7 @@ fn payload_key_factor_for_metadata(
         .into_iter()
         .flat_map(|metadata| &metadata.policies)
         .flat_map(|policy| &policy.factors)
-        .find(|factor| factor.kind == UnlockFactorKindV2::Passphrase)
+        .find(|factor| passphrase::is_passphrase_factor(factor))
     else {
         return Ok(None);
     };
@@ -633,6 +696,26 @@ fn payload_key_factor_for_metadata(
         ));
     }
     Ok(None)
+}
+
+#[cfg(feature = "passphrase-factor")]
+fn metadata_has_passphrase_factor(metadata: Option<&VaultPolicyMetadataV2>) -> bool {
+    metadata
+        .into_iter()
+        .flat_map(|metadata| &metadata.policies)
+        .flat_map(|policy| &policy.factors)
+        .any(passphrase::is_passphrase_factor)
+}
+
+#[cfg(feature = "passphrase-factor")]
+fn ensure_v2_for_passphrase(version: u8) -> Result<()> {
+    if version == VERSION_V2 {
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "passphrase factors require v2; run `sshenv migrate-vault --to v2` first"
+        ))
+    }
 }
 
 fn payload_aad_for_version(version: u8) -> Result<&'static [u8]> {
@@ -853,9 +936,34 @@ mod tests {
         assert!(Vault::unlock(ct, &identities).is_err());
 
         let ct = Vault::load_ciphertext(&path).expect("load again");
-        let (unlocked, _) =
+        let (mut unlocked, data_key) =
             Vault::unlock_with_passphrase(ct, &identities, Some("correct horse battery staple"))
                 .expect("unlock with passphrase");
+        assert_eq!(
+            unlocked.profiles.get("p").unwrap().get("K").unwrap(),
+            "passphrased"
+        );
+
+        unlocked
+            .change_passphrase_factor("new passphrase")
+            .expect("change passphrase");
+        unlocked.save(&path, &data_key).expect("save changed");
+        let ct = Vault::load_ciphertext(&path).expect("load changed");
+        assert!(
+            Vault::unlock_with_passphrase(ct, &identities, Some("correct horse battery staple"))
+                .is_err()
+        );
+        let ct = Vault::load_ciphertext(&path).expect("load changed again");
+        let (mut unlocked, data_key) =
+            Vault::unlock_with_passphrase(ct, &identities, Some("new passphrase"))
+                .expect("unlock changed passphrase");
+
+        unlocked
+            .disable_passphrase_factor()
+            .expect("disable passphrase");
+        unlocked.save(&path, &data_key).expect("save disabled");
+        let ct = Vault::load_ciphertext(&path).expect("load disabled");
+        let (unlocked, _) = Vault::unlock(ct, &identities).expect("unlock without passphrase");
         assert_eq!(
             unlocked.profiles.get("p").unwrap().get("K").unwrap(),
             "passphrased"

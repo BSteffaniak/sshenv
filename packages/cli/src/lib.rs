@@ -31,6 +31,12 @@ pub fn run(cli: Cli) -> Result<()> {
             SecurityCommand::EnablePassphrase(args) => {
                 commands::security::enable_passphrase(&ctx, args)
             }
+            SecurityCommand::ChangePassphrase(args) => {
+                commands::security::change_passphrase(&ctx, args)
+            }
+            SecurityCommand::DisablePassphrase(args) => {
+                commands::security::disable_passphrase(&ctx, args)
+            }
         },
 
         Command::AddRecipient(args) => commands::recipient::add(&ctx, args),
