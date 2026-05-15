@@ -11,7 +11,7 @@ pub mod pubkey;
 pub mod session_registry;
 
 use anyhow::Result;
-use sshenv_cli_models::{Cli, Command, SessionsCommand, ShimsCommand};
+use sshenv_cli_models::{Cli, Command, SecurityCommand, SessionsCommand, ShimsCommand};
 
 /// Dispatch a parsed [`Cli`] to the appropriate command handler.
 ///
@@ -24,6 +24,9 @@ pub fn run(cli: Cli) -> Result<()> {
     match cli.command {
         Command::Init(args) => commands::init::run(&ctx, args),
         Command::Doctor => commands::doctor::run(&ctx),
+        Command::Security(sub) => match sub {
+            SecurityCommand::Status => commands::security::status(&ctx),
+        },
 
         Command::AddRecipient(args) => commands::recipient::add(&ctx, args),
         Command::ListRecipients(args) => commands::recipient::list(&ctx, args),

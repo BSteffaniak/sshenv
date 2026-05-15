@@ -6,6 +6,7 @@ pub mod init;
 pub mod profile;
 pub mod recipient;
 pub mod run;
+pub mod security;
 pub mod sessions;
 pub mod shims;
 

@@ -14,6 +14,37 @@ use anyhow::{Context, Result, anyhow};
 
 use crate::recipient::fingerprint_from_line;
 
+/// Encryption/security status for a local SSH private key file.
+#[cfg(feature = "ssh-hardening")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrivateKeySecurity {
+    /// The private key is passphrase-encrypted.
+    Encrypted,
+    /// The private key is readable without a passphrase.
+    Unencrypted,
+    /// The key parsed as an SSH identity but uses an unsupported format.
+    Unsupported,
+}
+
+#[cfg(feature = "ssh-hardening")]
+impl PrivateKeySecurity {
+    /// Human-readable status label suitable for CLI diagnostics.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Encrypted => "encrypted",
+            Self::Unencrypted => "unencrypted",
+            Self::Unsupported => "unsupported",
+        }
+    }
+
+    /// True when the key is passphrase-protected.
+    #[must_use]
+    pub const fn is_encrypted(self) -> bool {
+        matches!(self, Self::Encrypted)
+    }
+}
+
 /// Discover SSH private-key file paths in the conventional locations.
 ///
 /// Returns the list in a deterministic order:
@@ -270,11 +301,24 @@ fn try_load_matching(
     }
 }
 
+/// Inspect whether an SSH private key is passphrase-encrypted without
+/// attempting to decrypt it.
+///
+/// # Errors
+///
+/// Returns an error if the file cannot be read or parsed as an SSH identity.
+#[cfg(feature = "ssh-hardening")]
+pub fn inspect_private_key_security(path: &Path) -> Result<PrivateKeySecurity> {
+    let identity = parse_ssh_identity(path)?;
+    Ok(match identity {
+        age::ssh::Identity::Encrypted(_) => PrivateKeySecurity::Encrypted,
+        age::ssh::Identity::Unencrypted(_) => PrivateKeySecurity::Unencrypted,
+        age::ssh::Identity::Unsupported(_) => PrivateKeySecurity::Unsupported,
+    })
+}
+
 fn try_load_identity(path: &Path) -> Result<Option<Box<dyn age::Identity>>> {
-    let content = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
-    let filename = Some(path.display().to_string());
-    let identity = age::ssh::Identity::from_buffer(Cursor::new(&content), filename)
-        .with_context(|| format!("failed to parse {}", path.display()))?;
+    let identity = parse_ssh_identity(path)?;
 
     match identity {
         age::ssh::Identity::Unencrypted(_) | age::ssh::Identity::Unsupported(_) => {
@@ -287,6 +331,13 @@ fn try_load_identity(path: &Path) -> Result<Option<Box<dyn age::Identity>>> {
             Ok(Some(Box::new(decrypted)))
         }
     }
+}
+
+fn parse_ssh_identity(path: &Path) -> Result<age::ssh::Identity> {
+    let content = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
+    let filename = Some(path.display().to_string());
+    age::ssh::Identity::from_buffer(Cursor::new(&content), filename)
+        .with_context(|| format!("failed to parse {}", path.display()))
 }
 
 fn maybe_decrypt_interactively(

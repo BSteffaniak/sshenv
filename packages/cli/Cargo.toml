@@ -1,11 +1,16 @@
 [package]
-name = "sshenv"
-version.workspace = true
-edition.workspace = true
-authors.workspace = true
-license.workspace = true
+authors.workspace    = true
+description          = "SSH-key-backed encrypted vault for environment variables"
+edition.workspace    = true
+license.workspace    = true
+name                 = "sshenv"
 repository.workspace = true
-description = "SSH-key-backed encrypted vault for environment variables"
+version.workspace    = true
+
+[features]
+default       = ["ssh-hardening", "rekey"]
+rekey         = ["sshenv_vault/rekey"]
+ssh-hardening = ["sshenv_vault/ssh-hardening"]
 
 [[bin]]
 name = "sshenv"
@@ -13,30 +18,30 @@ path = "src/main.rs"
 
 [dependencies]
 sshenv_cli_models = { workspace = true }
-sshenv_vault = { workspace = true }
-sshenv_shims = { workspace = true }
+sshenv_shims      = { workspace = true }
+sshenv_vault      = { workspace = true }
 
-age = { workspace = true }
-anyhow = { workspace = true }
-clap = { workspace = true }
+age       = { workspace = true }
+anyhow    = { workspace = true }
+clap      = { workspace = true }
+dirs      = { workspace = true }
+libc      = { workspace = true }
 rpassword = { workspace = true }
-zeroize = { workspace = true }
-dirs = { workspace = true }
-serde = { workspace = true }
-toml = { workspace = true }
-tempfile = { workspace = true }
-libc = { workspace = true }
+serde     = { workspace = true }
+tempfile  = { workspace = true }
+toml      = { workspace = true }
+zeroize   = { workspace = true }
 
 [dev-dependencies]
-ssh-key = { version = "0.6", default-features = false, features = [
-  "std",
-  "alloc",
-  "ed25519",
-  "rand_core",
-] }
 rand_core = { version = "0.6", default-features = false, features = [
-  "std",
-  "getrandom",
+    "std",
+    "getrandom",
+] }
+ssh-key = { version = "0.6", default-features = false, features = [
+    "std",
+    "alloc",
+    "ed25519",
+    "rand_core",
 ] }
 
 [lints]

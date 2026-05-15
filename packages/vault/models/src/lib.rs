@@ -30,8 +30,11 @@ use serde::{Deserialize, Serialize};
 /// Magic bytes at the head of every vault file.
 pub const MAGIC: [u8; 4] = *b"SSHE";
 
-/// Current on-disk format version.
+/// Current stable on-disk format version.
 pub const VERSION: u8 = 1;
+
+/// Planned v2 on-disk format version for policy-based vaults.
+pub const VERSION_V2: u8 = 2;
 
 /// AAD tag used for AES-SIV payload encryption. Binds ciphertext to format
 /// version so a downgrade attack that swaps in an older vault's body is
@@ -50,6 +53,12 @@ pub const DATA_KEY_LEN: usize = 32;
 /// Size of the AES-256-SIV key material, in bytes. AES-SIV uses two keys
 /// (MAC + encryption) which together make 64 bytes for AES-256.
 pub const SIV_KEY_LEN: usize = 64;
+
+/// AAD tag reserved for a future v2 policy metadata block.
+pub const V2_POLICY_AAD: &[u8] = b"sshenv:v2:policy";
+
+/// AAD tag reserved for a future v2 payload block.
+pub const V2_PAYLOAD_AAD: &[u8] = b"sshenv:v2:payload";
 
 /// Errors produced while parsing or building vault structures.
 #[derive(Debug, thiserror::Error)]
@@ -113,6 +122,75 @@ impl RecipientEntry {
     pub const fn wire_len(&self) -> usize {
         2 + self.fingerprint.len() + 4 + self.wrapped_key.len()
     }
+}
+
+/// Skeleton metadata for future v2 policy-based vaults.
+///
+/// This is intentionally not wired into the v1 parser/writer yet. It gives
+/// future hardening work a shared vocabulary while preserving the immutable
+/// v1 format.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VaultPolicyMetadataV2 {
+    /// Alternative unlock policies. Any one successful policy may unlock the
+    /// vault data key.
+    pub policies: Vec<UnlockPolicyV2>,
+    /// Recipient metadata retained so future rekey operations can re-wrap new
+    /// data keys without asking users to re-provide public keys.
+    pub recipients: Vec<RecipientMetadataV2>,
+}
+
+/// One alternative way to unlock a v2 vault.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnlockPolicyV2 {
+    /// Stable policy identifier for CLI display and future edits.
+    pub id: String,
+    /// Number of listed factors that must succeed. `None` means all factors
+    /// are required.
+    pub threshold: Option<u8>,
+    /// Factor identifiers or inline factors required by this policy.
+    pub factors: Vec<UnlockFactorV2>,
+}
+
+/// One factor that can participate in an unlock policy.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnlockFactorV2 {
+    /// Stable factor identifier for CLI display and future edits.
+    pub id: String,
+    /// Factor kind.
+    pub kind: UnlockFactorKindV2,
+    /// Optional recipient fingerprint associated with this factor.
+    pub recipient_fingerprint: Option<String>,
+    /// Additional non-secret, factor-specific parameters.
+    pub params: BTreeMap<String, String>,
+}
+
+/// Supported/planned v2 unlock factor kinds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum UnlockFactorKindV2 {
+    /// Current SSH-recipient wrapping model.
+    SshRecipient,
+    /// User-supplied passphrase-derived wrapping material.
+    Passphrase,
+    /// Device-local secret from OS keychain, DPAPI, Secret Service, or TPM.
+    DeviceSeal,
+    /// Non-exportable hardware-backed recipient.
+    HardwareRecipient,
+    /// Threshold/recovery share.
+    RecoveryShare,
+    /// Remote/KMS-assisted factor.
+    RemoteKms,
+}
+
+/// Recipient metadata retained by future v2 vaults.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecipientMetadataV2 {
+    /// Recipient fingerprint shown in CLI output.
+    pub fingerprint: String,
+    /// Public key or public recipient descriptor, when safe to persist.
+    pub public_descriptor: String,
+    /// Factor kind this recipient belongs to.
+    pub kind: UnlockFactorKindV2,
 }
 
 /// The plaintext payload of a vault: the full profile → var map.

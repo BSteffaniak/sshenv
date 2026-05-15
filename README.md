@@ -58,6 +58,7 @@ pi-openai
 # Vault lifecycle
 sshenv init [--recipient-key <path-or-pubkey-line>] [--vault <path>]
 sshenv doctor
+sshenv security status
 
 # Recipients
 sshenv add-recipient --key <path-or-pubkey-line>

@@ -1,43 +1,48 @@
 [package]
-name = "sshenv_vault"
-version.workspace = true
-edition.workspace = true
-authors.workspace = true
-license.workspace = true
+authors.workspace    = true
+description          = "sshenv vault file I/O, crypto, and recipient management"
+edition.workspace    = true
+license.workspace    = true
+name                 = "sshenv_vault"
 repository.workspace = true
-description = "sshenv vault file I/O, crypto, and recipient management"
+version.workspace    = true
+
+[features]
+default       = ["ssh-hardening", "rekey"]
+rekey         = []
+ssh-hardening = []
 
 [dependencies]
 sshenv_vault_models = { workspace = true }
 
-age = { workspace = true }
 aes-siv = { workspace = true, features = ["alloc"] }
-hkdf = { workspace = true }
-sha2 = { workspace = true }
+age     = { workspace = true }
+hkdf    = { workspace = true }
+sha2    = { workspace = true }
 ssh-key = { workspace = true, features = ["ed25519"] }
 
 anyhow = { workspace = true }
-thiserror = { workspace = true }
+base64 = { version = "0.22", default-features = false, features = ["std"] }
+dirs = { workspace = true }
+hex = { workspace = true }
+rand_core = { version = "0.6", default-features = false, features = [
+    "std",
+    "getrandom",
+] }
+rpassword = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-zeroize = { workspace = true }
 tempfile = { workspace = true }
-hex = { workspace = true }
-dirs = { workspace = true }
-rpassword = { workspace = true }
-rand_core = { version = "0.6", default-features = false, features = [
-  "std",
-  "getrandom",
-] }
-base64 = { version = "0.22", default-features = false, features = ["std"] }
+thiserror = { workspace = true }
+zeroize = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
 ssh-key = { version = "0.6", default-features = false, features = [
-  "std",
-  "alloc",
-  "ed25519",
-  "rand_core",
+    "std",
+    "alloc",
+    "ed25519",
+    "rand_core",
 ] }
 
 [lints]

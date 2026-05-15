@@ -35,6 +35,9 @@ pub enum Command {
     Init(InitArgs),
     /// Run checks on the vault, recipients, and shim setup.
     Doctor,
+    /// Inspect and configure security posture.
+    #[command(subcommand)]
+    Security(SecurityCommand),
 
     /// Add an SSH public key as a recipient authorized to unlock the
     /// vault.
@@ -69,6 +72,12 @@ pub enum Command {
     /// Manage PATH shims.
     #[command(subcommand)]
     Shims(ShimsCommand),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SecurityCommand {
+    /// Show vault version, enabled hardening features, and key-strength hints.
+    Status,
 }
 
 #[derive(Debug, clap::Args)]
