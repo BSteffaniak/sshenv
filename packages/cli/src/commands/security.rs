@@ -188,6 +188,18 @@ fn vault_has_factor(vault: &Vault, kind: sshenv_vault::models::UnlockFactorKindV
         .any(|factor| factor.kind == kind)
 }
 
+pub fn profile_policy_migrate(ctx: &CmdContext) -> Result<()> {
+    let (mut vault, data_key) = crate::commands::load_and_unlock(&ctx.vault_path)?;
+    let changed = vault.enable_profile_keys()?;
+    if changed {
+        save_vault(ctx, &mut vault, &data_key)?;
+        eprintln!("Migrated profiles to independently encrypted v2 profile entries.");
+    } else {
+        eprintln!("Profiles are already stored as independently encrypted v2 entries.");
+    }
+    Ok(())
+}
+
 pub fn profile_policy_set(ctx: &CmdContext, args: ProfilePolicySetArgs) -> Result<()> {
     let (mut vault, data_key) = crate::commands::load_and_unlock(&ctx.vault_path)?;
     if vault.header.version != VERSION_V2 {
@@ -351,6 +363,18 @@ fn print_vault_status(ctx: &CmdContext) -> Result<Option<HashSet<String>>> {
         "unknown format"
     };
     println!("format: {version_label}");
+    println!(
+        "profile keys: {}",
+        if ciphertext
+            .policy_metadata
+            .as_ref()
+            .is_some_and(|metadata| metadata.profile_keys_enabled)
+        {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    );
     if let Some(generation) = ciphertext.generation() {
         println!("generation: {generation}");
     }
@@ -422,6 +446,10 @@ fn print_feature_status() {
     println!(
         "runtime:       {}",
         enabled_label(cfg!(feature = "runtime-hardening"))
+    );
+    println!(
+        "profile-keys:  {}",
+        enabled_label(cfg!(feature = "profile-keys"))
     );
     println!("threshold:      planned");
     println!(

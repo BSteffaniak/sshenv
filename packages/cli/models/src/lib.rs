@@ -125,6 +125,8 @@ pub enum SecurityCommand {
 pub enum ProfilePolicyCommand {
     /// List profile policy metadata.
     List,
+    /// Store profiles as independently encrypted v2 payload entries.
+    Migrate,
     /// Set advisory policy metadata for a profile.
     Set(ProfilePolicySetArgs),
 }

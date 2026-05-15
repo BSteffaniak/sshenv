@@ -84,12 +84,16 @@ data key. Removing a recipient deletes their wrapped copy. **Past
 decrypts they performed are not revoked** — the data key has not
 changed. To revoke past access, rotate the data key (planned).
 
-## Per-profile policy metadata
+## Per-profile encryption and policy metadata
 
-v2 vaults can store encrypted advisory policy metadata for individual profiles.
-This is scaffolding for future per-profile/per-scope encryption and is not yet
-a cryptographic boundary by itself. Commands that set this metadata print that
-limitation explicitly.
+v2 vaults can store profiles as independently encrypted profile entries. The
+outer vault payload is still encrypted by the vault payload key, and each
+profile entry also has its own random profile key and ciphertext. This enables
+future targeted profile rotation and per-profile factor enforcement.
+
+v2 vaults can also store encrypted advisory policy metadata for individual
+profiles. Policy metadata is not yet a cryptographic boundary by itself.
+Commands that set this metadata print that limitation explicitly.
 
 ## Rollback protection considerations
 

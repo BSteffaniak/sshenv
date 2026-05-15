@@ -373,6 +373,62 @@ fn binary_migrate_vault_to_v2_preserves_secret_access() {
 }
 
 #[test]
+fn binary_profile_policy_migrate_preserves_secret_access() {
+    let bin = cargo_bin();
+    if !bin.exists() {
+        eprintln!("skipping: {} does not exist", bin.display());
+        return;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let vault_path = dir.path().join("vault");
+    init_vault_with_profile(&bin, &home, &vault_path, "myprofile");
+
+    let migrate_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("migrate-vault")
+        .arg("--to")
+        .arg("v2")
+        .arg("--recipient-key")
+        .arg(home.join(".ssh").join("id_ed25519.pub"))
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run migrate-vault");
+    assert!(migrate_out.status.success());
+
+    let profile_migrate_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("security")
+        .arg("profile-policy")
+        .arg("migrate")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run profile-policy migrate");
+    assert!(
+        profile_migrate_out.status.success(),
+        "profile-policy migrate failed: {}",
+        String::from_utf8_lossy(&profile_migrate_out.stderr)
+    );
+
+    let show_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("show")
+        .arg("myprofile")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run show after profile-policy migrate");
+    assert!(show_out.status.success());
+    assert!(String::from_utf8_lossy(&show_out.stdout).contains("DUMMY=value"));
+}
+
+#[test]
 fn binary_profile_policy_metadata_roundtrips() {
     let bin = cargo_bin();
     if !bin.exists() {

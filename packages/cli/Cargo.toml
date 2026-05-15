@@ -14,11 +14,13 @@ default = [
     "passphrase-factor",
     "rollback-protection",
     "runtime-hardening",
+    "profile-keys",
 ]
 device-seal = ["sshenv_vault/device-seal"]
 device-seal-file = ["device-seal", "sshenv_vault/device-seal-file"]
 macos-keychain = ["device-seal", "sshenv_vault/macos-keychain"]
 passphrase-factor = ["sshenv_vault/passphrase-factor"]
+profile-keys = ["sshenv_vault/profile-keys"]
 rekey = ["sshenv_vault/rekey"]
 rollback-protection = []
 runtime-hardening = []

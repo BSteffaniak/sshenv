@@ -27,8 +27,9 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow};
 use sshenv_vault_models::{
-    DATA_KEY_LEN, PAYLOAD_AAD, ProfileMap, RecipientEntry, RecipientMetadataV2, UnlockFactorKindV2,
-    V2_PAYLOAD_AAD, VERSION, VERSION_V2, VaultHeader, VaultModelsError, VaultPolicyMetadataV2,
+    DATA_KEY_LEN, PAYLOAD_AAD, ProfileEntry, ProfileMap, RecipientEntry, RecipientMetadataV2,
+    UnlockFactorKindV2, V2_PAYLOAD_AAD, V2_PROFILE_KEY_AAD, V2_PROFILE_PAYLOAD_AAD, VERSION,
+    VERSION_V2, VaultHeader, VaultModelsError, VaultPolicyMetadataV2,
 };
 use zeroize::Zeroizing;
 
@@ -316,11 +317,10 @@ impl Vault {
             decrypt_payload_with_aad(payload_key.as_slice(), &ciphertext.payload_ciphertext, aad)
                 .context("failed to decrypt vault payload")?;
 
-        let profiles: ProfileMap = if plaintext.is_empty() {
+        let profiles = if plaintext.is_empty() {
             ProfileMap::default()
         } else {
-            serde_json::from_slice(&plaintext)
-                .context("decrypted vault payload was not valid JSON")?
+            decode_profiles_from_payload(&plaintext, payload_key.as_slice())?
         };
 
         Ok((
@@ -637,6 +637,36 @@ impl Vault {
         Ok(())
     }
 
+    /// Enable independently encrypted per-profile payload entries for future
+    /// saves.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if this vault is not v2.
+    pub fn enable_profile_keys(&mut self) -> Result<bool> {
+        if self.header.version != VERSION_V2 {
+            return Err(anyhow!(
+                "profile keys require v2; run `sshenv migrate-vault --to v2` first"
+            ));
+        }
+        let metadata = self
+            .policy_metadata
+            .get_or_insert_with(|| policy_metadata_from_recipients(&self.recipients));
+        if metadata.profile_keys_enabled {
+            return Ok(false);
+        }
+        metadata.profile_keys_enabled = true;
+        Ok(true)
+    }
+
+    /// True when future saves will use per-profile encrypted entries.
+    #[must_use]
+    pub fn profile_keys_enabled(&self) -> bool {
+        self.policy_metadata
+            .as_ref()
+            .is_some_and(|metadata| metadata.profile_keys_enabled)
+    }
+
     /// Return the v2 metadata generation, if present.
     #[must_use]
     pub fn generation(&self) -> Option<u64> {
@@ -665,10 +695,13 @@ impl Vault {
     /// Returns an error if encryption fails, the file cannot be written,
     /// or the rename fails.
     pub fn save(&self, path: &Path, data_key: &[u8; DATA_KEY_LEN]) -> Result<()> {
-        let plaintext = serde_json::to_vec(&self.profiles)
-            .context("failed to serialize profile map to JSON")?;
-        let plaintext = Zeroizing::new(plaintext);
         let payload_key = payload_key_for_data_key(data_key.as_slice(), &self.payload_key_factors);
+        let plaintext = encode_profiles_for_payload(
+            &self.profiles,
+            payload_key.as_slice(),
+            self.profile_keys_enabled(),
+        )?;
+        let plaintext = Zeroizing::new(plaintext);
         let aad = payload_aad_for_version(self.header.version)?;
         let ciphertext =
             encrypt_payload_with_aad(payload_key.as_slice(), plaintext.as_slice(), aad)
@@ -740,6 +773,73 @@ fn copy_data_key(data_key: &[u8]) -> Zeroizing<[u8; DATA_KEY_LEN]> {
     let mut out = [0_u8; DATA_KEY_LEN];
     out.copy_from_slice(data_key);
     Zeroizing::new(out)
+}
+
+fn decode_profiles_from_payload(payload: &[u8], payload_key: &[u8]) -> Result<ProfileMap> {
+    let mut profiles: ProfileMap =
+        serde_json::from_slice(payload).context("decrypted vault payload was not valid JSON")?;
+    if profiles.profile_entries.is_empty() {
+        return Ok(profiles);
+    }
+
+    let entries = std::mem::take(&mut profiles.profile_entries);
+    for (profile, entry) in entries {
+        let profile_key =
+            decrypt_payload_with_aad(payload_key, &entry.wrapped_key, V2_PROFILE_KEY_AAD)
+                .with_context(|| format!("failed to decrypt profile key for {profile}"))?;
+        if profile_key.len() != DATA_KEY_LEN {
+            return Err(anyhow!(
+                "profile key for {profile} is {} bytes, expected {DATA_KEY_LEN}",
+                profile_key.len()
+            ));
+        }
+        let profile_plaintext = decrypt_payload_with_aad(
+            profile_key.as_slice(),
+            &entry.ciphertext,
+            V2_PROFILE_PAYLOAD_AAD,
+        )
+        .with_context(|| format!("failed to decrypt profile payload for {profile}"))?;
+        let vars: BTreeMap<String, String> = serde_json::from_slice(&profile_plaintext)
+            .with_context(|| format!("profile payload for {profile} was not valid JSON"))?;
+        profiles.profiles.insert(profile, vars);
+    }
+    Ok(profiles)
+}
+
+fn encode_profiles_for_payload(
+    profiles: &ProfileMap,
+    payload_key: &[u8],
+    profile_keys_enabled: bool,
+) -> Result<Vec<u8>> {
+    if !profile_keys_enabled {
+        return serde_json::to_vec(profiles).context("failed to serialize profile map to JSON");
+    }
+
+    let mut encoded = profiles.clone();
+    encoded.profile_entries.clear();
+    for (profile, vars) in &profiles.profiles {
+        let profile_key = generate_data_key();
+        let profile_plaintext = serde_json::to_vec(vars)
+            .with_context(|| format!("failed to serialize profile {profile}"))?;
+        let ciphertext = encrypt_payload_with_aad(
+            profile_key.as_slice(),
+            &profile_plaintext,
+            V2_PROFILE_PAYLOAD_AAD,
+        )
+        .with_context(|| format!("failed to encrypt profile {profile}"))?;
+        let wrapped_key =
+            encrypt_payload_with_aad(payload_key, profile_key.as_slice(), V2_PROFILE_KEY_AAD)
+                .with_context(|| format!("failed to wrap profile key for {profile}"))?;
+        encoded.profile_entries.insert(
+            profile.clone(),
+            ProfileEntry {
+                wrapped_key,
+                ciphertext,
+            },
+        );
+    }
+    encoded.profiles.clear();
+    serde_json::to_vec(&encoded).context("failed to serialize profile-entry map to JSON")
 }
 
 fn payload_key_factors_for_metadata(
@@ -857,6 +957,7 @@ fn payload_aad_for_version(version: u8) -> Result<&'static [u8]> {
 fn policy_metadata_from_recipients(recipients: &[RecipientEntry]) -> VaultPolicyMetadataV2 {
     VaultPolicyMetadataV2 {
         generation: 0,
+        profile_keys_enabled: false,
         policies: Vec::new(),
         recipients: recipients
             .iter()
@@ -1042,6 +1143,45 @@ mod tests {
         assert_eq!(
             unlocked.profiles.get("p").unwrap().get("K").unwrap(),
             "migrated"
+        );
+    }
+
+    #[test]
+    fn profile_key_mode_roundtrips_and_uses_profile_entries() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("vault");
+
+        let (pubkey, identity) = generate_keypair();
+        let (mut v, key) = Vault::create(&pubkey).expect("create");
+        v.profiles.set("p", "K", "profile-keyed".into());
+        v.migrate_to_v2(std::slice::from_ref(&pubkey))
+            .expect("migrate");
+        assert!(v.enable_profile_keys().expect("enable profile keys"));
+        v.save(&path, &key).expect("save profile-keyed v2");
+
+        let parsed = Vault::load_ciphertext(&path).expect("load ciphertext");
+        assert!(
+            parsed
+                .policy_metadata
+                .as_ref()
+                .is_some_and(|metadata| metadata.profile_keys_enabled)
+        );
+        let payload_key = payload_key_for_data_key(key.as_slice(), &[]);
+        let plaintext = decrypt_payload_with_aad(
+            payload_key.as_slice(),
+            &parsed.payload_ciphertext,
+            V2_PAYLOAD_AAD,
+        )
+        .expect("decrypt outer payload");
+        let encoded: ProfileMap = serde_json::from_slice(&plaintext).expect("profile map json");
+        assert!(encoded.profiles.is_empty());
+        assert!(encoded.profile_entries.contains_key("p"));
+
+        let identities: Vec<Box<dyn age::Identity>> = vec![identity];
+        let (unlocked, _) = Vault::unlock(parsed, &identities).expect("unlock profile-keyed");
+        assert_eq!(
+            unlocked.profiles.get("p").unwrap().get("K").unwrap(),
+            "profile-keyed"
         );
     }
 

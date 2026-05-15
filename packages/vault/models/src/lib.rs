@@ -60,6 +60,12 @@ pub const V2_POLICY_AAD: &[u8] = b"sshenv:v2:policy";
 /// AAD tag reserved for a future v2 payload block.
 pub const V2_PAYLOAD_AAD: &[u8] = b"sshenv:v2:payload";
 
+/// AAD tag for wrapping per-profile data keys inside the encrypted v2 payload.
+pub const V2_PROFILE_KEY_AAD: &[u8] = b"sshenv:v2:profile-key";
+
+/// AAD tag for per-profile ciphertexts inside the encrypted v2 payload.
+pub const V2_PROFILE_PAYLOAD_AAD: &[u8] = b"sshenv:v2:profile-payload";
+
 /// Errors produced while parsing or building vault structures.
 #[derive(Debug, thiserror::Error)]
 pub enum VaultModelsError {
@@ -135,6 +141,10 @@ pub struct VaultPolicyMetadataV2 {
     /// protection to detect older valid vault copies being restored.
     #[serde(default)]
     pub generation: u64,
+    /// True when the encrypted payload stores profiles as independently
+    /// encrypted entries with per-profile data keys.
+    #[serde(default)]
+    pub profile_keys_enabled: bool,
     /// Alternative unlock policies. Any one successful policy may unlock the
     /// vault data key.
     #[serde(default)]
@@ -208,10 +218,22 @@ pub struct RecipientMetadataV2 {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProfileMap {
     pub profiles: BTreeMap<String, BTreeMap<String, String>>,
+    /// Encrypted per-profile entries used by v2 profile-key mode.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub profile_entries: BTreeMap<String, ProfileEntry>,
     /// Encrypted per-profile policy metadata. These are currently advisory
     /// scaffolding for future per-profile/per-scope encryption.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub profile_policies: BTreeMap<String, ProfilePolicy>,
+}
+
+/// One independently encrypted profile entry inside the encrypted v2 payload.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProfileEntry {
+    /// Profile data key encrypted under the vault payload key.
+    pub wrapped_key: Vec<u8>,
+    /// Serialized profile variable map encrypted under the profile data key.
+    pub ciphertext: Vec<u8>,
 }
 
 /// Advisory per-profile security policy metadata.
