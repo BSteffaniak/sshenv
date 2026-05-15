@@ -1,11 +1,11 @@
 [package]
-name = "sshenv_cli_models"
-version.workspace = true
-edition.workspace = true
-authors.workspace = true
-license.workspace = true
+authors.workspace    = true
+description          = "Shared CLI types for sshenv"
+edition.workspace    = true
+license.workspace    = true
+name                 = "sshenv_cli_models"
 repository.workspace = true
-description = "Shared CLI types for sshenv"
+version.workspace    = true
 
 [dependencies]
 clap = { workspace = true }

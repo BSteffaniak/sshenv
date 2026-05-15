@@ -1,102 +1,102 @@
 [workspace]
 members = [
-  "packages/cli",
-  "packages/cli/models",
-  "packages/vault",
-  "packages/vault/models",
-  "packages/shims",
-  "packages/shims/models",
+    "packages/cli",
+    "packages/cli/models",
+    "packages/vault",
+    "packages/vault/models",
+    "packages/shims",
+    "packages/shims/models",
 ]
 resolver = "2"
 
 [workspace.package]
-authors = ["Braden Steffaniak"]
-edition = "2024"
-license = "MPL-2.0"
+authors    = ["Braden Steffaniak"]
+edition    = "2024"
+license    = "MPL-2.0"
 repository = "https://github.com/BSteffaniak/sshenv"
-version = "0.0.1-alpha.0"
+version    = "0.0.1-alpha.0"
 
 [workspace.dependencies]
 # Internal
-sshenv_cli = { version = "0.0.1-alpha.0", path = "packages/cli" }
-sshenv_cli_models = { version = "0.0.1-alpha.0", path = "packages/cli/models" }
-sshenv_vault = { version = "0.0.1-alpha.0", path = "packages/vault" }
-sshenv_vault_models = { version = "0.0.1-alpha.0", path = "packages/vault/models" }
-sshenv_shims = { version = "0.0.1-alpha.0", path = "packages/shims" }
+sshenv_cli          = { version = "0.0.1-alpha.0", path = "packages/cli" }
+sshenv_cli_models   = { version = "0.0.1-alpha.0", path = "packages/cli/models" }
+sshenv_shims        = { version = "0.0.1-alpha.0", path = "packages/shims" }
 sshenv_shims_models = { version = "0.0.1-alpha.0", path = "packages/shims/models" }
+sshenv_vault        = { version = "0.0.1-alpha.0", path = "packages/vault" }
+sshenv_vault_models = { version = "0.0.1-alpha.0", path = "packages/vault/models" }
 
 # Crypto
-age = { version = "0.11.1", default-features = false, features = ["ssh"] }
 aes-siv = { version = "0.7.0", default-features = false }
-hkdf = { version = "0.12.4", default-features = false }
-sha2 = { version = "0.10.8", default-features = false, features = ["std"] }
+age     = { version = "0.11.1", default-features = false, features = ["ssh"] }
+hkdf    = { version = "0.12.4", default-features = false }
+sha2    = { version = "0.10.8", default-features = false, features = ["std"] }
 
 # Core
 anyhow = { version = "1", default-features = false, features = ["std"] }
-thiserror = { version = "2", default-features = false }
 clap = { version = "4", default-features = false, features = [
-  "derive",
-  "std",
-  "help",
-  "usage",
-  "error-context",
-  "color",
-  "suggestions",
+    "derive",
+    "std",
+    "help",
+    "usage",
+    "error-context",
+    "color",
+    "suggestions",
 ] }
-serde = { version = "1", default-features = false, features = [
-  "std",
-  "derive",
-] }
-serde_json = { version = "1", default-features = false, features = ["std"] }
-toml = { version = "0.8", default-features = false, features = [
-  "parse",
-  "display",
-] }
-zeroize = { version = "1", default-features = false, features = [
-  "std",
-  "zeroize_derive",
-] }
-rpassword = { version = "7", default-features = false }
 dirs = { version = "6", default-features = false }
 hex = { version = "0.4", default-features = false, features = ["std"] }
-tempfile = { version = "3", default-features = false }
 libc = { version = "0.2", default-features = false }
 proptest = { version = "1", default-features = false, features = ["std"] }
+rpassword = { version = "7", default-features = false }
+serde = { version = "1", default-features = false, features = [
+    "std",
+    "derive",
+] }
+serde_json = { version = "1", default-features = false, features = ["std"] }
 ssh-key = { version = "0.6", default-features = false, features = [
-  "std",
-  "alloc",
+    "std",
+    "alloc",
+] }
+tempfile = { version = "3", default-features = false }
+thiserror = { version = "2", default-features = false }
+toml = { version = "0.8", default-features = false, features = [
+    "parse",
+    "display",
+] }
+zeroize = { version = "1", default-features = false, features = [
+    "std",
+    "zeroize_derive",
 ] }
 
 [profile.release]
 codegen-units = 1
-lto = false
-opt-level = 3
-strip = "symbols"
+lto           = false
+opt-level     = 3
+strip         = "symbols"
 
 [workspace.lints.clippy]
-all = { level = "warn", priority = -1 }
+all      = { level = "warn", priority = -1 }
+cargo    = { level = "warn", priority = -1 }
+nursery  = { level = "warn", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
-nursery = { level = "warn", priority = -1 }
-cargo = { level = "warn", priority = -1 }
 # Allow-overrides (higher priority wins over the group warns above).
+cargo_common_metadata   = "allow"
+collapsible_if          = "allow"
+if_not_else             = "allow"
+manual_let_else         = "allow"
+map_unwrap_or           = "allow"
+missing_errors_doc      = "allow"
+missing_panics_doc      = "allow"
 multiple_crate_versions = "allow"
-cargo_common_metadata = "allow"
-missing_errors_doc = "allow"
-missing_panics_doc = "allow"
-needless_pass_by_value = "allow"
-option_if_let_else = "allow"
-too_many_lines = "allow"
-must_use_candidate = "allow"
-map_unwrap_or = "allow"
-manual_let_else = "allow"
-collapsible_if = "allow"
-single_match = "allow"
-single_match_else = "allow"
-needless_bool_assign = "allow"
-if_not_else = "allow"
+must_use_candidate      = "allow"
+needless_bool_assign    = "allow"
+needless_pass_by_value  = "allow"
+option_if_let_else      = "allow"
+single_match            = "allow"
+single_match_else       = "allow"
+too_many_lines          = "allow"
 # Allow: internal helpers use HashSet<String> with the default hasher;
 # generalizing over arbitrary hashers is overkill for a binary crate.
 implicit_hasher = "allow"
 # Allow: doc first-paragraph length isn't a useful constraint for us.
-doc_markdown = "allow"
+doc_markdown                 = "allow"
 too_long_first_doc_paragraph = "allow"
