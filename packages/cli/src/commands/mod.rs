@@ -94,6 +94,21 @@ pub fn load_and_unlock(vault_path: &Path) -> Result<(Vault, DataKey)> {
 /// Propagates filesystem, identity, outer-vault, and selected-profile decrypt
 /// errors.
 pub fn load_and_unlock_profile(vault_path: &Path, profile: &str) -> Result<(Vault, DataKey)> {
+    load_and_unlock_profile_with_passphrase(vault_path, profile, None)
+}
+
+/// Load the vault and decrypt only one profile using an explicit profile
+/// passphrase when one is required.
+///
+/// # Errors
+///
+/// Propagates filesystem, identity, outer-vault, and selected-profile decrypt
+/// errors.
+pub fn load_and_unlock_profile_with_passphrase(
+    vault_path: &Path,
+    profile: &str,
+    explicit_profile_passphrase: Option<&str>,
+) -> Result<(Vault, DataKey)> {
     let ciphertext = Vault::load_ciphertext(vault_path)?;
     check_rollback(vault_path, &ciphertext)?;
     let generation = ciphertext.generation();
@@ -125,7 +140,8 @@ pub fn load_and_unlock_profile(vault_path: &Path, profile: &str) -> Result<(Vaul
     })?;
     if vault.profiles.get(profile).is_none() && vault.profiles.profile_entries.contains_key(profile)
     {
-        let profile_passphrase = passphrase_for_profile(&vault, profile)?;
+        let profile_passphrase =
+            passphrase_for_profile(&vault, profile, explicit_profile_passphrase)?;
         vault.unlock_profile_with_passphrase(
             profile,
             &data_key,
@@ -268,7 +284,11 @@ fn passphrase_for_ciphertext(
     Ok(Some(Zeroizing::new(value)))
 }
 
-fn passphrase_for_profile(vault: &Vault, profile: &str) -> Result<Option<Zeroizing<String>>> {
+fn passphrase_for_profile(
+    vault: &Vault,
+    profile: &str,
+    explicit_passphrase: Option<&str>,
+) -> Result<Option<Zeroizing<String>>> {
     let Some(policy) = vault.profiles.profile_policy(profile) else {
         return Ok(None);
     };
@@ -278,6 +298,10 @@ fn passphrase_for_profile(vault: &Vault, profile: &str) -> Result<Option<Zeroizi
         .any(|factor| factor.kind == UnlockFactorKindV2::Passphrase)
     {
         return Ok(None);
+    }
+
+    if let Some(value) = explicit_passphrase {
+        return Ok(Some(Zeroizing::new(value.to_string())));
     }
 
     if let Ok(value) = std::env::var("SSHENV_PROFILE_PASSPHRASE") {

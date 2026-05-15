@@ -131,6 +131,10 @@ pub enum ProfilePolicyCommand {
     RotateKey(ProfilePolicyRotateKeyArgs),
     /// Require a passphrase before this profile may be used.
     RequirePassphrase(ProfilePolicyRequirePassphraseArgs),
+    /// Change a profile-specific passphrase requirement.
+    ChangePassphrase(ProfilePolicyChangePassphraseArgs),
+    /// Remove a profile-specific passphrase requirement.
+    DisablePassphrase(ProfilePolicyDisablePassphraseArgs),
     /// Require a device-seal factor before this profile may be used.
     RequireDeviceSeal(ProfilePolicyRequirementArgs),
     /// Clear all explicit factor requirements for a profile.
@@ -153,6 +157,25 @@ pub struct ProfilePolicyRequirementArgs {
 pub struct ProfilePolicyRequirePassphraseArgs {
     pub profile: String,
     /// Profile passphrase. If omitted, read from a hidden prompt.
+    #[arg(long)]
+    pub passphrase: Option<String>,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct ProfilePolicyChangePassphraseArgs {
+    pub profile: String,
+    /// Current profile passphrase. If omitted, read from `$SSHENV_PROFILE_PASSPHRASE` or prompt.
+    #[arg(long)]
+    pub old_passphrase: Option<String>,
+    /// New profile passphrase. If omitted, read from a hidden prompt.
+    #[arg(long)]
+    pub new_passphrase: Option<String>,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct ProfilePolicyDisablePassphraseArgs {
+    pub profile: String,
+    /// Current profile passphrase. If omitted, read from `$SSHENV_PROFILE_PASSPHRASE` or prompt.
     #[arg(long)]
     pub passphrase: Option<String>,
 }

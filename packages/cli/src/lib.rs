@@ -54,6 +54,12 @@ pub fn run(cli: Cli) -> Result<()> {
                 ProfilePolicyCommand::RequirePassphrase(args) => {
                     commands::security::profile_policy_require_passphrase(&ctx, args)
                 }
+                ProfilePolicyCommand::ChangePassphrase(args) => {
+                    commands::security::profile_policy_change_passphrase(&ctx, args)
+                }
+                ProfilePolicyCommand::DisablePassphrase(args) => {
+                    commands::security::profile_policy_disable_passphrase(&ctx, args)
+                }
                 ProfilePolicyCommand::RequireDeviceSeal(args) => {
                     commands::security::profile_policy_require_device_seal(&ctx, args)
                 }

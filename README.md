@@ -69,7 +69,9 @@ sshenv security preset standard|recommended|portable|paranoid [--recipient-key <
 sshenv security profile-policy list
 sshenv security profile-policy migrate
 sshenv security profile-policy rotate-key <profile>
-sshenv security profile-policy require-passphrase <profile>
+sshenv security profile-policy require-passphrase <profile> [--passphrase <v>]
+sshenv security profile-policy change-passphrase <profile> [--old-passphrase <v>] [--new-passphrase <v>]
+sshenv security profile-policy disable-passphrase <profile> [--passphrase <v>]
 sshenv security profile-policy require-device-seal <profile>
 sshenv security profile-policy clear-requirements <profile>
 sshenv security profile-policy set <profile> --preset standard|recommended|portable|paranoid

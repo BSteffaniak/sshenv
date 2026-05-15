@@ -470,25 +470,28 @@ fn binary_profile_policy_migrate_preserves_secret_access() {
         String::from_utf8_lossy(&require_out.stderr)
     );
 
-    let clear_out = Command::new(&bin)
+    let change_out = Command::new(&bin)
         .arg("--vault")
         .arg(&vault_path)
         .arg("security")
         .arg("profile-policy")
-        .arg("clear-requirements")
+        .arg("change-passphrase")
         .arg("myprofile")
+        .arg("--old-passphrase")
+        .arg("test-passphrase")
+        .arg("--new-passphrase")
+        .arg("new-test-passphrase")
         .env("HOME", &home)
-        .env("SSHENV_PROFILE_PASSPHRASE", "test-passphrase")
         .env_remove("SSHENV_VAULT")
         .output()
-        .expect("run profile-policy clear-requirements");
+        .expect("run profile-policy change-passphrase");
     assert!(
-        clear_out.status.success(),
-        "profile-policy clear-requirements failed: {}",
-        String::from_utf8_lossy(&clear_out.stderr)
+        change_out.status.success(),
+        "profile-policy change-passphrase failed: {}",
+        String::from_utf8_lossy(&change_out.stderr)
     );
 
-    let show_out = Command::new(&bin)
+    let old_show_out = Command::new(&bin)
         .arg("--vault")
         .arg(&vault_path)
         .arg("show")
@@ -497,9 +500,53 @@ fn binary_profile_policy_migrate_preserves_secret_access() {
         .env("SSHENV_PROFILE_PASSPHRASE", "test-passphrase")
         .env_remove("SSHENV_VAULT")
         .output()
+        .expect("run show with old profile passphrase");
+    assert!(!old_show_out.status.success());
+
+    let show_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("show")
+        .arg("myprofile")
+        .env("HOME", &home)
+        .env("SSHENV_PROFILE_PASSPHRASE", "new-test-passphrase")
+        .env_remove("SSHENV_VAULT")
+        .output()
         .expect("run show after profile-policy migrate");
     assert!(show_out.status.success());
     assert!(String::from_utf8_lossy(&show_out.stdout).contains("DUMMY=value"));
+
+    let disable_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("security")
+        .arg("profile-policy")
+        .arg("disable-passphrase")
+        .arg("myprofile")
+        .arg("--passphrase")
+        .arg("new-test-passphrase")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run profile-policy disable-passphrase");
+    assert!(
+        disable_out.status.success(),
+        "profile-policy disable-passphrase failed: {}",
+        String::from_utf8_lossy(&disable_out.stderr)
+    );
+
+    let show_without_passphrase_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("show")
+        .arg("myprofile")
+        .env("HOME", &home)
+        .env_remove("SSHENV_PROFILE_PASSPHRASE")
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run show after profile-policy disable-passphrase");
+    assert!(show_without_passphrase_out.status.success());
+    assert!(String::from_utf8_lossy(&show_without_passphrase_out.stdout).contains("DUMMY=value"));
 }
 
 #[test]

@@ -6,6 +6,7 @@ use anyhow::Context as AnyhowContext;
 use anyhow::Result;
 use sshenv_cli_models::{
     ChangePassphraseArgs, DisablePassphraseArgs, EnablePassphraseArgs,
+    ProfilePolicyChangePassphraseArgs, ProfilePolicyDisablePassphraseArgs,
     ProfilePolicyRequirePassphraseArgs, ProfilePolicyRequirementArgs, ProfilePolicyRotateKeyArgs,
     ProfilePolicySetArgs, SecurityPresetArg, SecurityPresetArgs,
 };
@@ -298,6 +299,85 @@ pub fn profile_policy_require_passphrase(
 pub fn profile_policy_require_passphrase(
     _ctx: &CmdContext,
     _args: ProfilePolicyRequirePassphraseArgs,
+) -> Result<()> {
+    anyhow::bail!("this sshenv build was compiled without passphrase-factor support")
+}
+
+#[cfg(feature = "passphrase-factor")]
+pub fn profile_policy_change_passphrase(
+    ctx: &CmdContext,
+    args: ProfilePolicyChangePassphraseArgs,
+) -> Result<()> {
+    let new_passphrase =
+        passphrase_arg_or_prompt(args.new_passphrase, "Enter new sshenv profile passphrase: ")?;
+    let (mut vault, data_key) = crate::commands::load_and_unlock_profile_with_passphrase(
+        &ctx.vault_path,
+        &args.profile,
+        args.old_passphrase.as_deref(),
+    )?;
+    ensure_profile_policy_editable(&vault, &args.profile)?;
+    let Some(policy) = vault.profiles.profile_policy(&args.profile) else {
+        anyhow::bail!("profile {} does not require a passphrase", args.profile);
+    };
+    if !policy
+        .factor_metadata
+        .iter()
+        .any(|factor| factor.kind == UnlockFactorKindV2::Passphrase)
+    {
+        anyhow::bail!("profile {} does not require a passphrase", args.profile);
+    }
+    vault.require_profile_passphrase(&args.profile, new_passphrase.as_str())?;
+    save_vault(ctx, &mut vault, &data_key)?;
+    eprintln!("Changed passphrase factor for profile {}.", args.profile);
+    Ok(())
+}
+
+#[cfg(not(feature = "passphrase-factor"))]
+pub fn profile_policy_change_passphrase(
+    _ctx: &CmdContext,
+    _args: ProfilePolicyChangePassphraseArgs,
+) -> Result<()> {
+    anyhow::bail!("this sshenv build was compiled without passphrase-factor support")
+}
+
+#[cfg(feature = "passphrase-factor")]
+pub fn profile_policy_disable_passphrase(
+    ctx: &CmdContext,
+    args: ProfilePolicyDisablePassphraseArgs,
+) -> Result<()> {
+    let (mut vault, data_key) = crate::commands::load_and_unlock_profile_with_passphrase(
+        &ctx.vault_path,
+        &args.profile,
+        args.passphrase.as_deref(),
+    )?;
+    ensure_profile_policy_editable(&vault, &args.profile)?;
+    let mut policy = existing_or_default_profile_policy(&vault, &args.profile);
+    let had_passphrase = policy
+        .factor_metadata
+        .iter()
+        .any(|factor| factor.kind == UnlockFactorKindV2::Passphrase)
+        || policy
+            .required_factors
+            .contains(&ProfileFactorRequirement::Passphrase);
+    if !had_passphrase {
+        anyhow::bail!("profile {} does not require a passphrase", args.profile);
+    }
+    policy
+        .factor_metadata
+        .retain(|factor| factor.kind != UnlockFactorKindV2::Passphrase);
+    policy
+        .required_factors
+        .retain(|factor| *factor != ProfileFactorRequirement::Passphrase);
+    vault.profiles.set_profile_policy(&args.profile, policy)?;
+    save_vault(ctx, &mut vault, &data_key)?;
+    eprintln!("Disabled passphrase factor for profile {}.", args.profile);
+    Ok(())
+}
+
+#[cfg(not(feature = "passphrase-factor"))]
+pub fn profile_policy_disable_passphrase(
+    _ctx: &CmdContext,
+    _args: ProfilePolicyDisablePassphraseArgs,
 ) -> Result<()> {
     anyhow::bail!("this sshenv build was compiled without passphrase-factor support")
 }
