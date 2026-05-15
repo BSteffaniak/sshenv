@@ -125,6 +125,8 @@ pub enum SecurityCommand {
 pub enum ProfilePolicyCommand {
     /// List profile policy metadata.
     List,
+    /// Show effective security posture for one profile.
+    Status(ProfilePolicyStatusArgs),
     /// Store profiles as independently encrypted v2 payload entries.
     Migrate,
     /// Rotate one profile's per-profile data key.
@@ -143,6 +145,11 @@ pub enum ProfilePolicyCommand {
     ClearRequirements(ProfilePolicyRequirementArgs),
     /// Set advisory policy metadata for a profile.
     Set(ProfilePolicySetArgs),
+}
+
+#[derive(Debug, clap::Args)]
+pub struct ProfilePolicyStatusArgs {
+    pub profile: String,
 }
 
 #[derive(Debug, clap::Args)]

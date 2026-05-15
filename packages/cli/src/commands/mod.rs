@@ -87,6 +87,46 @@ pub fn load_and_unlock(vault_path: &Path) -> Result<(Vault, DataKey)> {
     })
 }
 
+/// Load the vault and decrypt only the outer profile-entry container. Profile
+/// entries remain encrypted.
+///
+/// # Errors
+///
+/// Propagates filesystem, identity, and outer-vault decrypt errors.
+pub fn load_and_unlock_metadata(vault_path: &Path) -> Result<(Vault, DataKey)> {
+    let ciphertext = Vault::load_ciphertext(vault_path)?;
+    check_rollback(vault_path, &ciphertext)?;
+    let generation = ciphertext.generation();
+    let fps: HashSet<String> = ciphertext
+        .recipients
+        .iter()
+        .map(|r| r.fingerprint.clone())
+        .collect();
+    let identities = load_identities_for_vault(&fps)?;
+    if identities.is_empty() {
+        return Err(error_no_identity_unlocked_detailed(
+            &discover_private_key_paths(),
+            &fps,
+        ));
+    }
+    let requires_extra_factor = ciphertext_requires_extra_factor(&ciphertext);
+    let passphrase = passphrase_for_ciphertext(&ciphertext, None)?;
+    let unlocked = Vault::unlock_metadata_with_passphrase(
+        ciphertext,
+        &identities,
+        passphrase.as_ref().map(|p| p.as_str()),
+    )
+    .map_err(|err| {
+        if requires_extra_factor {
+            err
+        } else {
+            error_no_identity_unlocked_detailed(&discover_private_key_paths(), &fps)
+        }
+    })?;
+    record_rollback(vault_path, generation)?;
+    Ok(unlocked)
+}
+
 /// Load the vault and decrypt only one profile when profile-key mode allows it.
 ///
 /// # Errors

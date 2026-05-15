@@ -92,9 +92,13 @@ profile entry also has its own random profile key and ciphertext. Use
 `sshenv security profile-policy rotate-key <profile>` to rotate one profile's
 data key without rotating other unchanged profile entries.
 
-Profile policies can also record explicit factor requirements:
+Profile policies can also record explicit factor requirements. Use
+`profile-policy status <profile>` to inspect the effective profile posture,
+including whether requirements are profile-specific cryptographic bindings,
+vault-level factors, or missing.
 
 ```sh
+sshenv security profile-policy status <profile>
 sshenv security profile-policy require-passphrase <profile> [--passphrase <v>]
 sshenv security profile-policy change-passphrase <profile> [--old-passphrase <v>] [--new-passphrase <v>]
 sshenv security profile-policy disable-passphrase <profile> [--passphrase <v>]

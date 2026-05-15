@@ -470,6 +470,32 @@ fn binary_profile_policy_migrate_preserves_secret_access() {
         String::from_utf8_lossy(&require_out.stderr)
     );
 
+    let status_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("security")
+        .arg("profile-policy")
+        .arg("status")
+        .arg("myprofile")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run profile-policy status");
+    assert!(
+        status_out.status.success(),
+        "profile-policy status failed: {}",
+        String::from_utf8_lossy(&status_out.stderr)
+    );
+    let status_stdout = String::from_utf8_lossy(&status_out.stdout);
+    assert!(
+        status_stdout.contains("profile factor metadata: passphrase=yes"),
+        "missing passphrase status: {status_stdout}"
+    );
+    assert!(
+        status_stdout.contains("requirement passphrase: profile-specific cryptographic binding"),
+        "missing binding status: {status_stdout}"
+    );
+
     let change_out = Command::new(&bin)
         .arg("--vault")
         .arg(&vault_path)

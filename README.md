@@ -67,6 +67,7 @@ sshenv security disable-passphrase [--passphrase <v>]
 sshenv security enable-device-seal
 sshenv security preset standard|recommended|portable|paranoid [--recipient-key <path-or-pubkey-line>]... [--passphrase <v>]
 sshenv security profile-policy list
+sshenv security profile-policy status <profile>
 sshenv security profile-policy migrate
 sshenv security profile-policy rotate-key <profile>
 sshenv security profile-policy require-passphrase <profile> [--passphrase <v>]

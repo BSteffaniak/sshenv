@@ -8,7 +8,7 @@ use sshenv_cli_models::{
     ChangePassphraseArgs, DisablePassphraseArgs, EnablePassphraseArgs,
     ProfilePolicyChangePassphraseArgs, ProfilePolicyDisablePassphraseArgs,
     ProfilePolicyRequirePassphraseArgs, ProfilePolicyRequirementArgs, ProfilePolicyRotateKeyArgs,
-    ProfilePolicySetArgs, SecurityPresetArg, SecurityPresetArgs,
+    ProfilePolicySetArgs, ProfilePolicyStatusArgs, SecurityPresetArg, SecurityPresetArgs,
 };
 use sshenv_vault::Vault;
 use sshenv_vault::models::{
@@ -20,7 +20,8 @@ use crate::commands::Context as CmdContext;
 #[cfg(feature = "passphrase-factor")]
 use crate::commands::unlock_ciphertext_with_passphrase;
 use crate::commands::{
-    load_and_unlock_profile, load_ciphertext_and_fps, save_vault, unlock_ciphertext,
+    load_and_unlock_metadata, load_and_unlock_profile, load_ciphertext_and_fps, save_vault,
+    unlock_ciphertext,
 };
 use crate::identity::{discover_private_key_paths, public_fingerprint_for_private_key};
 
@@ -126,6 +127,63 @@ pub fn profile_policy_list(ctx: &CmdContext) -> Result<()> {
     Ok(())
 }
 
+pub fn profile_policy_status(ctx: &CmdContext, args: ProfilePolicyStatusArgs) -> Result<()> {
+    let (vault, _key) = load_and_unlock_metadata(&ctx.vault_path)?;
+    let profile_exists = vault.profiles.profiles.contains_key(&args.profile)
+        || vault.profiles.profile_entries.contains_key(&args.profile);
+    let policy = vault.profiles.profile_policy(&args.profile);
+    if !profile_exists && policy.is_none() {
+        anyhow::bail!("no such profile: {}", args.profile);
+    }
+
+    let profile_key_mode = vault.profile_keys_enabled();
+    let independently_encrypted = vault.profiles.profile_entries.contains_key(&args.profile);
+
+    println!("profile: {}", args.profile);
+    println!("exists: {}", yes_no(profile_exists));
+    println!("profile-key mode: {}", enabled_disabled(profile_key_mode));
+    println!(
+        "independently encrypted: {}",
+        yes_no(independently_encrypted)
+    );
+
+    let Some(policy) = policy else {
+        println!("policy metadata: absent");
+        return Ok(());
+    };
+
+    println!("policy metadata: present");
+    println!("preset: {:?}", policy.preset);
+    println!("{}", format_profile_requirements(policy));
+    println!(
+        "profile factor metadata: passphrase={}, device-seal={}",
+        yes_no(profile_has_factor_metadata(
+            policy,
+            UnlockFactorKindV2::Passphrase
+        )),
+        profile_device_seal_metadata_label(policy)
+    );
+
+    for requirement in &policy.required_factors {
+        println!(
+            "requirement {}: {}",
+            profile_requirement_label(*requirement),
+            profile_requirement_source(&vault, policy, *requirement)
+        );
+    }
+
+    let warnings = profile_status_warnings(&vault, &args.profile, profile_exists, policy);
+    if warnings.is_empty() {
+        println!("warnings: none");
+    } else {
+        println!("warnings:");
+        for warning in warnings {
+            println!("- {warning}");
+        }
+    }
+    Ok(())
+}
+
 /// Print a warning when a profile's advisory policy is stronger than the
 /// current vault posture.
 pub fn warn_if_profile_policy_unmet(vault: &Vault, profile: &str) {
@@ -180,15 +238,99 @@ fn format_profile_requirements(policy: &ProfilePolicy) -> String {
     format!("required: {requirements}")
 }
 
+const fn yes_no(value: bool) -> &'static str {
+    if value { "yes" } else { "no" }
+}
+
+const fn enabled_disabled(value: bool) -> &'static str {
+    if value { "enabled" } else { "disabled" }
+}
+
+fn profile_has_factor_metadata(policy: &ProfilePolicy, kind: UnlockFactorKindV2) -> bool {
+    policy
+        .factor_metadata
+        .iter()
+        .any(|factor| factor.kind == kind)
+}
+
+fn profile_device_seal_metadata_label(policy: &ProfilePolicy) -> String {
+    let Some(factor) = policy
+        .factor_metadata
+        .iter()
+        .find(|factor| factor.kind == UnlockFactorKindV2::DeviceSeal)
+    else {
+        return "no".to_string();
+    };
+    factor
+        .params
+        .get("backend")
+        .map_or_else(|| "yes".to_string(), |backend| format!("yes ({backend})"))
+}
+
+fn profile_requirement_source(
+    vault: &Vault,
+    policy: &ProfilePolicy,
+    requirement: ProfileFactorRequirement,
+) -> String {
+    let kind = unlock_factor_kind_for_profile_requirement(requirement);
+    if profile_has_factor_metadata(policy, kind) {
+        return "profile-specific cryptographic binding".to_string();
+    }
+    if vault_has_factor(vault, kind) {
+        return "vault-level factor binding".to_string();
+    }
+    "missing".to_string()
+}
+
+fn profile_status_warnings(
+    vault: &Vault,
+    profile: &str,
+    profile_exists: bool,
+    policy: &ProfilePolicy,
+) -> Vec<String> {
+    let mut warnings = Vec::new();
+    if !profile_exists {
+        warnings.push("policy metadata exists for a missing profile".to_string());
+    }
+    if !vault.profile_keys_enabled() && !policy.required_factors.is_empty() {
+        warnings
+            .push("profile factor requirements exist but profile-key mode is disabled".to_string());
+    }
+    if vault.profile_keys_enabled()
+        && profile_exists
+        && !vault.profiles.profile_entries.contains_key(profile)
+    {
+        warnings.push(
+            "profile-key mode is enabled but this profile has no encrypted profile entry"
+                .to_string(),
+        );
+    }
+    for requirement in &policy.required_factors {
+        if !profile_requirement_satisfied(vault, policy, *requirement) {
+            warnings.push(format!(
+                "requirement {} is not satisfied by profile-specific metadata or a vault-level factor",
+                profile_requirement_label(*requirement)
+            ));
+        }
+    }
+    warnings
+}
+
+const fn unlock_factor_kind_for_profile_requirement(
+    requirement: ProfileFactorRequirement,
+) -> UnlockFactorKindV2 {
+    match requirement {
+        ProfileFactorRequirement::Passphrase => UnlockFactorKindV2::Passphrase,
+        ProfileFactorRequirement::DeviceSeal => UnlockFactorKindV2::DeviceSeal,
+    }
+}
+
 fn profile_requirement_satisfied(
     vault: &Vault,
     policy: &ProfilePolicy,
     requirement: ProfileFactorRequirement,
 ) -> bool {
-    let kind = match requirement {
-        ProfileFactorRequirement::Passphrase => UnlockFactorKindV2::Passphrase,
-        ProfileFactorRequirement::DeviceSeal => UnlockFactorKindV2::DeviceSeal,
-    };
+    let kind = unlock_factor_kind_for_profile_requirement(requirement);
     vault_has_factor(vault, kind)
         || policy
             .factor_metadata

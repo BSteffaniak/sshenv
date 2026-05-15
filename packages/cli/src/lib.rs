@@ -47,6 +47,9 @@ pub fn run(cli: Cli) -> Result<()> {
             SecurityCommand::Preset(args) => commands::security::preset(&ctx, args),
             SecurityCommand::ProfilePolicy(sub) => match sub {
                 ProfilePolicyCommand::List => commands::security::profile_policy_list(&ctx),
+                ProfilePolicyCommand::Status(args) => {
+                    commands::security::profile_policy_status(&ctx, args)
+                }
                 ProfilePolicyCommand::Migrate => commands::security::profile_policy_migrate(&ctx),
                 ProfilePolicyCommand::RotateKey(args) => {
                     commands::security::profile_policy_rotate_key(&ctx, args)
