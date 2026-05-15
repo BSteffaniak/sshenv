@@ -102,7 +102,7 @@ sshenv shims dir
 sshenv shims path
 ```
 
-Environment variables: `SSHENV_VAULT`, `SSHENV_SHIM_DIR`, `SSHENV_BINDINGS`, `SSHENV_SESSIONS`.
+Environment variables: `SSHENV_VAULT`, `SSHENV_SHIM_DIR`, `SSHENV_BINDINGS`, `SSHENV_SESSIONS`, `SSHENV_ROLLBACK`.
 
 ## Embedding sshenv in other apps
 

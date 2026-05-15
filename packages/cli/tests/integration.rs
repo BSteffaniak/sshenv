@@ -373,6 +373,71 @@ fn binary_migrate_vault_to_v2_preserves_secret_access() {
 }
 
 #[test]
+fn binary_rollback_protection_rejects_older_v2_generation() {
+    let bin = cargo_bin();
+    if !bin.exists() {
+        eprintln!("skipping: {} does not exist", bin.display());
+        return;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let vault_path = dir.path().join("vault");
+    init_vault_with_profile(&bin, &home, &vault_path, "myprofile");
+
+    let migrate_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("migrate-vault")
+        .arg("--to")
+        .arg("v2")
+        .arg("--recipient-key")
+        .arg(home.join(".ssh").join("id_ed25519.pub"))
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run migrate-vault");
+    assert!(migrate_out.status.success());
+
+    let old_vault = dir.path().join("old-vault");
+    std::fs::copy(&vault_path, &old_vault).unwrap();
+
+    let set_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("set")
+        .arg("myprofile")
+        .arg("OTHER")
+        .arg("--value")
+        .arg("newer")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run set on migrated vault");
+    assert!(set_out.status.success());
+
+    std::fs::copy(&old_vault, &vault_path).unwrap();
+
+    let show_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("show")
+        .arg("myprofile")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .env_remove("RUST_BACKTRACE")
+        .env_remove("RUST_LIB_BACKTRACE")
+        .output()
+        .expect("run show after rollback");
+    assert!(!show_out.status.success());
+    let stderr = String::from_utf8_lossy(&show_out.stderr);
+    assert!(
+        stderr.contains("rollback"),
+        "rollback error should mention rollback: {stderr}"
+    );
+}
+
+#[test]
 fn binary_security_preset_recommended_migrates_to_v2() {
     let bin = cargo_bin();
     if !bin.exists() {

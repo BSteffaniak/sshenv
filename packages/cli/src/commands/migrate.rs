@@ -2,7 +2,9 @@ use anyhow::{Result, bail};
 use sshenv_cli_models::{MigrateVaultArgs, VaultFormatVersionArg};
 use sshenv_vault::models::VERSION_V2;
 
-use crate::commands::{Context as CmdContext, load_ciphertext_and_fps, unlock_ciphertext};
+use crate::commands::{
+    Context as CmdContext, load_ciphertext_and_fps, save_vault, unlock_ciphertext,
+};
 
 pub fn run(ctx: &CmdContext, args: MigrateVaultArgs) -> Result<()> {
     match args.to {
@@ -24,7 +26,7 @@ fn migrate_to_v2(ctx: &CmdContext, recipient_keys: &[String]) -> Result<()> {
     if vault.header.version != VERSION_V2 {
         bail!("internal error: migration did not set v2 header");
     }
-    vault.save(&ctx.vault_path, &data_key)?;
+    save_vault(ctx, &mut vault, &data_key)?;
     eprintln!("Migrated vault to v2 policy format.");
     Ok(())
 }

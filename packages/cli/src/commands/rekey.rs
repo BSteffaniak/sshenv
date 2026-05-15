@@ -7,7 +7,7 @@ use sshenv_vault::{DataKey, Vault};
 
 use crate::commands::Context as CmdContext;
 #[cfg(feature = "rekey")]
-use crate::commands::{load_ciphertext_and_fps, unlock_ciphertext};
+use crate::commands::{load_ciphertext_and_fps, save_vault, unlock_ciphertext};
 use crate::identity::discover_public_key_paths;
 use crate::pubkey::load_public_key;
 
@@ -16,7 +16,7 @@ pub fn rotate_key(ctx: &CmdContext, args: RotateKeyArgs) -> Result<()> {
     let (ciphertext, recipients) = load_ciphertext_and_fps(&ctx.vault_path)?;
     let (mut vault, _old_key) = unlock_ciphertext(ciphertext, &recipients)?;
     let new_key = rotate_unlocked_vault(&mut vault, &args.recipient_keys)?;
-    vault.save(&ctx.vault_path, &new_key)?;
+    save_vault(ctx, &mut vault, &new_key)?;
     eprintln!(
         "Rotated vault data key for {} recipient(s).",
         vault.recipients.len()

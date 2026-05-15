@@ -4,7 +4,7 @@ use anyhow::{Context, Result, bail};
 use sshenv_cli_models::InitArgs;
 use sshenv_vault::{Vault, recipient::fingerprint_from_line};
 
-use crate::commands::Context as CmdContext;
+use crate::commands::{Context as CmdContext, save_vault};
 use crate::identity::discover_public_key_paths;
 use crate::picker::{PubkeyCandidate, select_pubkey_interactive};
 use crate::pubkey::load_public_key;
@@ -20,8 +20,8 @@ pub fn run(ctx: &CmdContext, args: InitArgs) -> Result<()> {
 
     let (line, fingerprint) = resolve_recipient(args.recipient_key.as_deref())?;
 
-    let (vault, key) = Vault::create(&line)?;
-    vault.save(&ctx.vault_path, &key)?;
+    let (mut vault, key) = Vault::create(&line)?;
+    save_vault(ctx, &mut vault, &key)?;
 
     eprintln!(
         "Created vault at {} with recipient {fingerprint}.",

@@ -5,7 +5,7 @@ use sshenv_shims::{
 };
 use zeroize::Zeroizing;
 
-use crate::commands::{Context as CmdContext, load_and_unlock};
+use crate::commands::{Context as CmdContext, load_and_unlock, save_vault};
 
 pub fn set(ctx: &CmdContext, args: SetArgs) -> Result<()> {
     let value = resolve_value(&args)?;
@@ -15,7 +15,7 @@ pub fn set(ctx: &CmdContext, args: SetArgs) -> Result<()> {
     vault
         .profiles
         .set(&args.profile, &args.var, value.as_str().to_string());
-    vault.save(&ctx.vault_path, &key)?;
+    save_vault(ctx, &mut vault, &key)?;
     eprintln!("Set {}/{}.", args.profile, args.var);
     Ok(())
 }
@@ -38,7 +38,7 @@ pub fn unset(ctx: &CmdContext, args: UnsetArgs) -> Result<()> {
     if !vault.profiles.unset(&args.profile, &args.var) {
         bail!("no such variable: {}/{}", args.profile, args.var);
     }
-    vault.save(&ctx.vault_path, &key)?;
+    save_vault(ctx, &mut vault, &key)?;
     eprintln!("Unset {}/{}.", args.profile, args.var);
     Ok(())
 }
@@ -92,7 +92,7 @@ pub fn rm(ctx: &CmdContext, args: RmProfileArgs) -> Result<()> {
     if !vault.profiles.remove_profile(&args.profile) {
         bail!("no such profile: {}", args.profile);
     }
-    vault.save(&ctx.vault_path, &key)?;
+    save_vault(ctx, &mut vault, &key)?;
     eprintln!("Removed profile {}.", args.profile);
     Ok(())
 }
@@ -102,7 +102,7 @@ pub fn rename(ctx: &CmdContext, args: RenameProfileArgs) -> Result<()> {
 
     let vault_changed = vault.profiles.rename_profile(&args.from, &args.to)?;
     if vault_changed {
-        vault.save(&ctx.vault_path, &key)?;
+        save_vault(ctx, &mut vault, &key)?;
         eprintln!("Renamed profile {} -> {}.", args.from, args.to);
     } else {
         eprintln!(

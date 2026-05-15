@@ -131,11 +131,17 @@ impl RecipientEntry {
 /// v1 format.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VaultPolicyMetadataV2 {
+    /// Monotonic local vault generation. This is used by optional rollback
+    /// protection to detect older valid vault copies being restored.
+    #[serde(default)]
+    pub generation: u64,
     /// Alternative unlock policies. Any one successful policy may unlock the
     /// vault data key.
+    #[serde(default)]
     pub policies: Vec<UnlockPolicyV2>,
     /// Recipient metadata retained so future rekey operations can re-wrap new
     /// data keys without asking users to re-provide public keys.
+    #[serde(default)]
     pub recipients: Vec<RecipientMetadataV2>,
 }
 

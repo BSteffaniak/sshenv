@@ -80,6 +80,15 @@ data key. Removing a recipient deletes their wrapped copy. **Past
 decrypts they performed are not revoked** — the data key has not
 changed. To revoke past access, rotate the data key (planned).
 
+## Rollback protection considerations
+
+When compiled with rollback protection, sshenv records the highest v2 vault
+generation seen for each local vault path in `~/.sshenv/rollback.toml` (or
+`$SSHENV_ROLLBACK`). This detects an older valid vault copy being restored on
+the same machine. The state is plaintext and contains only vault path identity
+and generation numbers. It is local best-effort protection, not a TPM-backed or
+remote monotonic counter.
+
 ## Session registry security considerations
 
 The session registry (`~/.sshenv/sessions.toml`, or `$SSHENV_SESSIONS`) is

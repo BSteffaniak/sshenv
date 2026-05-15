@@ -637,6 +637,26 @@ impl Vault {
         Ok(())
     }
 
+    /// Return the v2 metadata generation, if present.
+    #[must_use]
+    pub fn generation(&self) -> Option<u64> {
+        self.policy_metadata
+            .as_ref()
+            .map(|metadata| metadata.generation)
+    }
+
+    /// Increment and return the v2 metadata generation, if this is a v2 vault.
+    pub fn bump_generation(&mut self) -> Option<u64> {
+        if self.header.version != VERSION_V2 {
+            return None;
+        }
+        let metadata = self
+            .policy_metadata
+            .get_or_insert_with(|| policy_metadata_from_recipients(&self.recipients));
+        metadata.generation = metadata.generation.saturating_add(1);
+        Some(metadata.generation)
+    }
+
     /// Serialize, encrypt, and atomically write this vault to disk with
     /// mode `0600`.
     ///
@@ -676,6 +696,16 @@ pub struct CiphertextVault {
     pub policy_metadata: Option<VaultPolicyMetadataV2>,
     pub recipients: Vec<RecipientEntry>,
     pub payload_ciphertext: Vec<u8>,
+}
+
+impl CiphertextVault {
+    /// Return the v2 metadata generation, if present.
+    #[must_use]
+    pub fn generation(&self) -> Option<u64> {
+        self.policy_metadata
+            .as_ref()
+            .map(|metadata| metadata.generation)
+    }
 }
 
 /// Atomically write `bytes` to `path` with the given unix mode (ignored on
@@ -826,6 +856,7 @@ fn payload_aad_for_version(version: u8) -> Result<&'static [u8]> {
 
 fn policy_metadata_from_recipients(recipients: &[RecipientEntry]) -> VaultPolicyMetadataV2 {
     VaultPolicyMetadataV2 {
+        generation: 0,
         policies: Vec::new(),
         recipients: recipients
             .iter()

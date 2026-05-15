@@ -49,7 +49,8 @@ PAYLOAD     (variable)      AES-256-SIV ciphertext, AAD = "sshenv:v1:payload"
 
 v2 is an explicit migration target for policy metadata and stores recipient
 public descriptors so future data-key rotation can preserve recipient sets
-without asking for every public key again. v2 payload AAD is
+without asking for every public key again. v2 also carries a monotonic
+best-effort generation used by local rollback protection. v2 payload AAD is
 `"sshenv:v2:payload"`.
 
 Plaintext payload is JSON: `{ "profiles": { "<name>": { "<VAR>": "<value>" } } }`.

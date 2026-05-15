@@ -12,7 +12,7 @@ use sshenv_vault::models::{VERSION, VERSION_V2};
 use crate::commands::Context as CmdContext;
 #[cfg(feature = "passphrase-factor")]
 use crate::commands::unlock_ciphertext_with_passphrase;
-use crate::commands::{load_ciphertext_and_fps, unlock_ciphertext};
+use crate::commands::{load_ciphertext_and_fps, save_vault, unlock_ciphertext};
 use crate::identity::{discover_private_key_paths, public_fingerprint_for_private_key};
 
 #[cfg(feature = "passphrase-factor")]
@@ -23,7 +23,7 @@ pub fn enable_passphrase(ctx: &CmdContext, args: EnablePassphraseArgs) -> Result
     let (ciphertext, recipients) = load_ciphertext_and_fps(&ctx.vault_path)?;
     let (mut vault, data_key) = unlock_ciphertext(ciphertext, &recipients)?;
     vault.enable_passphrase_factor(passphrase.as_str())?;
-    vault.save(&ctx.vault_path, &data_key)?;
+    save_vault(ctx, &mut vault, &data_key)?;
     eprintln!("Enabled passphrase factor for this v2 vault.");
     Ok(())
 }
@@ -36,7 +36,7 @@ pub fn change_passphrase(ctx: &CmdContext, args: ChangePassphraseArgs) -> Result
     let (mut vault, data_key) =
         unlock_ciphertext_with_passphrase(ciphertext, &recipients, args.old_passphrase.as_deref())?;
     vault.change_passphrase_factor(new_passphrase.as_str())?;
-    vault.save(&ctx.vault_path, &data_key)?;
+    save_vault(ctx, &mut vault, &data_key)?;
     eprintln!("Changed passphrase factor for this v2 vault.");
     Ok(())
 }
@@ -47,7 +47,7 @@ pub fn disable_passphrase(ctx: &CmdContext, args: DisablePassphraseArgs) -> Resu
     let (mut vault, data_key) =
         unlock_ciphertext_with_passphrase(ciphertext, &recipients, args.passphrase.as_deref())?;
     vault.disable_passphrase_factor()?;
-    vault.save(&ctx.vault_path, &data_key)?;
+    save_vault(ctx, &mut vault, &data_key)?;
     eprintln!("Disabled passphrase factor for this v2 vault.");
     Ok(())
 }
@@ -83,7 +83,7 @@ pub fn enable_device_seal(ctx: &CmdContext) -> Result<()> {
     let (ciphertext, recipients) = load_ciphertext_and_fps(&ctx.vault_path)?;
     let (mut vault, data_key) = unlock_ciphertext(ciphertext, &recipients)?;
     vault.enable_device_seal_factor()?;
-    vault.save(&ctx.vault_path, &data_key)?;
+    save_vault(ctx, &mut vault, &data_key)?;
     eprintln!("Enabled device-seal factor for this v2 vault.");
     Ok(())
 }
@@ -132,7 +132,7 @@ fn apply_preset(
     }
 
     if changed {
-        vault.save(&ctx.vault_path, &data_key)?;
+        save_vault(ctx, &mut vault, &data_key)?;
         eprintln!("Applied {preset:?} security preset.");
     } else {
         eprintln!("{preset:?} security preset was already satisfied.");
@@ -228,6 +228,9 @@ fn print_vault_status(ctx: &CmdContext) -> Result<Option<HashSet<String>>> {
         "unknown format"
     };
     println!("format: {version_label}");
+    if let Some(generation) = ciphertext.generation() {
+        println!("generation: {generation}");
+    }
     println!("recipients: {}", ciphertext.recipients.len());
     println!(
         "passphrase factor: {}",
@@ -294,7 +297,10 @@ fn print_feature_status() {
     );
     println!("hardware keys:  planned");
     println!("threshold:      planned");
-    println!("rollback:       planned");
+    println!(
+        "rollback:       {}",
+        enabled_label(cfg!(feature = "rollback-protection"))
+    );
 }
 
 const fn enabled_label(enabled: bool) -> &'static str {

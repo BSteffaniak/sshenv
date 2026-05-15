@@ -53,6 +53,8 @@ impl Context {
 /// Propagates filesystem and decryption errors.
 pub fn load_and_unlock(vault_path: &Path) -> Result<(Vault, DataKey)> {
     let ciphertext = Vault::load_ciphertext(vault_path)?;
+    check_rollback(vault_path, &ciphertext)?;
+    let generation = ciphertext.generation();
     let fps: HashSet<String> = ciphertext
         .recipients
         .iter()
@@ -79,6 +81,10 @@ pub fn load_and_unlock(vault_path: &Path) -> Result<(Vault, DataKey)> {
             error_no_identity_unlocked_detailed(&discover_private_key_paths(), &fps)
         }
     })
+    .and_then(|unlocked| {
+        record_rollback(vault_path, generation)?;
+        Ok(unlocked)
+    })
 }
 
 /// Load the ciphertext vault and return both the ciphertext and the
@@ -90,6 +96,7 @@ pub fn load_and_unlock(vault_path: &Path) -> Result<(Vault, DataKey)> {
 /// Propagates filesystem errors.
 pub fn load_ciphertext_and_fps(vault_path: &Path) -> Result<(CiphertextVault, HashSet<String>)> {
     let ciphertext = Vault::load_ciphertext(vault_path)?;
+    check_rollback(vault_path, &ciphertext)?;
     let fps: HashSet<String> = ciphertext
         .recipients
         .iter()
@@ -149,6 +156,39 @@ pub fn unlock_ciphertext_with_passphrase(
             )
         }
     })
+}
+
+/// Save a vault and update local rollback-protection state when applicable.
+///
+/// # Errors
+///
+/// Returns an error if the vault cannot be saved or rollback state cannot be
+/// updated.
+pub fn save_vault(ctx: &Context, vault: &mut Vault, data_key: &DataKey) -> Result<()> {
+    let generation = vault.bump_generation();
+    vault.save(&ctx.vault_path, data_key)?;
+    record_rollback(&ctx.vault_path, generation)?;
+    Ok(())
+}
+
+#[cfg(feature = "rollback-protection")]
+fn check_rollback(vault_path: &Path, ciphertext: &CiphertextVault) -> Result<()> {
+    crate::rollback::check_generation(vault_path, ciphertext.generation())
+}
+
+#[cfg(not(feature = "rollback-protection"))]
+fn check_rollback(_vault_path: &Path, _ciphertext: &CiphertextVault) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(feature = "rollback-protection")]
+fn record_rollback(vault_path: &Path, generation: Option<u64>) -> Result<()> {
+    crate::rollback::record_generation(vault_path, generation)
+}
+
+#[cfg(not(feature = "rollback-protection"))]
+fn record_rollback(_vault_path: &Path, _generation: Option<u64>) -> Result<()> {
+    Ok(())
 }
 
 fn passphrase_for_ciphertext(

@@ -8,6 +8,8 @@ pub mod identity;
 pub mod picker;
 pub mod process;
 pub mod pubkey;
+#[cfg(feature = "rollback-protection")]
+pub mod rollback;
 pub mod session_registry;
 
 use anyhow::Result;

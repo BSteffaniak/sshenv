@@ -5,7 +5,9 @@ use anyhow::{Context, Result, bail};
 use sshenv_cli_models::{AddRecipientArgs, ListRecipientsArgs, RemoveRecipientArgs};
 use sshenv_vault::{Vault, recipient::fingerprint_from_line};
 
-use crate::commands::{Context as CmdContext, load_ciphertext_and_fps, unlock_ciphertext};
+use crate::commands::{
+    Context as CmdContext, load_ciphertext_and_fps, save_vault, unlock_ciphertext,
+};
 use crate::identity::discover_public_key_paths;
 use crate::picker::{PubkeyCandidate, select_pubkey_interactive};
 use crate::pubkey::load_public_key;
@@ -25,7 +27,7 @@ pub fn add(ctx: &CmdContext, args: AddRecipientArgs) -> Result<()> {
 
     let entry = vault.add_recipient(&pubkey_line, &key)?;
     let fingerprint = entry.fingerprint.clone();
-    vault.save(&ctx.vault_path, &key)?;
+    save_vault(ctx, &mut vault, &key)?;
 
     eprintln!("Added recipient {fingerprint}.");
     Ok(())
@@ -114,13 +116,13 @@ pub fn remove(ctx: &CmdContext, args: RemoveRecipientArgs) -> Result<()> {
     if args.rotate {
         let new_key =
             crate::commands::rekey::rotate_unlocked_vault(&mut vault, &args.recipient_keys)?;
-        vault.save(&ctx.vault_path, &new_key)?;
+        save_vault(ctx, &mut vault, &new_key)?;
         eprintln!(
             "Removed recipient {} and rotated vault data key.",
             args.fingerprint
         );
     } else {
-        vault.save(&ctx.vault_path, &key)?;
+        save_vault(ctx, &mut vault, &key)?;
         eprintln!("Removed recipient {}.", args.fingerprint);
     }
     Ok(())
