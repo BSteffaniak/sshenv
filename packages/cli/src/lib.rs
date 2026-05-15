@@ -24,6 +24,7 @@ pub fn run(cli: Cli) -> Result<()> {
     match cli.command {
         Command::Init(args) => commands::init::run(&ctx, args),
         Command::Doctor => commands::doctor::run(&ctx),
+        Command::RotateKey(args) => commands::rekey::rotate_key(&ctx, args),
         Command::Security(sub) => match sub {
             SecurityCommand::Status => commands::security::status(&ctx),
         },

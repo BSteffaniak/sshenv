@@ -309,6 +309,55 @@ fn binary_set_does_not_prompt_for_non_matching_encrypted_key() {
     );
 }
 
+#[test]
+fn binary_rotate_key_preserves_secret_access() {
+    let bin = cargo_bin();
+    if !bin.exists() {
+        eprintln!("skipping: {} does not exist", bin.display());
+        return;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let vault_path = dir.path().join("vault");
+    init_vault_with_profile(&bin, &home, &vault_path, "myprofile");
+
+    let rotate_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("rotate-key")
+        .arg("--recipient-key")
+        .arg(home.join(".ssh").join("id_ed25519.pub"))
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run rotate-key");
+    assert!(
+        rotate_out.status.success(),
+        "rotate-key failed: {}",
+        String::from_utf8_lossy(&rotate_out.stderr)
+    );
+
+    let show_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("show")
+        .arg("myprofile")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run show");
+    assert!(
+        show_out.status.success(),
+        "show failed after rotate: {}",
+        String::from_utf8_lossy(&show_out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&show_out.stdout).contains("DUMMY=value"),
+        "rotated vault did not preserve profile contents"
+    );
+}
+
 /// When the host has no SSH private key that matches a vault recipient,
 /// the error must be detailed and helpful (not a terse backtrace).
 #[test]

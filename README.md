@@ -59,11 +59,12 @@ pi-openai
 sshenv init [--recipient-key <path-or-pubkey-line>] [--vault <path>]
 sshenv doctor
 sshenv security status
+sshenv rotate-key [--recipient-key <path-or-pubkey-line>]...
 
 # Recipients
 sshenv add-recipient --key <path-or-pubkey-line>
 sshenv list-recipients [--verbose]
-sshenv remove-recipient --fingerprint <fp>
+sshenv remove-recipient --fingerprint <fp> [--rotate] [--recipient-key <path-or-pubkey-line>]...
 
 # Profiles
 sshenv set <profile> <VAR> [--value <v>]          # hidden prompt if --value omitted

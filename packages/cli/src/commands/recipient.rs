@@ -110,7 +110,18 @@ pub fn remove(ctx: &CmdContext, args: RemoveRecipientArgs) -> Result<()> {
     if !vault.remove_recipient(&args.fingerprint) {
         bail!("no recipient with fingerprint {}", args.fingerprint);
     }
-    vault.save(&ctx.vault_path, &key)?;
-    eprintln!("Removed recipient {}.", args.fingerprint);
+
+    if args.rotate {
+        let new_key =
+            crate::commands::rekey::rotate_unlocked_vault(&mut vault, &args.recipient_keys)?;
+        vault.save(&ctx.vault_path, &new_key)?;
+        eprintln!(
+            "Removed recipient {} and rotated vault data key.",
+            args.fingerprint
+        );
+    } else {
+        vault.save(&ctx.vault_path, &key)?;
+        eprintln!("Removed recipient {}.", args.fingerprint);
+    }
     Ok(())
 }

@@ -35,6 +35,8 @@ pub enum Command {
     Init(InitArgs),
     /// Run checks on the vault, recipients, and shim setup.
     Doctor,
+    /// Rotate the vault data key while preserving current recipients.
+    RotateKey(RotateKeyArgs),
     /// Inspect and configure security posture.
     #[command(subcommand)]
     Security(SecurityCommand),
@@ -74,6 +76,14 @@ pub enum Command {
     Shims(ShimsCommand),
 }
 
+#[derive(Debug, clap::Args)]
+pub struct RotateKeyArgs {
+    /// Public key for a current recipient. Repeat for each recipient that
+    /// cannot be discovered from local `~/.ssh/*.pub` files.
+    #[arg(long = "recipient-key", value_name = "PATH_OR_LINE")]
+    pub recipient_keys: Vec<String>,
+}
+
 #[derive(Debug, Subcommand)]
 pub enum SecurityCommand {
     /// Show vault version, enabled hardening features, and key-strength hints.
@@ -111,6 +121,13 @@ pub struct RemoveRecipientArgs {
     /// `list-recipients`).
     #[arg(long, value_name = "SHA256:...")]
     pub fingerprint: String,
+    /// Also rotate the vault data key after removing the recipient.
+    #[arg(long)]
+    pub rotate: bool,
+    /// Public key for a remaining current recipient when `--rotate` cannot
+    /// discover it from local `~/.ssh/*.pub` files. Repeat as needed.
+    #[arg(long = "recipient-key", value_name = "PATH_OR_LINE")]
+    pub recipient_keys: Vec<String>,
 }
 
 #[derive(Debug, clap::Args)]

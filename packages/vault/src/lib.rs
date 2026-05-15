@@ -14,6 +14,8 @@ pub mod format;
 pub mod identity;
 pub mod recipient;
 
+#[cfg(feature = "rekey")]
+use std::collections::BTreeSet;
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::io::Write;
@@ -340,6 +342,55 @@ impl Vault {
         self.recipients.len() < before
     }
 
+    /// Generate a new data key and re-wrap it to the same recipient set.
+    ///
+    /// The current v1 format does not persist public key lines, so callers
+    /// must provide the public keys for every current recipient. This keeps
+    /// rotation explicit and avoids accidentally changing the vault's
+    /// authorized recipient set.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any provided key is invalid, if the provided keys
+    /// contain duplicates, or if their fingerprints do not exactly match the
+    /// vault's current recipients.
+    #[cfg(feature = "rekey")]
+    pub fn rotate_data_key(&mut self, recipient_public_key_lines: &[String]) -> Result<DataKey> {
+        let expected: BTreeSet<String> = self
+            .recipients
+            .iter()
+            .map(|recipient| recipient.fingerprint.clone())
+            .collect();
+        let new_data_key = generate_data_key();
+        let mut new_recipients = Vec::with_capacity(recipient_public_key_lines.len());
+        let mut provided = BTreeSet::new();
+
+        for public_key_line in recipient_public_key_lines {
+            let entry = recipient::build_entry_for_public_key_line(
+                public_key_line,
+                new_data_key.as_slice(),
+            )?;
+            if !provided.insert(entry.fingerprint.clone()) {
+                return Err(VaultModelsError::DuplicateRecipient(entry.fingerprint).into());
+            }
+            new_recipients.push(entry);
+        }
+
+        if provided != expected {
+            let missing: Vec<&String> = expected.difference(&provided).collect();
+            let unexpected: Vec<&String> = provided.difference(&expected).collect();
+            return Err(anyhow!(
+                "recipient keys do not match current vault recipients; missing: {}; unexpected: {}",
+                format_fingerprint_list(&missing),
+                format_fingerprint_list(&unexpected),
+            ));
+        }
+
+        new_recipients.sort_by(|a, b| a.fingerprint.cmp(&b.fingerprint));
+        self.recipients = new_recipients;
+        Ok(new_data_key)
+    }
+
     /// Serialize, encrypt, and atomically write this vault to disk with
     /// mode `0600`.
     ///
@@ -375,6 +426,19 @@ pub struct CiphertextVault {
 /// # Errors
 ///
 /// Returns an error if any filesystem operation fails.
+#[cfg(feature = "rekey")]
+fn format_fingerprint_list(values: &[&String]) -> String {
+    if values.is_empty() {
+        "(none)".to_string()
+    } else {
+        values
+            .iter()
+            .map(|value| value.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
 pub fn atomic_write(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
     let parent = path
         .parent()
@@ -511,6 +575,32 @@ mod tests {
         v.save(&path, &key).expect("save");
         let meta = fs::metadata(&path).expect("meta");
         assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+    }
+
+    #[test]
+    #[cfg(feature = "rekey")]
+    fn rotate_data_key_preserves_recipient_access() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("vault");
+
+        let (pubkey_a, id_a) = generate_keypair();
+        let (pubkey_b, id_b) = generate_keypair();
+
+        let (mut v, old_key) = Vault::create(&pubkey_a).expect("create");
+        v.add_recipient(&pubkey_b, &old_key).expect("add B");
+        v.profiles.set("p", "K", "rotated".into());
+
+        let new_key = v.rotate_data_key(&[pubkey_a, pubkey_b]).expect("rotate");
+        assert_ne!(old_key.as_slice(), new_key.as_slice());
+        v.save(&path, &new_key).expect("save");
+
+        let ct = Vault::load_ciphertext(&path).unwrap();
+        let identities: Vec<Box<dyn age::Identity>> = vec![id_a, id_b];
+        let (unlocked, _) = Vault::unlock(ct, &identities).expect("unlock after rotate");
+        assert_eq!(
+            unlocked.profiles.get("p").unwrap().get("K").unwrap(),
+            "rotated"
+        );
     }
 
     #[test]

@@ -138,6 +138,14 @@ fn print_recommendations(vault_recipients: Option<&HashSet<String>>) {
 
     println!("- Keep authorized SSH private keys passphrase-encrypted.");
     println!("- Use per-device SSH keys so a stolen key can be removed independently.");
-    println!("- Rotate the vault data key after recipient removal once rekey support lands.");
+    if cfg!(feature = "rekey") {
+        println!(
+            "- Rotate the vault data key after recipient removal with `sshenv rotate-key` or `remove-recipient --rotate`."
+        );
+    } else {
+        println!(
+            "- Use a build with the `rekey` feature to rotate data keys after recipient removal."
+        );
+    }
     println!("- Migrate to the future v2 policy format before enabling multi-factor policies.");
 }
