@@ -301,6 +301,13 @@ fn profile_policy_require_factor(
 ) -> Result<()> {
     let (mut vault, data_key) = crate::commands::load_and_unlock(&ctx.vault_path)?;
     ensure_profile_policy_editable(&vault, &args.profile)?;
+    if !profile_requirement_satisfied(&vault, requirement) {
+        anyhow::bail!(
+            "profile {} cannot require {} until that vault-level factor is enabled",
+            args.profile,
+            profile_requirement_label(requirement)
+        );
+    }
     let mut policy = existing_or_default_profile_policy(&vault, &args.profile);
     if !policy.required_factors.contains(&requirement) {
         policy.required_factors.push(requirement);

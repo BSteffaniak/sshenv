@@ -25,9 +25,10 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow};
 use sshenv_vault_models::{
-    DATA_KEY_LEN, PAYLOAD_AAD, ProfileEntry, ProfileMap, RecipientEntry, RecipientMetadataV2,
-    UnlockFactorKindV2, V2_PAYLOAD_AAD, V2_PROFILE_KEY_AAD, V2_PROFILE_PAYLOAD_AAD, VERSION,
-    VERSION_V2, VaultHeader, VaultModelsError, VaultPolicyMetadataV2,
+    DATA_KEY_LEN, PAYLOAD_AAD, ProfileEntry, ProfileFactorRequirement, ProfileMap, RecipientEntry,
+    RecipientMetadataV2, UnlockFactorKindV2, V2_PAYLOAD_AAD, V2_PROFILE_KEY_AAD,
+    V2_PROFILE_PAYLOAD_AAD, VERSION, VERSION_V2, VaultHeader, VaultModelsError,
+    VaultPolicyMetadataV2,
 };
 use zeroize::Zeroizing;
 
@@ -320,7 +321,7 @@ impl Vault {
         let profiles = if plaintext.is_empty() {
             ProfileMap::default()
         } else {
-            decode_profiles_from_payload(&plaintext, payload_key.as_slice())?
+            decode_profiles_from_payload(&plaintext, payload_key.as_slice(), &payload_key_factors)?
         };
 
         Ok((
@@ -721,6 +722,7 @@ impl Vault {
             payload_key.as_slice(),
             self.profile_keys_enabled(),
             &self.profile_key_rotations,
+            &self.payload_key_factors,
         )?;
         let plaintext = Zeroizing::new(plaintext);
         let aad = payload_aad_for_version(self.header.version)?;
@@ -796,7 +798,11 @@ fn copy_data_key(data_key: &[u8]) -> Zeroizing<[u8; DATA_KEY_LEN]> {
     Zeroizing::new(out)
 }
 
-fn decode_profiles_from_payload(payload: &[u8], payload_key: &[u8]) -> Result<ProfileMap> {
+fn decode_profiles_from_payload(
+    payload: &[u8],
+    payload_key: &[u8],
+    payload_key_factors: &[PayloadKeyFactor],
+) -> Result<ProfileMap> {
     let mut profiles: ProfileMap =
         serde_json::from_slice(payload).context("decrypted vault payload was not valid JSON")?;
     if profiles.profile_entries.is_empty() {
@@ -813,8 +819,15 @@ fn decode_profiles_from_payload(payload: &[u8], payload_key: &[u8]) -> Result<Pr
                 profile_key.len()
             ));
         }
-        let profile_plaintext = decrypt_payload_with_aad(
+        let requirements = profile_factor_requirements(&profiles, profile);
+        let profile_payload_key = profile_payload_key_for_requirements(
             profile_key.as_slice(),
+            requirements,
+            payload_key_factors,
+        )
+        .with_context(|| format!("failed to derive profile payload key for {profile}"))?;
+        let profile_plaintext = decrypt_payload_with_aad(
+            profile_payload_key.as_slice(),
             &entry.ciphertext,
             V2_PROFILE_PAYLOAD_AAD,
         )
@@ -831,6 +844,7 @@ fn encode_profiles_for_payload(
     payload_key: &[u8],
     profile_keys_enabled: bool,
     profile_key_rotations: &BTreeSet<String>,
+    payload_key_factors: &[PayloadKeyFactor],
 ) -> Result<Vec<u8>> {
     if !profile_keys_enabled {
         let mut encoded = profiles.clone();
@@ -841,14 +855,28 @@ fn encode_profiles_for_payload(
     let mut encoded = profiles.clone();
     encoded.profile_entries.clear();
     for (profile, vars) in &profiles.profiles {
+        let requirements = profile_factor_requirements(profiles, profile);
         let reusable_entry = profiles.profile_entries.get(profile).filter(|entry| {
             !profile_key_rotations.contains(profile)
-                && profile_entry_matches_vars(entry, payload_key, vars).unwrap_or(false)
+                && profile_entry_matches_vars(
+                    entry,
+                    payload_key,
+                    vars,
+                    requirements,
+                    payload_key_factors,
+                )
+                .unwrap_or(false)
         });
         let entry = if let Some(entry) = reusable_entry {
             entry.clone()
         } else {
-            encrypt_profile_entry(profile, vars, payload_key)?
+            encrypt_profile_entry(
+                profile,
+                vars,
+                payload_key,
+                requirements,
+                payload_key_factors,
+            )?
         };
         encoded.profile_entries.insert(profile.clone(), entry);
     }
@@ -860,12 +888,20 @@ fn encrypt_profile_entry(
     profile: &str,
     vars: &BTreeMap<String, String>,
     payload_key: &[u8],
+    requirements: &[ProfileFactorRequirement],
+    payload_key_factors: &[PayloadKeyFactor],
 ) -> Result<ProfileEntry> {
     let profile_key = generate_data_key();
+    let profile_payload_key = profile_payload_key_for_requirements(
+        profile_key.as_slice(),
+        requirements,
+        payload_key_factors,
+    )
+    .with_context(|| format!("failed to derive profile payload key for {profile}"))?;
     let profile_plaintext = serde_json::to_vec(vars)
         .with_context(|| format!("failed to serialize profile {profile}"))?;
     let ciphertext = encrypt_payload_with_aad(
-        profile_key.as_slice(),
+        profile_payload_key.as_slice(),
         &profile_plaintext,
         V2_PROFILE_PAYLOAD_AAD,
     )
@@ -883,14 +919,21 @@ fn profile_entry_matches_vars(
     entry: &ProfileEntry,
     payload_key: &[u8],
     vars: &BTreeMap<String, String>,
+    requirements: &[ProfileFactorRequirement],
+    payload_key_factors: &[PayloadKeyFactor],
 ) -> Result<bool> {
     let profile_key = decrypt_payload_with_aad(payload_key, &entry.wrapped_key, V2_PROFILE_KEY_AAD)
         .context("failed to decrypt existing profile key")?;
     if profile_key.len() != DATA_KEY_LEN {
         return Ok(false);
     }
-    let profile_plaintext = decrypt_payload_with_aad(
+    let profile_payload_key = profile_payload_key_for_requirements(
         profile_key.as_slice(),
+        requirements,
+        payload_key_factors,
+    )?;
+    let profile_plaintext = decrypt_payload_with_aad(
+        profile_payload_key.as_slice(),
         &entry.ciphertext,
         V2_PROFILE_PAYLOAD_AAD,
     )
@@ -898,6 +941,76 @@ fn profile_entry_matches_vars(
     let previous_vars: BTreeMap<String, String> = serde_json::from_slice(&profile_plaintext)
         .context("existing profile payload was not valid JSON")?;
     Ok(&previous_vars == vars)
+}
+
+fn profile_factor_requirements<'a>(
+    profiles: &'a ProfileMap,
+    profile: &str,
+) -> &'a [ProfileFactorRequirement] {
+    profiles
+        .profile_policies
+        .get(profile)
+        .map_or(&[], |policy| policy.required_factors.as_slice())
+}
+
+fn profile_payload_key_for_requirements(
+    profile_key: &[u8],
+    requirements: &[ProfileFactorRequirement],
+    payload_key_factors: &[PayloadKeyFactor],
+) -> Result<Zeroizing<[u8; DATA_KEY_LEN]>> {
+    let mut current = copy_data_key(profile_key);
+    for requirement in requirements {
+        current =
+            bind_profile_key_to_requirement(current.as_slice(), *requirement, payload_key_factors)?;
+    }
+    Ok(current)
+}
+
+#[cfg(any(feature = "passphrase-factor", feature = "device-seal"))]
+fn bind_profile_key_to_requirement(
+    profile_key: &[u8],
+    requirement: ProfileFactorRequirement,
+    payload_key_factors: &[PayloadKeyFactor],
+) -> Result<Zeroizing<[u8; DATA_KEY_LEN]>> {
+    let kind = unlock_factor_kind_for_profile_requirement(requirement);
+    let factor = payload_key_factors
+        .iter()
+        .find(|factor| factor.kind == kind)
+        .ok_or_else(|| {
+            anyhow!(
+                "profile requires {} factor, but that vault factor is not available",
+                profile_factor_requirement_label(requirement)
+            )
+        })?;
+    Ok(bind_data_key_to_factor(profile_key, factor.key.as_slice()))
+}
+
+#[cfg(not(any(feature = "passphrase-factor", feature = "device-seal")))]
+fn bind_profile_key_to_requirement(
+    _profile_key: &[u8],
+    requirement: ProfileFactorRequirement,
+    _payload_key_factors: &[PayloadKeyFactor],
+) -> Result<Zeroizing<[u8; DATA_KEY_LEN]>> {
+    Err(anyhow!(
+        "profile requires {} factor, but this sshenv build has no factor support",
+        profile_factor_requirement_label(requirement)
+    ))
+}
+
+const fn unlock_factor_kind_for_profile_requirement(
+    requirement: ProfileFactorRequirement,
+) -> UnlockFactorKindV2 {
+    match requirement {
+        ProfileFactorRequirement::Passphrase => UnlockFactorKindV2::Passphrase,
+        ProfileFactorRequirement::DeviceSeal => UnlockFactorKindV2::DeviceSeal,
+    }
+}
+
+const fn profile_factor_requirement_label(requirement: ProfileFactorRequirement) -> &'static str {
+    match requirement {
+        ProfileFactorRequirement::Passphrase => "passphrase",
+        ProfileFactorRequirement::DeviceSeal => "device-seal",
+    }
 }
 
 fn payload_key_factors_for_metadata(
@@ -1293,6 +1406,79 @@ mod tests {
         .expect("decrypt outer payload");
         let encoded: ProfileMap = serde_json::from_slice(&plaintext).expect("profile map json");
         encoded.profile_entries
+    }
+
+    #[test]
+    #[cfg(feature = "passphrase-factor")]
+    fn profile_requirement_binds_profile_payload_to_factor() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("vault");
+
+        let (pubkey, _identity) = generate_keypair();
+        let (mut v, key) = Vault::create(&pubkey).expect("create");
+        v.profiles.set("p", "K", "factor-bound".into());
+        v.migrate_to_v2(std::slice::from_ref(&pubkey))
+            .expect("migrate");
+        v.enable_profile_keys().expect("enable profile keys");
+        v.enable_passphrase_factor("profile passphrase")
+            .expect("enable passphrase");
+        v.profiles
+            .set_profile_policy(
+                "p",
+                sshenv_vault_models::ProfilePolicy {
+                    preset: sshenv_vault_models::ProfilePolicyPreset::Standard,
+                    required_factors: vec![ProfileFactorRequirement::Passphrase],
+                },
+            )
+            .expect("set profile policy");
+        v.save(&path, &key).expect("save factor-bound profile");
+
+        let parsed = Vault::load_ciphertext(&path).expect("load ciphertext");
+        let factor_keys = payload_key_factors_for_metadata(
+            parsed.policy_metadata.as_ref(),
+            Some("profile passphrase"),
+        )
+        .expect("derive factors");
+        let payload_key = payload_key_for_data_key(key.as_slice(), &factor_keys);
+        let plaintext = decrypt_payload_with_aad(
+            payload_key.as_slice(),
+            &parsed.payload_ciphertext,
+            V2_PAYLOAD_AAD,
+        )
+        .expect("decrypt outer payload");
+        let encoded: ProfileMap = serde_json::from_slice(&plaintext).expect("profile map json");
+        let entry = encoded.profile_entries.get("p").expect("profile entry");
+        let raw_profile_key = decrypt_payload_with_aad(
+            payload_key.as_slice(),
+            &entry.wrapped_key,
+            V2_PROFILE_KEY_AAD,
+        )
+        .expect("unwrap profile key");
+
+        assert!(
+            decrypt_payload_with_aad(
+                raw_profile_key.as_slice(),
+                &entry.ciphertext,
+                V2_PROFILE_PAYLOAD_AAD,
+            )
+            .is_err(),
+            "raw profile key should not decrypt factor-bound profile payload"
+        );
+        let passphrase_factor = factor_keys
+            .iter()
+            .find(|factor| factor.kind == UnlockFactorKindV2::Passphrase)
+            .expect("passphrase factor key");
+        let bound_profile_key =
+            bind_data_key_to_factor(raw_profile_key.as_slice(), passphrase_factor.key.as_slice());
+        let profile_plaintext = decrypt_payload_with_aad(
+            bound_profile_key.as_slice(),
+            &entry.ciphertext,
+            V2_PROFILE_PAYLOAD_AAD,
+        )
+        .expect("decrypt bound profile payload");
+        let vars: BTreeMap<String, String> =
+            serde_json::from_slice(&profile_plaintext).expect("profile vars json");
+        assert_eq!(vars.get("K").unwrap(), "factor-bound");
     }
 
     #[test]

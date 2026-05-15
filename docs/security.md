@@ -100,10 +100,12 @@ sshenv security profile-policy require-device-seal <profile>
 sshenv security profile-policy clear-requirements <profile>
 ```
 
-These requirements are opt-in and currently enforced against vault-level
-factors before a profile is shown, exported, or used by `sshenv run`. They are
-scaffolding for future cryptographic binding of individual profile keys to
-profile-specific factors.
+These requirements are opt-in. They require the corresponding vault-level
+factor to be enabled, and profile-key mode binds the selected profile's inner
+ciphertext to the available factor key when the policy is saved. The CLI also
+checks the requirements before a profile is shown, exported, or used by
+`sshenv run`. Future work may decouple these from vault-level factors so only
+selected profiles require extra prompts.
 
 v2 vaults can also store encrypted advisory policy metadata for individual
 profiles. Preset metadata is not yet a cryptographic boundary by itself.
