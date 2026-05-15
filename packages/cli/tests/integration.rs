@@ -432,6 +432,26 @@ fn binary_profile_policy_metadata_roundtrips() {
     let stdout = String::from_utf8_lossy(&list_out.stdout);
     assert!(stdout.contains("myprofile"), "missing profile: {stdout}");
     assert!(stdout.contains("Paranoid"), "missing preset: {stdout}");
+    assert!(
+        stdout.contains("unmet"),
+        "missing unmet posture note: {stdout}"
+    );
+
+    let show_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("show")
+        .arg("myprofile")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run show with advisory policy");
+    assert!(show_out.status.success());
+    let stderr = String::from_utf8_lossy(&show_out.stderr);
+    assert!(
+        stderr.contains("advisory policy"),
+        "missing advisory warning: {stderr}"
+    );
 }
 
 #[test]

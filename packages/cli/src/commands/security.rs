@@ -100,9 +100,92 @@ pub fn profile_policy_list(ctx: &CmdContext) -> Result<()> {
         return Ok(());
     }
     for (profile, policy) in &vault.profiles.profile_policies {
-        println!("{profile}\t{:?}", policy.preset);
+        let findings = profile_policy_findings(&vault, policy.preset);
+        if findings.is_empty() {
+            println!("{profile}\t{:?}\tok", policy.preset);
+        } else {
+            println!(
+                "{profile}\t{:?}\tadvisory-only; unmet: {}",
+                policy.preset,
+                findings.join(", ")
+            );
+        }
     }
     Ok(())
+}
+
+/// Print a warning when a profile's advisory policy is stronger than the
+/// current vault posture.
+pub fn warn_if_profile_policy_unmet(vault: &Vault, profile: &str) {
+    let Some(policy) = vault.profiles.profile_policy(profile) else {
+        return;
+    };
+    let findings = profile_policy_findings(vault, policy.preset);
+    if findings.is_empty() {
+        return;
+    }
+    eprintln!(
+        "warning: profile '{profile}' has advisory policy {:?}, but the current vault posture does not satisfy: {}. Per-profile cryptographic enforcement is planned but not active yet.",
+        policy.preset,
+        findings.join(", ")
+    );
+}
+
+fn profile_policy_findings(vault: &Vault, preset: ProfilePolicyPreset) -> Vec<String> {
+    let mut findings = Vec::new();
+    let has_v2 = vault.header.version == VERSION_V2;
+    let has_passphrase =
+        vault_has_factor(vault, sshenv_vault::models::UnlockFactorKindV2::Passphrase);
+    let has_device_seal =
+        vault_has_factor(vault, sshenv_vault::models::UnlockFactorKindV2::DeviceSeal);
+
+    match preset {
+        ProfilePolicyPreset::Standard => {}
+        ProfilePolicyPreset::Recommended => {
+            if !has_v2 {
+                findings.push("vault is not v2".to_string());
+            }
+            if device_seal_backend_status() != "none" && !has_device_seal {
+                findings.push("device-seal factor disabled".to_string());
+            }
+        }
+        ProfilePolicyPreset::Portable => {
+            if !has_v2 {
+                findings.push("vault is not v2".to_string());
+            }
+            if !has_passphrase {
+                findings.push("passphrase factor disabled".to_string());
+            }
+        }
+        ProfilePolicyPreset::Paranoid => {
+            if !has_v2 {
+                findings.push("vault is not v2".to_string());
+            }
+            if !has_passphrase {
+                findings.push("passphrase factor disabled".to_string());
+            }
+            if !has_device_seal {
+                findings.push("device-seal factor disabled".to_string());
+            }
+            if !cfg!(feature = "rollback-protection") {
+                findings.push("rollback protection not compiled in".to_string());
+            }
+            if !cfg!(feature = "runtime-hardening") {
+                findings.push("runtime hardening not compiled in".to_string());
+            }
+        }
+    }
+    findings
+}
+
+fn vault_has_factor(vault: &Vault, kind: sshenv_vault::models::UnlockFactorKindV2) -> bool {
+    vault
+        .policy_metadata
+        .as_ref()
+        .into_iter()
+        .flat_map(|metadata| &metadata.policies)
+        .flat_map(|policy| &policy.factors)
+        .any(|factor| factor.kind == kind)
 }
 
 pub fn profile_policy_set(ctx: &CmdContext, args: ProfilePolicySetArgs) -> Result<()> {
