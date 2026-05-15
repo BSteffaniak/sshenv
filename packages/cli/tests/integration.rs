@@ -666,6 +666,82 @@ fn binary_profile_policy_migrate_preserves_secret_access() {
 }
 
 #[test]
+fn binary_profile_policy_apply_migrates_v1_to_enforced_v2() {
+    let bin = cargo_bin();
+    if !bin.exists() {
+        eprintln!("skipping: {} does not exist", bin.display());
+        return;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let vault_path = dir.path().join("vault");
+    init_vault_with_profile(&bin, &home, &vault_path, "myprofile");
+
+    let apply_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("security")
+        .arg("profile-policy")
+        .arg("apply")
+        .arg("myprofile")
+        .arg("--preset")
+        .arg("portable")
+        .arg("--recipient-key")
+        .arg(home.join(".ssh").join("id_ed25519.pub"))
+        .arg("--passphrase")
+        .arg("profile-passphrase")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run profile-policy apply portable from v1");
+    assert!(
+        apply_out.status.success(),
+        "profile-policy apply failed: {}",
+        String::from_utf8_lossy(&apply_out.stderr)
+    );
+
+    let status_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("security")
+        .arg("profile-policy")
+        .arg("status")
+        .arg("myprofile")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run profile-policy status");
+    assert!(status_out.status.success());
+    let status_stdout = String::from_utf8_lossy(&status_out.stdout);
+    assert!(
+        status_stdout.contains("profile-key mode: enabled"),
+        "missing profile-key mode: {status_stdout}"
+    );
+    assert!(
+        status_stdout.contains("preset: Portable"),
+        "missing preset: {status_stdout}"
+    );
+    assert!(
+        status_stdout.contains("requirement passphrase: profile-specific cryptographic binding"),
+        "missing passphrase binding: {status_stdout}"
+    );
+
+    let show_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("show")
+        .arg("myprofile")
+        .env("HOME", &home)
+        .env("SSHENV_PROFILE_PASSPHRASE", "profile-passphrase")
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run show after profile-policy apply");
+    assert!(show_out.status.success());
+    assert!(String::from_utf8_lossy(&show_out.stdout).contains("DUMMY=value"));
+}
+
+#[test]
 fn binary_profile_policy_metadata_roundtrips() {
     let bin = cargo_bin();
     if !bin.exists() {

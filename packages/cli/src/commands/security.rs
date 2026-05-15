@@ -631,11 +631,7 @@ fn existing_or_default_profile_policy(vault: &Vault, profile: &str) -> ProfilePo
 
 pub fn profile_policy_apply(ctx: &CmdContext, args: ProfilePolicyApplyArgs) -> Result<()> {
     let (mut vault, data_key) = load_and_unlock_profile(&ctx.vault_path, &args.profile)?;
-    if vault.header.version != VERSION_V2 {
-        anyhow::bail!(
-            "profile policy enforcement requires v2; run `sshenv migrate-vault --to v2` first"
-        );
-    }
+    migrate_to_v2_if_needed(&mut vault, &args.recipient_keys)?;
     if !vault.profile_keys_enabled() {
         vault.enable_profile_keys()?;
     }
