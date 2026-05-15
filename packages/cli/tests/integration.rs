@@ -742,6 +742,105 @@ fn binary_profile_policy_apply_migrates_v1_to_enforced_v2() {
 }
 
 #[test]
+fn binary_profile_policy_repair_enforces_advisory_portable() {
+    let bin = cargo_bin();
+    if !bin.exists() {
+        eprintln!("skipping: {} does not exist", bin.display());
+        return;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let vault_path = dir.path().join("vault");
+    init_vault_with_profile(&bin, &home, &vault_path, "myprofile");
+
+    let migrate_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("migrate-vault")
+        .arg("--to")
+        .arg("v2")
+        .arg("--recipient-key")
+        .arg(home.join(".ssh").join("id_ed25519.pub"))
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run migrate-vault");
+    assert!(migrate_out.status.success());
+
+    let set_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("security")
+        .arg("profile-policy")
+        .arg("set")
+        .arg("myprofile")
+        .arg("--preset")
+        .arg("portable")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run profile-policy set portable");
+    assert!(
+        set_out.status.success(),
+        "profile-policy set failed: {}",
+        String::from_utf8_lossy(&set_out.stderr)
+    );
+
+    let repair_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("security")
+        .arg("profile-policy")
+        .arg("repair")
+        .arg("myprofile")
+        .arg("--passphrase")
+        .arg("repair-passphrase")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run profile-policy repair");
+    assert!(
+        repair_out.status.success(),
+        "profile-policy repair failed: {}",
+        String::from_utf8_lossy(&repair_out.stderr)
+    );
+
+    let status_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("security")
+        .arg("profile-policy")
+        .arg("status")
+        .arg("myprofile")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run profile-policy status after repair");
+    assert!(status_out.status.success());
+    let stdout = String::from_utf8_lossy(&status_out.stdout);
+    assert!(stdout.contains("profile-key mode: enabled"), "{stdout}");
+    assert!(stdout.contains("preset: Portable"), "{stdout}");
+    assert!(
+        stdout.contains("requirement passphrase: profile-specific cryptographic binding"),
+        "{stdout}"
+    );
+
+    let show_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("show")
+        .arg("myprofile")
+        .env("HOME", &home)
+        .env("SSHENV_PROFILE_PASSPHRASE", "repair-passphrase")
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run show after profile-policy repair");
+    assert!(show_out.status.success());
+    assert!(String::from_utf8_lossy(&show_out.stdout).contains("DUMMY=value"));
+}
+
+#[test]
 fn binary_profile_policy_metadata_roundtrips() {
     let bin = cargo_bin();
     if !bin.exists() {

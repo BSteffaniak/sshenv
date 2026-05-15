@@ -100,11 +100,14 @@ to turn a preset into concrete profile-specific enforcement. `apply` can migrate
 a v1 vault to v2 when it can resolve current recipient public keys, or when you
 provide them with `--recipient-key`. `portable` requires a profile passphrase,
 `recommended` uses profile device seal when available, and `paranoid` applies
-both and rotates the profile data key.
+both and rotates the profile data key. Use `profile-policy repair <profile>` to
+reconcile advisory preset/requirement metadata with concrete profile-specific
+factor bindings after migrations or older advisory-only policy edits.
 
 ```sh
 sshenv security profile-policy status <profile>
 sshenv security profile-policy apply <profile> --preset standard|recommended|portable|paranoid [--recipient-key <path-or-pubkey-line>]... [--passphrase <v>]
+sshenv security profile-policy repair <profile> [--recipient-key <path-or-pubkey-line>]... [--passphrase <v>]
 sshenv security profile-policy require-passphrase <profile> [--passphrase <v>]
 sshenv security profile-policy change-passphrase <profile> [--old-passphrase <v>] [--new-passphrase <v>]
 sshenv security profile-policy disable-passphrase <profile> [--passphrase <v>]

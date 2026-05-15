@@ -6,7 +6,7 @@ use anyhow::Context as AnyhowContext;
 use anyhow::Result;
 use sshenv_cli_models::{
     ChangePassphraseArgs, DisablePassphraseArgs, EnablePassphraseArgs, ProfilePolicyApplyArgs,
-    ProfilePolicyChangePassphraseArgs, ProfilePolicyDisablePassphraseArgs,
+    ProfilePolicyChangePassphraseArgs, ProfilePolicyDisablePassphraseArgs, ProfilePolicyRepairArgs,
     ProfilePolicyRequirePassphraseArgs, ProfilePolicyRequirementArgs, ProfilePolicyRotateKeyArgs,
     ProfilePolicySetArgs, ProfilePolicyStatusArgs, SecurityPresetArg, SecurityPresetArgs,
 };
@@ -631,11 +631,7 @@ fn existing_or_default_profile_policy(vault: &Vault, profile: &str) -> ProfilePo
 
 pub fn profile_policy_apply(ctx: &CmdContext, args: ProfilePolicyApplyArgs) -> Result<()> {
     let (mut vault, data_key) = load_and_unlock_profile(&ctx.vault_path, &args.profile)?;
-    migrate_to_v2_if_needed(&mut vault, &args.recipient_keys)?;
-    if !vault.profile_keys_enabled() {
-        vault.enable_profile_keys()?;
-    }
-    ensure_profile_policy_editable(&vault, &args.profile)?;
+    prepare_profile_policy_enforcement(&mut vault, &args.profile, &args.recipient_keys)?;
 
     let preset = profile_policy_preset(args.preset);
     match preset {
@@ -674,6 +670,88 @@ pub fn profile_policy_apply(ctx: &CmdContext, args: ProfilePolicyApplyArgs) -> R
         preset, args.profile
     );
     Ok(())
+}
+
+pub fn profile_policy_repair(ctx: &CmdContext, args: ProfilePolicyRepairArgs) -> Result<()> {
+    let (mut vault, data_key) = load_and_unlock_profile(&ctx.vault_path, &args.profile)?;
+    prepare_profile_policy_enforcement(&mut vault, &args.profile, &args.recipient_keys)?;
+    let policy = existing_or_default_profile_policy(&vault, &args.profile);
+    let mut changed = false;
+
+    match policy.preset {
+        ProfilePolicyPreset::Standard => {}
+        ProfilePolicyPreset::Recommended => {
+            #[cfg(feature = "device-seal")]
+            {
+                changed |= repair_profile_device_seal_if_available(&mut vault, &args.profile)?;
+            }
+            #[cfg(not(feature = "device-seal"))]
+            {
+                changed |= repair_profile_device_seal_unavailable();
+            }
+        }
+        ProfilePolicyPreset::Portable => {
+            changed |= repair_profile_passphrase_if_needed(
+                &mut vault,
+                &args.profile,
+                args.passphrase.clone(),
+            )?;
+        }
+        ProfilePolicyPreset::Paranoid => {
+            changed |=
+                repair_profile_passphrase_if_needed(&mut vault, &args.profile, args.passphrase)?;
+            #[cfg(feature = "device-seal")]
+            {
+                changed |= repair_profile_device_seal_if_available(&mut vault, &args.profile)?;
+            }
+            #[cfg(not(feature = "device-seal"))]
+            {
+                changed |= repair_profile_device_seal_unavailable();
+            }
+        }
+    }
+
+    for requirement in policy.required_factors {
+        match requirement {
+            ProfileFactorRequirement::Passphrase => {
+                changed |= repair_profile_passphrase_if_needed(&mut vault, &args.profile, None)?;
+            }
+            ProfileFactorRequirement::DeviceSeal => {
+                #[cfg(feature = "device-seal")]
+                {
+                    changed |= repair_profile_device_seal_if_available(&mut vault, &args.profile)?;
+                }
+                #[cfg(not(feature = "device-seal"))]
+                {
+                    changed |= repair_profile_device_seal_unavailable();
+                }
+            }
+        }
+    }
+
+    if changed {
+        vault.rotate_profile_key(&args.profile)?;
+        save_vault(ctx, &mut vault, &data_key)?;
+        eprintln!("Repaired profile policy for {}.", args.profile);
+    } else {
+        eprintln!(
+            "Profile policy for {} was already consistent.",
+            args.profile
+        );
+    }
+    Ok(())
+}
+
+fn prepare_profile_policy_enforcement(
+    vault: &mut Vault,
+    profile: &str,
+    recipient_keys: &[String],
+) -> Result<()> {
+    migrate_to_v2_if_needed(vault, recipient_keys)?;
+    if !vault.profile_keys_enabled() {
+        vault.enable_profile_keys()?;
+    }
+    ensure_profile_policy_editable(vault, profile)
 }
 
 fn set_profile_policy_preset(
@@ -718,6 +796,49 @@ fn apply_profile_device_seal_if_available(vault: &mut Vault, profile: &str) -> R
 #[cfg(not(feature = "device-seal"))]
 fn note_profile_device_seal_unavailable() {
     eprintln!("note: this sshenv build has no device-seal support; skipping profile device seal");
+}
+
+#[cfg(feature = "passphrase-factor")]
+fn repair_profile_passphrase_if_needed(
+    vault: &mut Vault,
+    profile: &str,
+    passphrase: Option<String>,
+) -> Result<bool> {
+    let policy = existing_or_default_profile_policy(vault, profile);
+    if profile_has_factor_metadata(&policy, UnlockFactorKindV2::Passphrase) {
+        return Ok(false);
+    }
+    apply_profile_passphrase_if_needed(vault, profile, passphrase)?;
+    Ok(true)
+}
+
+#[cfg(not(feature = "passphrase-factor"))]
+fn repair_profile_passphrase_if_needed(
+    _vault: &mut Vault,
+    _profile: &str,
+    _passphrase: Option<String>,
+) -> Result<bool> {
+    anyhow::bail!("this sshenv build was compiled without passphrase-factor support")
+}
+
+#[cfg(feature = "device-seal")]
+fn repair_profile_device_seal_if_available(vault: &mut Vault, profile: &str) -> Result<bool> {
+    let policy = existing_or_default_profile_policy(vault, profile);
+    if profile_has_factor_metadata(&policy, UnlockFactorKindV2::DeviceSeal) {
+        return Ok(false);
+    }
+    if device_seal_backend_status() == "none" {
+        eprintln!("note: no device-seal backend is available; skipping profile device seal");
+        return Ok(false);
+    }
+    vault.require_profile_device_seal(profile)?;
+    Ok(true)
+}
+
+#[cfg(not(feature = "device-seal"))]
+fn repair_profile_device_seal_unavailable() -> bool {
+    note_profile_device_seal_unavailable();
+    false
 }
 
 pub fn profile_policy_set(ctx: &CmdContext, args: ProfilePolicySetArgs) -> Result<()> {

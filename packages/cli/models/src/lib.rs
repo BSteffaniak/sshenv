@@ -145,6 +145,8 @@ pub enum ProfilePolicyCommand {
     ClearRequirements(ProfilePolicyRequirementArgs),
     /// Apply a preset as concrete profile-specific enforcement.
     Apply(ProfilePolicyApplyArgs),
+    /// Repair/reconcile a profile's policy metadata with concrete enforcement.
+    Repair(ProfilePolicyRepairArgs),
     /// Set advisory policy metadata for a profile.
     Set(ProfilePolicySetArgs),
 }
@@ -202,6 +204,19 @@ pub struct ProfilePolicyApplyArgs {
     #[arg(long = "recipient-key", value_name = "PATH_OR_LINE")]
     pub recipient_keys: Vec<String>,
     /// New profile passphrase for presets that require one. If omitted, read from a hidden prompt.
+    #[arg(long)]
+    pub passphrase: Option<String>,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct ProfilePolicyRepairArgs {
+    pub profile: String,
+    /// Public key for a current recipient when v1-to-v2 migration cannot discover it.
+    /// Repeat as needed.
+    #[arg(long = "recipient-key", value_name = "PATH_OR_LINE")]
+    pub recipient_keys: Vec<String>,
+    /// New profile passphrase when repair needs to create a passphrase binding.
+    /// If omitted and needed, read from a hidden prompt.
     #[arg(long)]
     pub passphrase: Option<String>,
 }
