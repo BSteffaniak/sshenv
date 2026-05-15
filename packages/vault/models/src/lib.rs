@@ -208,6 +208,27 @@ pub struct RecipientMetadataV2 {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProfileMap {
     pub profiles: BTreeMap<String, BTreeMap<String, String>>,
+    /// Encrypted per-profile policy metadata. These are currently advisory
+    /// scaffolding for future per-profile/per-scope encryption.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub profile_policies: BTreeMap<String, ProfilePolicy>,
+}
+
+/// Advisory per-profile security policy metadata.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProfilePolicy {
+    /// Intended profile security preset.
+    pub preset: ProfilePolicyPreset,
+}
+
+/// Intended profile security posture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProfilePolicyPreset {
+    Standard,
+    Recommended,
+    Portable,
+    Paranoid,
 }
 
 impl ProfileMap {
@@ -259,7 +280,11 @@ impl ProfileMap {
 
     /// Remove an entire profile. Returns `true` if present.
     pub fn remove_profile(&mut self, profile: &str) -> bool {
-        self.profiles.remove(profile).is_some()
+        let removed = self.profiles.remove(profile).is_some();
+        if removed {
+            self.profile_policies.remove(profile);
+        }
+        removed
     }
 
     /// Rename an entire profile, preserving all variables.
@@ -282,7 +307,33 @@ impl ProfileMap {
             return Err(VaultModelsError::MissingProfile(from.to_string()));
         };
         self.profiles.insert(to.to_string(), vars);
+        if let Some(policy) = self.profile_policies.remove(from) {
+            self.profile_policies.insert(to.to_string(), policy);
+        }
         Ok(true)
+    }
+
+    /// Set advisory security policy metadata for a profile.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the profile does not exist.
+    pub fn set_profile_policy(
+        &mut self,
+        profile: &str,
+        policy: ProfilePolicy,
+    ) -> Result<(), VaultModelsError> {
+        if !self.profiles.contains_key(profile) {
+            return Err(VaultModelsError::MissingProfile(profile.to_string()));
+        }
+        self.profile_policies.insert(profile.to_string(), policy);
+        Ok(())
+    }
+
+    /// Return advisory policy metadata for a profile.
+    #[must_use]
+    pub fn profile_policy(&self, profile: &str) -> Option<&ProfilePolicy> {
+        self.profile_policies.get(profile)
     }
 
     /// Names of all profiles, sorted.
@@ -365,6 +416,29 @@ mod tests {
 
         assert!(!m.rename_profile("same", "same").unwrap());
         assert_eq!(m.get("same").unwrap().get("K").unwrap(), "v");
+    }
+
+    #[test]
+    fn profile_policy_moves_and_removes_with_profile() {
+        let mut m = ProfileMap::new();
+        m.set("old", "K", "v".into());
+        m.set_profile_policy(
+            "old",
+            ProfilePolicy {
+                preset: ProfilePolicyPreset::Paranoid,
+            },
+        )
+        .unwrap();
+
+        m.rename_profile("old", "new").unwrap();
+        assert!(m.profile_policy("old").is_none());
+        assert_eq!(
+            m.profile_policy("new").unwrap().preset,
+            ProfilePolicyPreset::Paranoid
+        );
+
+        assert!(m.remove_profile("new"));
+        assert!(m.profile_policy("new").is_none());
     }
 
     #[test]

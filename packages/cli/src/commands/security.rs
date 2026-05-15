@@ -3,11 +3,11 @@ use std::path::Path;
 
 use anyhow::Result;
 use sshenv_cli_models::{
-    ChangePassphraseArgs, DisablePassphraseArgs, EnablePassphraseArgs, SecurityPresetArg,
-    SecurityPresetArgs,
+    ChangePassphraseArgs, DisablePassphraseArgs, EnablePassphraseArgs, ProfilePolicySetArgs,
+    SecurityPresetArg, SecurityPresetArgs,
 };
 use sshenv_vault::Vault;
-use sshenv_vault::models::{VERSION, VERSION_V2};
+use sshenv_vault::models::{ProfilePolicy, ProfilePolicyPreset, VERSION, VERSION_V2};
 
 use crate::commands::Context as CmdContext;
 #[cfg(feature = "passphrase-factor")]
@@ -93,6 +93,37 @@ pub fn enable_device_seal(_ctx: &CmdContext) -> Result<()> {
     anyhow::bail!("this sshenv build was compiled without device-seal support")
 }
 
+pub fn profile_policy_list(ctx: &CmdContext) -> Result<()> {
+    let (vault, _key) = crate::commands::load_and_unlock(&ctx.vault_path)?;
+    if vault.profiles.profile_policies.is_empty() {
+        eprintln!("(no profile policy metadata)");
+        return Ok(());
+    }
+    for (profile, policy) in &vault.profiles.profile_policies {
+        println!("{profile}\t{:?}", policy.preset);
+    }
+    Ok(())
+}
+
+pub fn profile_policy_set(ctx: &CmdContext, args: ProfilePolicySetArgs) -> Result<()> {
+    let (mut vault, data_key) = crate::commands::load_and_unlock(&ctx.vault_path)?;
+    if vault.header.version != VERSION_V2 {
+        anyhow::bail!(
+            "profile policy metadata requires v2; run `sshenv migrate-vault --to v2` first"
+        );
+    }
+    let preset = profile_policy_preset(args.preset);
+    vault
+        .profiles
+        .set_profile_policy(&args.profile, ProfilePolicy { preset })?;
+    save_vault(ctx, &mut vault, &data_key)?;
+    eprintln!(
+        "Set advisory profile policy for {} to {:?}. Per-profile cryptographic enforcement is planned but not active yet.",
+        args.profile, preset
+    );
+    Ok(())
+}
+
 pub fn preset(ctx: &CmdContext, args: SecurityPresetArgs) -> Result<()> {
     match args.preset {
         SecurityPresetArg::Standard => {
@@ -104,6 +135,15 @@ pub fn preset(ctx: &CmdContext, args: SecurityPresetArgs) -> Result<()> {
         SecurityPresetArg::Recommended => apply_preset(ctx, args, false, true),
         SecurityPresetArg::Portable => apply_preset(ctx, args, true, false),
         SecurityPresetArg::Paranoid => apply_preset(ctx, args, true, true),
+    }
+}
+
+const fn profile_policy_preset(preset: SecurityPresetArg) -> ProfilePolicyPreset {
+    match preset {
+        SecurityPresetArg::Standard => ProfilePolicyPreset::Standard,
+        SecurityPresetArg::Recommended => ProfilePolicyPreset::Recommended,
+        SecurityPresetArg::Portable => ProfilePolicyPreset::Portable,
+        SecurityPresetArg::Paranoid => ProfilePolicyPreset::Paranoid,
     }
 }
 

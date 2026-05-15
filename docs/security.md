@@ -84,6 +84,13 @@ data key. Removing a recipient deletes their wrapped copy. **Past
 decrypts they performed are not revoked** — the data key has not
 changed. To revoke past access, rotate the data key (planned).
 
+## Per-profile policy metadata
+
+v2 vaults can store encrypted advisory policy metadata for individual profiles.
+This is scaffolding for future per-profile/per-scope encryption and is not yet
+a cryptographic boundary by itself. Commands that set this metadata print that
+limitation explicitly.
+
 ## Rollback protection considerations
 
 When compiled with rollback protection, sshenv records the highest v2 vault

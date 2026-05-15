@@ -373,6 +373,68 @@ fn binary_migrate_vault_to_v2_preserves_secret_access() {
 }
 
 #[test]
+fn binary_profile_policy_metadata_roundtrips() {
+    let bin = cargo_bin();
+    if !bin.exists() {
+        eprintln!("skipping: {} does not exist", bin.display());
+        return;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let vault_path = dir.path().join("vault");
+    init_vault_with_profile(&bin, &home, &vault_path, "myprofile");
+
+    let migrate_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("migrate-vault")
+        .arg("--to")
+        .arg("v2")
+        .arg("--recipient-key")
+        .arg(home.join(".ssh").join("id_ed25519.pub"))
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run migrate-vault");
+    assert!(migrate_out.status.success());
+
+    let set_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("security")
+        .arg("profile-policy")
+        .arg("set")
+        .arg("myprofile")
+        .arg("--preset")
+        .arg("paranoid")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run profile-policy set");
+    assert!(
+        set_out.status.success(),
+        "profile-policy set failed: {}",
+        String::from_utf8_lossy(&set_out.stderr)
+    );
+
+    let list_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("security")
+        .arg("profile-policy")
+        .arg("list")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run profile-policy list");
+    assert!(list_out.status.success());
+    let stdout = String::from_utf8_lossy(&list_out.stdout);
+    assert!(stdout.contains("myprofile"), "missing profile: {stdout}");
+    assert!(stdout.contains("Paranoid"), "missing preset: {stdout}");
+}
+
+#[test]
 fn binary_rollback_protection_rejects_older_v2_generation() {
     let bin = cargo_bin();
     if !bin.exists() {

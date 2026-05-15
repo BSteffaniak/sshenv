@@ -15,7 +15,9 @@ pub mod runtime_hardening;
 pub mod session_registry;
 
 use anyhow::Result;
-use sshenv_cli_models::{Cli, Command, SecurityCommand, SessionsCommand, ShimsCommand};
+use sshenv_cli_models::{
+    Cli, Command, ProfilePolicyCommand, SecurityCommand, SessionsCommand, ShimsCommand,
+};
 
 /// Dispatch a parsed [`Cli`] to the appropriate command handler.
 ///
@@ -43,6 +45,12 @@ pub fn run(cli: Cli) -> Result<()> {
             }
             SecurityCommand::EnableDeviceSeal => commands::security::enable_device_seal(&ctx),
             SecurityCommand::Preset(args) => commands::security::preset(&ctx, args),
+            SecurityCommand::ProfilePolicy(sub) => match sub {
+                ProfilePolicyCommand::List => commands::security::profile_policy_list(&ctx),
+                ProfilePolicyCommand::Set(args) => {
+                    commands::security::profile_policy_set(&ctx, args)
+                }
+            },
         },
 
         Command::AddRecipient(args) => commands::recipient::add(&ctx, args),

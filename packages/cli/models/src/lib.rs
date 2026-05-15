@@ -116,6 +116,25 @@ pub enum SecurityCommand {
     EnableDeviceSeal,
     /// Apply a named security preset.
     Preset(SecurityPresetArgs),
+    /// Manage advisory per-profile security policy metadata.
+    #[command(subcommand)]
+    ProfilePolicy(ProfilePolicyCommand),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ProfilePolicyCommand {
+    /// List profile policy metadata.
+    List,
+    /// Set advisory policy metadata for a profile.
+    Set(ProfilePolicySetArgs),
+}
+
+#[derive(Debug, clap::Args)]
+pub struct ProfilePolicySetArgs {
+    pub profile: String,
+    /// Intended security preset for this profile.
+    #[arg(long, value_enum)]
+    pub preset: SecurityPresetArg,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
