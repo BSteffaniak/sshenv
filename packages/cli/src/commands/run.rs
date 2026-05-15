@@ -6,7 +6,7 @@ use anyhow::{Context, Result, bail};
 use sshenv_cli_models::RunArgs;
 use sshenv_shims::{load_bindings_merged, resolve_shim_dir};
 
-use crate::commands::{Context as CmdContext, load_and_unlock};
+use crate::commands::{Context as CmdContext, load_and_unlock_profile};
 use crate::session_registry;
 
 pub fn run(ctx: &CmdContext, args: RunArgs) -> Result<()> {
@@ -16,7 +16,7 @@ pub fn run(ctx: &CmdContext, args: RunArgs) -> Result<()> {
         bail!("no command provided; usage: sshenv run <profile> -- <cmd> [args...]");
     }
 
-    let (vault, _key) = load_and_unlock(&ctx.vault_path)?;
+    let (vault, _key) = load_and_unlock_profile(&ctx.vault_path, &args.profile)?;
 
     let Some(vars) = vault.profiles.get(&args.profile) else {
         bail!("no such profile: {}", args.profile);

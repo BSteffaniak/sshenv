@@ -100,12 +100,12 @@ sshenv security profile-policy require-device-seal <profile>
 sshenv security profile-policy clear-requirements <profile>
 ```
 
-These requirements are opt-in. They require the corresponding vault-level
-factor to be enabled, and profile-key mode binds the selected profile's inner
-ciphertext to the available factor key when the policy is saved. The CLI also
-checks the requirements before a profile is shown, exported, or used by
-`sshenv run`. Future work may decouple these from vault-level factors so only
-selected profiles require extra prompts.
+These requirements are opt-in. `require-passphrase` creates per-profile
+passphrase metadata and binds the selected profile's inner ciphertext to that
+profile factor when the policy is saved. Commands that only need one profile
+(`show`, `export`, and `run`) lazily decrypt the selected profile, so normal
+profiles do not need the profile passphrase. For non-interactive use, provide
+`SSHENV_PROFILE_PASSPHRASE`.
 
 v2 vaults can also store encrypted advisory policy metadata for individual
 profiles. Preset metadata is not yet a cryptographic boundary by itself.

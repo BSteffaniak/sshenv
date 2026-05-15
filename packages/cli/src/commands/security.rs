@@ -1,11 +1,13 @@
 use std::collections::HashSet;
 use std::path::Path;
 
+#[cfg(feature = "passphrase-factor")]
+use anyhow::Context as AnyhowContext;
 use anyhow::Result;
 use sshenv_cli_models::{
     ChangePassphraseArgs, DisablePassphraseArgs, EnablePassphraseArgs,
-    ProfilePolicyRequirementArgs, ProfilePolicyRotateKeyArgs, ProfilePolicySetArgs,
-    SecurityPresetArg, SecurityPresetArgs,
+    ProfilePolicyRequirePassphraseArgs, ProfilePolicyRequirementArgs, ProfilePolicyRotateKeyArgs,
+    ProfilePolicySetArgs, SecurityPresetArg, SecurityPresetArgs,
 };
 use sshenv_vault::Vault;
 use sshenv_vault::models::{
@@ -16,7 +18,9 @@ use sshenv_vault::models::{
 use crate::commands::Context as CmdContext;
 #[cfg(feature = "passphrase-factor")]
 use crate::commands::unlock_ciphertext_with_passphrase;
-use crate::commands::{load_ciphertext_and_fps, save_vault, unlock_ciphertext};
+use crate::commands::{
+    load_and_unlock_profile, load_ciphertext_and_fps, save_vault, unlock_ciphertext,
+};
 use crate::identity::{discover_private_key_paths, public_fingerprint_for_private_key};
 
 #[cfg(feature = "passphrase-factor")]
@@ -63,7 +67,9 @@ fn passphrase_arg_or_prompt(
 ) -> Result<zeroize::Zeroizing<String>> {
     Ok(match value {
         Some(value) => zeroize::Zeroizing::new(value),
-        None => zeroize::Zeroizing::new(rpassword::prompt_password(prompt)?),
+        None => zeroize::Zeroizing::new(
+            rpassword::prompt_password(prompt).context("failed to read passphrase")?,
+        ),
     })
 }
 
@@ -147,7 +153,7 @@ pub fn ensure_profile_factor_requirements_met(vault: &Vault, profile: &str) -> R
         .required_factors
         .iter()
         .copied()
-        .filter(|requirement| !profile_requirement_satisfied(vault, *requirement))
+        .filter(|requirement| !profile_requirement_satisfied(vault, policy, *requirement))
         .map(profile_requirement_label)
         .collect();
     if missing.is_empty() {
@@ -173,15 +179,20 @@ fn format_profile_requirements(policy: &ProfilePolicy) -> String {
     format!("required: {requirements}")
 }
 
-fn profile_requirement_satisfied(vault: &Vault, requirement: ProfileFactorRequirement) -> bool {
-    match requirement {
-        ProfileFactorRequirement::Passphrase => {
-            vault_has_factor(vault, UnlockFactorKindV2::Passphrase)
-        }
-        ProfileFactorRequirement::DeviceSeal => {
-            vault_has_factor(vault, UnlockFactorKindV2::DeviceSeal)
-        }
-    }
+fn profile_requirement_satisfied(
+    vault: &Vault,
+    policy: &ProfilePolicy,
+    requirement: ProfileFactorRequirement,
+) -> bool {
+    let kind = match requirement {
+        ProfileFactorRequirement::Passphrase => UnlockFactorKindV2::Passphrase,
+        ProfileFactorRequirement::DeviceSeal => UnlockFactorKindV2::DeviceSeal,
+    };
+    vault_has_factor(vault, kind)
+        || policy
+            .factor_metadata
+            .iter()
+            .any(|factor| factor.kind == kind)
 }
 
 const fn profile_requirement_label(requirement: ProfileFactorRequirement) -> &'static str {
@@ -259,18 +270,36 @@ pub fn profile_policy_migrate(ctx: &CmdContext) -> Result<()> {
 }
 
 pub fn profile_policy_rotate_key(ctx: &CmdContext, args: ProfilePolicyRotateKeyArgs) -> Result<()> {
-    let (mut vault, data_key) = crate::commands::load_and_unlock(&ctx.vault_path)?;
+    let (mut vault, data_key) = load_and_unlock_profile(&ctx.vault_path, &args.profile)?;
     vault.rotate_profile_key(&args.profile)?;
     save_vault(ctx, &mut vault, &data_key)?;
     eprintln!("Rotated profile data key for {}.", args.profile);
     Ok(())
 }
 
+#[cfg(feature = "passphrase-factor")]
 pub fn profile_policy_require_passphrase(
     ctx: &CmdContext,
-    args: ProfilePolicyRequirementArgs,
+    args: ProfilePolicyRequirePassphraseArgs,
 ) -> Result<()> {
-    profile_policy_require_factor(ctx, args, ProfileFactorRequirement::Passphrase)
+    let passphrase =
+        passphrase_arg_or_prompt(args.passphrase, "Enter new sshenv profile passphrase: ")?;
+    let (mut vault, data_key) = load_and_unlock_profile(&ctx.vault_path, &args.profile)?;
+    vault.require_profile_passphrase(&args.profile, passphrase.as_str())?;
+    save_vault(ctx, &mut vault, &data_key)?;
+    eprintln!(
+        "Required passphrase factor for profile {}. The profile payload is now bound to this passphrase.",
+        args.profile
+    );
+    Ok(())
+}
+
+#[cfg(not(feature = "passphrase-factor"))]
+pub fn profile_policy_require_passphrase(
+    _ctx: &CmdContext,
+    _args: ProfilePolicyRequirePassphraseArgs,
+) -> Result<()> {
+    anyhow::bail!("this sshenv build was compiled without passphrase-factor support")
 }
 
 pub fn profile_policy_require_device_seal(
@@ -284,10 +313,11 @@ pub fn profile_policy_clear_requirements(
     ctx: &CmdContext,
     args: ProfilePolicyRequirementArgs,
 ) -> Result<()> {
-    let (mut vault, data_key) = crate::commands::load_and_unlock(&ctx.vault_path)?;
+    let (mut vault, data_key) = load_and_unlock_profile(&ctx.vault_path, &args.profile)?;
     ensure_profile_policy_editable(&vault, &args.profile)?;
     let mut policy = existing_or_default_profile_policy(&vault, &args.profile);
     policy.required_factors.clear();
+    policy.factor_metadata.clear();
     vault.profiles.set_profile_policy(&args.profile, policy)?;
     save_vault(ctx, &mut vault, &data_key)?;
     eprintln!("Cleared profile factor requirements for {}.", args.profile);
@@ -299,16 +329,16 @@ fn profile_policy_require_factor(
     args: ProfilePolicyRequirementArgs,
     requirement: ProfileFactorRequirement,
 ) -> Result<()> {
-    let (mut vault, data_key) = crate::commands::load_and_unlock(&ctx.vault_path)?;
+    let (mut vault, data_key) = load_and_unlock_profile(&ctx.vault_path, &args.profile)?;
     ensure_profile_policy_editable(&vault, &args.profile)?;
-    if !profile_requirement_satisfied(&vault, requirement) {
+    let mut policy = existing_or_default_profile_policy(&vault, &args.profile);
+    if !profile_requirement_satisfied(&vault, &policy, requirement) {
         anyhow::bail!(
-            "profile {} cannot require {} until that vault-level factor is enabled",
+            "profile {} cannot require {} until that factor is available",
             args.profile,
             profile_requirement_label(requirement)
         );
     }
-    let mut policy = existing_or_default_profile_policy(&vault, &args.profile);
     if !policy.required_factors.contains(&requirement) {
         policy.required_factors.push(requirement);
     }
@@ -347,11 +377,12 @@ fn existing_or_default_profile_policy(vault: &Vault, profile: &str) -> ProfilePo
         .unwrap_or(ProfilePolicy {
             preset: ProfilePolicyPreset::Standard,
             required_factors: Vec::new(),
+            factor_metadata: Vec::new(),
         })
 }
 
 pub fn profile_policy_set(ctx: &CmdContext, args: ProfilePolicySetArgs) -> Result<()> {
-    let (mut vault, data_key) = crate::commands::load_and_unlock(&ctx.vault_path)?;
+    let (mut vault, data_key) = load_and_unlock_profile(&ctx.vault_path, &args.profile)?;
     if vault.header.version != VERSION_V2 {
         anyhow::bail!(
             "profile policy metadata requires v2; run `sshenv migrate-vault --to v2` first"

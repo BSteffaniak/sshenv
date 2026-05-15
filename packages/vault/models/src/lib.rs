@@ -241,11 +241,13 @@ pub struct ProfileEntry {
 pub struct ProfilePolicy {
     /// Intended profile security preset.
     pub preset: ProfilePolicyPreset,
-    /// Extra factors this profile requires to be enabled at the vault level
-    /// before the profile may be used. These are enforcement scaffolding for
-    /// future per-profile cryptographic binding.
+    /// Extra factors this profile requires before it may be used.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub required_factors: Vec<ProfileFactorRequirement>,
+    /// Per-profile factor metadata used to derive profile payload keys without
+    /// making the factor apply to the whole vault payload.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub factor_metadata: Vec<UnlockFactorV2>,
 }
 
 /// One profile-level factor requirement.
@@ -473,6 +475,7 @@ mod tests {
             ProfilePolicy {
                 preset: ProfilePolicyPreset::Paranoid,
                 required_factors: Vec::new(),
+                factor_metadata: Vec::new(),
             },
         )
         .unwrap();

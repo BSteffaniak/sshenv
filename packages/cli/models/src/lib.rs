@@ -129,9 +129,9 @@ pub enum ProfilePolicyCommand {
     Migrate,
     /// Rotate one profile's per-profile data key.
     RotateKey(ProfilePolicyRotateKeyArgs),
-    /// Require a vault-level passphrase factor before this profile may be used.
-    RequirePassphrase(ProfilePolicyRequirementArgs),
-    /// Require a vault-level device-seal factor before this profile may be used.
+    /// Require a passphrase before this profile may be used.
+    RequirePassphrase(ProfilePolicyRequirePassphraseArgs),
+    /// Require a device-seal factor before this profile may be used.
     RequireDeviceSeal(ProfilePolicyRequirementArgs),
     /// Clear all explicit factor requirements for a profile.
     ClearRequirements(ProfilePolicyRequirementArgs),
@@ -147,6 +147,14 @@ pub struct ProfilePolicyRotateKeyArgs {
 #[derive(Debug, clap::Args)]
 pub struct ProfilePolicyRequirementArgs {
     pub profile: String,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct ProfilePolicyRequirePassphraseArgs {
+    pub profile: String,
+    /// Profile passphrase. If omitted, read from a hidden prompt.
+    #[arg(long)]
+    pub passphrase: Option<String>,
 }
 
 #[derive(Debug, clap::Args)]

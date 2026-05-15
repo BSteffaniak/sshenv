@@ -432,7 +432,7 @@ fn binary_profile_policy_migrate_preserves_secret_access() {
         String::from_utf8_lossy(&rotate_out.stderr)
     );
 
-    let require_without_factor_out = Command::new(&bin)
+    let require_without_value_out = Command::new(&bin)
         .arg("--vault")
         .arg(&vault_path)
         .arg("security")
@@ -442,29 +442,13 @@ fn binary_profile_policy_migrate_preserves_secret_access() {
         .env("HOME", &home)
         .env_remove("SSHENV_VAULT")
         .output()
-        .expect("run profile-policy require-passphrase without factor");
-    assert!(!require_without_factor_out.status.success());
+        .expect("run profile-policy require-passphrase without value");
+    assert!(!require_without_value_out.status.success());
     assert!(
-        String::from_utf8_lossy(&require_without_factor_out.stderr).contains("vault-level factor"),
-        "missing requirement error: {}",
-        String::from_utf8_lossy(&require_without_factor_out.stderr)
-    );
-
-    let enable_passphrase_out = Command::new(&bin)
-        .arg("--vault")
-        .arg(&vault_path)
-        .arg("security")
-        .arg("enable-passphrase")
-        .arg("--passphrase")
-        .arg("test-passphrase")
-        .env("HOME", &home)
-        .env_remove("SSHENV_VAULT")
-        .output()
-        .expect("run enable-passphrase");
-    assert!(
-        enable_passphrase_out.status.success(),
-        "enable-passphrase failed: {}",
-        String::from_utf8_lossy(&enable_passphrase_out.stderr)
+        String::from_utf8_lossy(&require_without_value_out.stderr)
+            .contains("failed to read passphrase"),
+        "missing prompt error: {}",
+        String::from_utf8_lossy(&require_without_value_out.stderr)
     );
 
     let require_out = Command::new(&bin)
@@ -474,8 +458,9 @@ fn binary_profile_policy_migrate_preserves_secret_access() {
         .arg("profile-policy")
         .arg("require-passphrase")
         .arg("myprofile")
+        .arg("--passphrase")
+        .arg("test-passphrase")
         .env("HOME", &home)
-        .env("SSHENV_PASSPHRASE", "test-passphrase")
         .env_remove("SSHENV_VAULT")
         .output()
         .expect("run profile-policy require-passphrase");
@@ -493,7 +478,7 @@ fn binary_profile_policy_migrate_preserves_secret_access() {
         .arg("clear-requirements")
         .arg("myprofile")
         .env("HOME", &home)
-        .env("SSHENV_PASSPHRASE", "test-passphrase")
+        .env("SSHENV_PROFILE_PASSPHRASE", "test-passphrase")
         .env_remove("SSHENV_VAULT")
         .output()
         .expect("run profile-policy clear-requirements");
@@ -509,7 +494,7 @@ fn binary_profile_policy_migrate_preserves_secret_access() {
         .arg("show")
         .arg("myprofile")
         .env("HOME", &home)
-        .env("SSHENV_PASSPHRASE", "test-passphrase")
+        .env("SSHENV_PROFILE_PASSPHRASE", "test-passphrase")
         .env_remove("SSHENV_VAULT")
         .output()
         .expect("run show after profile-policy migrate");

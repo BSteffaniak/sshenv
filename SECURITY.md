@@ -56,7 +56,8 @@ without asking for every public key again. v2 also carries a monotonic
 best-effort generation used by local rollback protection. v2 can store profiles
 as independently encrypted profile entries with per-profile data keys, plus
 opt-in profile factor requirements that bind selected profile payloads to
-available vault-level factor keys. v2 payload AAD is `"sshenv:v2:payload"`.
+profile-specific or available vault-level factor keys. v2 payload AAD is
+`"sshenv:v2:payload"`.
 
 Plaintext payload is JSON: `{ "profiles": { "<name>": { "<VAR>": "<value>" } } }`.
 

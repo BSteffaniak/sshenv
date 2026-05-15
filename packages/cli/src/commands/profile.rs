@@ -5,7 +5,9 @@ use sshenv_shims::{
 };
 use zeroize::Zeroizing;
 
-use crate::commands::{Context as CmdContext, load_and_unlock, save_vault};
+use crate::commands::{
+    Context as CmdContext, load_and_unlock, load_and_unlock_profile, save_vault,
+};
 
 pub fn set(ctx: &CmdContext, args: SetArgs) -> Result<()> {
     let value = resolve_value(&args)?;
@@ -70,7 +72,7 @@ pub fn list(ctx: &CmdContext, args: ListArgs) -> Result<()> {
 }
 
 pub fn show(ctx: &CmdContext, args: ShowArgs) -> Result<()> {
-    let (vault, _key) = load_and_unlock(&ctx.vault_path)?;
+    let (vault, _key) = load_and_unlock_profile(&ctx.vault_path, &args.profile)?;
 
     let Some(vars) = vault.profiles.get(&args.profile) else {
         bail!("no such profile: {}", args.profile);

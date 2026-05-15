@@ -87,6 +87,55 @@ pub fn load_and_unlock(vault_path: &Path) -> Result<(Vault, DataKey)> {
     })
 }
 
+/// Load the vault and decrypt only one profile when profile-key mode allows it.
+///
+/// # Errors
+///
+/// Propagates filesystem, identity, outer-vault, and selected-profile decrypt
+/// errors.
+pub fn load_and_unlock_profile(vault_path: &Path, profile: &str) -> Result<(Vault, DataKey)> {
+    let ciphertext = Vault::load_ciphertext(vault_path)?;
+    check_rollback(vault_path, &ciphertext)?;
+    let generation = ciphertext.generation();
+    let fps: HashSet<String> = ciphertext
+        .recipients
+        .iter()
+        .map(|r| r.fingerprint.clone())
+        .collect();
+    let identities = load_identities_for_vault(&fps)?;
+    if identities.is_empty() {
+        return Err(error_no_identity_unlocked_detailed(
+            &discover_private_key_paths(),
+            &fps,
+        ));
+    }
+    let requires_extra_factor = ciphertext_requires_extra_factor(&ciphertext);
+    let passphrase = passphrase_for_ciphertext(&ciphertext, None)?;
+    let (mut vault, data_key) = Vault::unlock_metadata_with_passphrase(
+        ciphertext,
+        &identities,
+        passphrase.as_ref().map(|p| p.as_str()),
+    )
+    .map_err(|err| {
+        if requires_extra_factor {
+            err
+        } else {
+            error_no_identity_unlocked_detailed(&discover_private_key_paths(), &fps)
+        }
+    })?;
+    if vault.profiles.get(profile).is_none() && vault.profiles.profile_entries.contains_key(profile)
+    {
+        let profile_passphrase = passphrase_for_profile(&vault, profile)?;
+        vault.unlock_profile_with_passphrase(
+            profile,
+            &data_key,
+            profile_passphrase.as_ref().map(|p| p.as_str()),
+        )?;
+    }
+    record_rollback(vault_path, generation)?;
+    Ok((vault, data_key))
+}
+
 /// Load the ciphertext vault and return both the ciphertext and the
 /// pre-computed recipient fingerprint set. Used by commands that need to
 /// inspect recipients before unlocking (e.g. `add-recipient`).
@@ -216,6 +265,40 @@ fn passphrase_for_ciphertext(
     }
 
     let value = rpassword::prompt_password("Enter sshenv vault passphrase: ")?;
+    Ok(Some(Zeroizing::new(value)))
+}
+
+fn passphrase_for_profile(vault: &Vault, profile: &str) -> Result<Option<Zeroizing<String>>> {
+    let Some(policy) = vault.profiles.profile_policy(profile) else {
+        return Ok(None);
+    };
+    if !policy
+        .factor_metadata
+        .iter()
+        .any(|factor| factor.kind == UnlockFactorKindV2::Passphrase)
+    {
+        return Ok(None);
+    }
+
+    if let Ok(value) = std::env::var("SSHENV_PROFILE_PASSPHRASE") {
+        if !value.is_empty() {
+            return Ok(Some(Zeroizing::new(value)));
+        }
+    }
+    if let Ok(value) = std::env::var("SSHENV_PASSPHRASE") {
+        if !value.is_empty() {
+            return Ok(Some(Zeroizing::new(value)));
+        }
+    }
+
+    if !std::io::stdin().is_terminal() {
+        return Err(anyhow::anyhow!(
+            "profile '{profile}' requires a passphrase factor, but stdin is not a terminal; set SSHENV_PROFILE_PASSPHRASE for non-interactive use"
+        ));
+    }
+
+    let value =
+        rpassword::prompt_password(format!("Enter sshenv profile passphrase for '{profile}': "))?;
     Ok(Some(Zeroizing::new(value)))
 }
 
