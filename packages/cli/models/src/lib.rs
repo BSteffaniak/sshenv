@@ -112,6 +112,8 @@ pub enum SecurityCommand {
     ChangePassphrase(ChangePassphraseArgs),
     /// Remove the existing sshenv vault passphrase factor.
     DisablePassphrase(DisablePassphraseArgs),
+    /// Require a local device seal in addition to SSH recipient unlock.
+    EnableDeviceSeal,
 }
 
 #[derive(Debug, clap::Args)]

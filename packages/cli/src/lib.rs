@@ -37,6 +37,7 @@ pub fn run(cli: Cli) -> Result<()> {
             SecurityCommand::DisablePassphrase(args) => {
                 commands::security::disable_passphrase(&ctx, args)
             }
+            SecurityCommand::EnableDeviceSeal => commands::security::enable_device_seal(&ctx),
         },
 
         Command::AddRecipient(args) => commands::recipient::add(&ctx, args),

@@ -76,6 +76,21 @@ pub fn disable_passphrase(_ctx: &CmdContext, _args: DisablePassphraseArgs) -> Re
     anyhow::bail!("this sshenv build was compiled without passphrase-factor support")
 }
 
+#[cfg(feature = "device-seal")]
+pub fn enable_device_seal(ctx: &CmdContext) -> Result<()> {
+    let (ciphertext, recipients) = load_ciphertext_and_fps(&ctx.vault_path)?;
+    let (mut vault, data_key) = unlock_ciphertext(ciphertext, &recipients)?;
+    vault.enable_device_seal_factor()?;
+    vault.save(&ctx.vault_path, &data_key)?;
+    eprintln!("Enabled device-seal factor for this v2 vault.");
+    Ok(())
+}
+
+#[cfg(not(feature = "device-seal"))]
+pub fn enable_device_seal(_ctx: &CmdContext) -> Result<()> {
+    anyhow::bail!("this sshenv build was compiled without device-seal support")
+}
+
 pub fn status(ctx: &CmdContext) -> Result<()> {
     println!("sshenv security status");
     println!("======================");
@@ -123,6 +138,14 @@ fn print_vault_status(ctx: &CmdContext) -> Result<Option<HashSet<String>>> {
             "disabled"
         }
     );
+    println!(
+        "device-seal factor: {}",
+        if ciphertext_requires_device_seal(&ciphertext) {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    );
 
     let mut recipients = HashSet::new();
     for recipient in ciphertext.recipients {
@@ -143,6 +166,16 @@ fn ciphertext_requires_passphrase(ciphertext: &sshenv_vault::CiphertextVault) ->
         .any(|factor| factor.kind == sshenv_vault::models::UnlockFactorKindV2::Passphrase)
 }
 
+fn ciphertext_requires_device_seal(ciphertext: &sshenv_vault::CiphertextVault) -> bool {
+    ciphertext
+        .policy_metadata
+        .as_ref()
+        .into_iter()
+        .flat_map(|metadata| &metadata.policies)
+        .flat_map(|policy| &policy.factors)
+        .any(|factor| factor.kind == sshenv_vault::models::UnlockFactorKindV2::DeviceSeal)
+}
+
 fn print_feature_status() {
     println!("Compiled security features");
     println!("--------------------------");
@@ -155,7 +188,11 @@ fn print_feature_status() {
         "passphrase:     {}",
         enabled_label(cfg!(feature = "passphrase-factor"))
     );
-    println!("device-seal:    planned");
+    println!(
+        "device-seal:    {} ({})",
+        enabled_label(cfg!(feature = "device-seal")),
+        device_seal_backend_status(),
+    );
     println!("hardware keys:  planned");
     println!("threshold:      planned");
     println!("rollback:       planned");
@@ -163,6 +200,17 @@ fn print_feature_status() {
 
 const fn enabled_label(enabled: bool) -> &'static str {
     if enabled { "enabled" } else { "disabled" }
+}
+
+const fn device_seal_backend_status() -> &'static str {
+    #[cfg(feature = "device-seal")]
+    {
+        sshenv_vault::device::backend_status()
+    }
+    #[cfg(not(feature = "device-seal"))]
+    {
+        "none"
+    }
 }
 
 fn print_key_status(vault_recipients: Option<&HashSet<String>>) {

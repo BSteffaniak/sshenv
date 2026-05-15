@@ -10,6 +10,8 @@
 #![allow(clippy::multiple_crate_versions)]
 
 pub mod crypto;
+#[cfg(feature = "device-seal")]
+pub mod device;
 pub mod format;
 pub mod identity;
 #[cfg(feature = "passphrase-factor")]
@@ -32,7 +34,7 @@ use zeroize::Zeroizing;
 
 pub use sshenv_vault_models as models;
 
-#[cfg(feature = "passphrase-factor")]
+#[cfg(any(feature = "passphrase-factor", feature = "device-seal"))]
 use crate::crypto::bind_data_key_to_factor;
 use crate::crypto::{decrypt_payload_with_aad, encrypt_payload_with_aad, generate_data_key};
 use crate::format::{encode, encode_v2, parse};
@@ -224,7 +226,13 @@ pub struct Vault {
     pub policy_metadata: Option<VaultPolicyMetadataV2>,
     pub recipients: Vec<RecipientEntry>,
     pub profiles: ProfileMap,
-    payload_key_factor: Option<Zeroizing<[u8; DATA_KEY_LEN]>>,
+    payload_key_factors: Vec<PayloadKeyFactor>,
+}
+
+#[derive(Debug, Clone)]
+struct PayloadKeyFactor {
+    kind: UnlockFactorKindV2,
+    key: Zeroizing<[u8; DATA_KEY_LEN]>,
 }
 
 impl Vault {
@@ -249,7 +257,7 @@ impl Vault {
             policy_metadata: None,
             recipients: vec![recipient],
             profiles: ProfileMap::default(),
-            payload_key_factor: None,
+            payload_key_factors: Vec::new(),
         };
 
         Ok((vault, data_key))
@@ -299,10 +307,9 @@ impl Vault {
     ) -> Result<(Self, DataKey)> {
         let data_key = recipient::unwrap_data_key(&ciphertext.recipients, identities)
             .context("no configured SSH identity could unwrap the vault data key")?;
-        let payload_key_factor =
-            payload_key_factor_for_metadata(ciphertext.policy_metadata.as_ref(), passphrase)?;
-        let payload_key =
-            payload_key_for_data_key(data_key.as_slice(), payload_key_factor.as_ref());
+        let payload_key_factors =
+            payload_key_factors_for_metadata(ciphertext.policy_metadata.as_ref(), passphrase)?;
+        let payload_key = payload_key_for_data_key(data_key.as_slice(), &payload_key_factors);
 
         let aad = payload_aad_for_version(ciphertext.header.version)?;
         let plaintext =
@@ -322,7 +329,7 @@ impl Vault {
                 policy_metadata: ciphertext.policy_metadata,
                 recipients: ciphertext.recipients,
                 profiles,
-                payload_key_factor,
+                payload_key_factors,
             },
             data_key,
         ))
@@ -489,7 +496,8 @@ impl Vault {
         if !self.remove_passphrase_factor_metadata() {
             return Err(anyhow!("passphrase factor is not enabled"));
         }
-        self.payload_key_factor = None;
+        self.payload_key_factors
+            .retain(|factor| factor.kind != UnlockFactorKindV2::Passphrase);
         Ok(())
     }
 
@@ -511,7 +519,12 @@ impl Vault {
             threshold: None,
             factors: vec![factor],
         });
-        self.payload_key_factor = Some(factor_key);
+        self.payload_key_factors
+            .retain(|factor| factor.kind != UnlockFactorKindV2::Passphrase);
+        self.payload_key_factors.push(PayloadKeyFactor {
+            kind: UnlockFactorKindV2::Passphrase,
+            key: factor_key,
+        });
         Ok(())
     }
 
@@ -536,6 +549,44 @@ impl Vault {
             .policies
             .retain(|policy| !policy.factors.is_empty());
         removed
+    }
+
+    /// Require a device-local seal factor in addition to SSH recipient unlock.
+    ///
+    /// The vault must already be migrated to v2. The caller must save the
+    /// vault with the original data key after enabling the factor.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the vault is not v2, no device-seal backend is
+    /// available, or a device-seal factor is already configured.
+    #[cfg(feature = "device-seal")]
+    pub fn enable_device_seal_factor(&mut self) -> Result<()> {
+        ensure_v2_for_device_seal(self.header.version)?;
+        if self.device_seal_factor_enabled() {
+            return Err(anyhow!("device-seal factor is already enabled"));
+        }
+        let metadata = self
+            .policy_metadata
+            .get_or_insert_with(|| policy_metadata_from_recipients(&self.recipients));
+        let (factor, factor_key) = device::create_factor()?;
+        metadata.policies.push(sshenv_vault_models::UnlockPolicyV2 {
+            id: "ssh+device-seal".to_string(),
+            threshold: None,
+            factors: vec![factor],
+        });
+        self.payload_key_factors.push(PayloadKeyFactor {
+            kind: UnlockFactorKindV2::DeviceSeal,
+            key: factor_key,
+        });
+        Ok(())
+    }
+
+    /// True when this vault metadata requires a device-seal factor.
+    #[cfg(feature = "device-seal")]
+    #[must_use]
+    pub fn device_seal_factor_enabled(&self) -> bool {
+        metadata_has_device_seal_factor(self.policy_metadata.as_ref())
     }
 
     /// Attach public key lines to existing recipients without changing their
@@ -597,8 +648,7 @@ impl Vault {
         let plaintext = serde_json::to_vec(&self.profiles)
             .context("failed to serialize profile map to JSON")?;
         let plaintext = Zeroizing::new(plaintext);
-        let payload_key =
-            payload_key_for_data_key(data_key.as_slice(), self.payload_key_factor.as_ref());
+        let payload_key = payload_key_for_data_key(data_key.as_slice(), &self.payload_key_factors);
         let aad = payload_aad_for_version(self.header.version)?;
         let ciphertext =
             encrypt_payload_with_aad(payload_key.as_slice(), plaintext.as_slice(), aad)
@@ -636,21 +686,22 @@ pub struct CiphertextVault {
 /// # Errors
 ///
 /// Returns an error if any filesystem operation fails.
-#[cfg(feature = "passphrase-factor")]
+#[cfg(any(feature = "passphrase-factor", feature = "device-seal"))]
 fn payload_key_for_data_key(
     data_key: &[u8],
-    payload_key_factor: Option<&Zeroizing<[u8; DATA_KEY_LEN]>>,
+    payload_key_factors: &[PayloadKeyFactor],
 ) -> Zeroizing<[u8; DATA_KEY_LEN]> {
-    match payload_key_factor {
-        Some(factor) => bind_data_key_to_factor(data_key, factor.as_slice()),
-        None => copy_data_key(data_key),
+    let mut current = copy_data_key(data_key);
+    for factor in payload_key_factors {
+        current = bind_data_key_to_factor(current.as_slice(), factor.key.as_slice());
     }
+    current
 }
 
-#[cfg(not(feature = "passphrase-factor"))]
+#[cfg(not(any(feature = "passphrase-factor", feature = "device-seal")))]
 fn payload_key_for_data_key(
     data_key: &[u8],
-    _payload_key_factor: Option<&Zeroizing<[u8; DATA_KEY_LEN]>>,
+    _payload_key_factors: &[PayloadKeyFactor],
 ) -> Zeroizing<[u8; DATA_KEY_LEN]> {
     copy_data_key(data_key)
 }
@@ -661,41 +712,68 @@ fn copy_data_key(data_key: &[u8]) -> Zeroizing<[u8; DATA_KEY_LEN]> {
     Zeroizing::new(out)
 }
 
-#[cfg(feature = "passphrase-factor")]
-fn payload_key_factor_for_metadata(
+fn payload_key_factors_for_metadata(
     metadata: Option<&VaultPolicyMetadataV2>,
     passphrase: Option<&str>,
-) -> Result<Option<Zeroizing<[u8; DATA_KEY_LEN]>>> {
-    let Some(factor) = metadata
-        .into_iter()
-        .flat_map(|metadata| &metadata.policies)
-        .flat_map(|policy| &policy.factors)
-        .find(|factor| passphrase::is_passphrase_factor(factor))
-    else {
-        return Ok(None);
+) -> Result<Vec<PayloadKeyFactor>> {
+    let mut factors = Vec::new();
+    let Some(metadata) = metadata else {
+        return Ok(factors);
     };
+
+    for factor in metadata.policies.iter().flat_map(|policy| &policy.factors) {
+        match factor.kind {
+            UnlockFactorKindV2::Passphrase => {
+                factors.push(PayloadKeyFactor {
+                    kind: UnlockFactorKindV2::Passphrase,
+                    key: passphrase_factor_key(factor, passphrase)?,
+                });
+            }
+            UnlockFactorKindV2::DeviceSeal => factors.push(PayloadKeyFactor {
+                kind: UnlockFactorKindV2::DeviceSeal,
+                key: device_seal_factor_key(factor)?,
+            }),
+            _ => {}
+        }
+    }
+    Ok(factors)
+}
+
+#[cfg(feature = "passphrase-factor")]
+fn passphrase_factor_key(
+    factor: &sshenv_vault_models::UnlockFactorV2,
+    passphrase: Option<&str>,
+) -> Result<Zeroizing<[u8; DATA_KEY_LEN]>> {
     let Some(passphrase) = passphrase else {
         return Err(anyhow!("vault requires a passphrase factor"));
     };
-    passphrase::derive_factor_from_metadata(factor, passphrase).map(Some)
+    passphrase::derive_factor_from_metadata(factor, passphrase)
 }
 
 #[cfg(not(feature = "passphrase-factor"))]
-fn payload_key_factor_for_metadata(
-    metadata: Option<&VaultPolicyMetadataV2>,
+fn passphrase_factor_key(
+    _factor: &sshenv_vault_models::UnlockFactorV2,
     _passphrase: Option<&str>,
-) -> Result<Option<Zeroizing<[u8; DATA_KEY_LEN]>>> {
-    if metadata
-        .into_iter()
-        .flat_map(|metadata| &metadata.policies)
-        .flat_map(|policy| &policy.factors)
-        .any(|factor| factor.kind == UnlockFactorKindV2::Passphrase)
-    {
-        return Err(anyhow!(
-            "vault requires a passphrase factor, but this sshenv build was compiled without passphrase support"
-        ));
-    }
-    Ok(None)
+) -> Result<Zeroizing<[u8; DATA_KEY_LEN]>> {
+    Err(anyhow!(
+        "vault requires a passphrase factor, but this sshenv build was compiled without passphrase support"
+    ))
+}
+
+#[cfg(feature = "device-seal")]
+fn device_seal_factor_key(
+    factor: &sshenv_vault_models::UnlockFactorV2,
+) -> Result<Zeroizing<[u8; DATA_KEY_LEN]>> {
+    device::derive_factor_from_metadata(factor)
+}
+
+#[cfg(not(feature = "device-seal"))]
+fn device_seal_factor_key(
+    _factor: &sshenv_vault_models::UnlockFactorV2,
+) -> Result<Zeroizing<[u8; DATA_KEY_LEN]>> {
+    Err(anyhow!(
+        "vault requires a device-seal factor, but this sshenv build was compiled without device-seal support"
+    ))
 }
 
 #[cfg(feature = "passphrase-factor")]
@@ -707,6 +785,15 @@ fn metadata_has_passphrase_factor(metadata: Option<&VaultPolicyMetadataV2>) -> b
         .any(passphrase::is_passphrase_factor)
 }
 
+#[cfg(feature = "device-seal")]
+fn metadata_has_device_seal_factor(metadata: Option<&VaultPolicyMetadataV2>) -> bool {
+    metadata
+        .into_iter()
+        .flat_map(|metadata| &metadata.policies)
+        .flat_map(|policy| &policy.factors)
+        .any(device::is_device_seal_factor)
+}
+
 #[cfg(feature = "passphrase-factor")]
 fn ensure_v2_for_passphrase(version: u8) -> Result<()> {
     if version == VERSION_V2 {
@@ -714,6 +801,17 @@ fn ensure_v2_for_passphrase(version: u8) -> Result<()> {
     } else {
         Err(anyhow!(
             "passphrase factors require v2; run `sshenv migrate-vault --to v2` first"
+        ))
+    }
+}
+
+#[cfg(feature = "device-seal")]
+fn ensure_v2_for_device_seal(version: u8) -> Result<()> {
+    if version == VERSION_V2 {
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "device-seal factors require v2; run `sshenv migrate-vault --to v2` first"
         ))
     }
 }

@@ -65,7 +65,7 @@ pub fn load_and_unlock(vault_path: &Path) -> Result<(Vault, DataKey)> {
             &fps,
         ));
     }
-    let requires_passphrase = ciphertext_requires_passphrase(&ciphertext);
+    let requires_extra_factor = ciphertext_requires_extra_factor(&ciphertext);
     let passphrase = passphrase_for_ciphertext(&ciphertext, None)?;
     Vault::unlock_with_passphrase(
         ciphertext,
@@ -73,7 +73,7 @@ pub fn load_and_unlock(vault_path: &Path) -> Result<(Vault, DataKey)> {
         passphrase.as_ref().map(|p| p.as_str()),
     )
     .map_err(|err| {
-        if requires_passphrase {
+        if requires_extra_factor {
             err
         } else {
             error_no_identity_unlocked_detailed(&discover_private_key_paths(), &fps)
@@ -132,7 +132,7 @@ pub fn unlock_ciphertext_with_passphrase(
             recipient_fingerprints,
         ));
     }
-    let requires_passphrase = ciphertext_requires_passphrase(&ciphertext);
+    let requires_extra_factor = ciphertext_requires_extra_factor(&ciphertext);
     let passphrase = passphrase_for_ciphertext(&ciphertext, explicit_passphrase)?;
     Vault::unlock_with_passphrase(
         ciphertext,
@@ -140,7 +140,7 @@ pub fn unlock_ciphertext_with_passphrase(
         passphrase.as_ref().map(|p| p.as_str()),
     )
     .map_err(|err| {
-        if requires_passphrase {
+        if requires_extra_factor {
             err
         } else {
             error_no_identity_unlocked_detailed(
@@ -187,4 +187,19 @@ fn ciphertext_requires_passphrase(ciphertext: &CiphertextVault) -> bool {
         .flat_map(|metadata| &metadata.policies)
         .flat_map(|policy| &policy.factors)
         .any(|factor| factor.kind == UnlockFactorKindV2::Passphrase)
+}
+
+fn ciphertext_requires_extra_factor(ciphertext: &CiphertextVault) -> bool {
+    ciphertext
+        .policy_metadata
+        .as_ref()
+        .into_iter()
+        .flat_map(|metadata| &metadata.policies)
+        .flat_map(|policy| &policy.factors)
+        .any(|factor| {
+            matches!(
+                factor.kind,
+                UnlockFactorKindV2::Passphrase | UnlockFactorKindV2::DeviceSeal
+            )
+        })
 }

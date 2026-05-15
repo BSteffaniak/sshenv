@@ -22,7 +22,7 @@ pub fn generate_data_key() -> Zeroizing<[u8; DATA_KEY_LEN]> {
 /// Derive a 64-byte AES-SIV key from the 32-byte data key.
 /// Bind a data key to an additional factor key. The returned key should be
 /// used as the payload encryption key when the factor is required.
-#[cfg(feature = "passphrase-factor")]
+#[cfg(any(feature = "passphrase-factor", feature = "device-seal"))]
 #[must_use]
 pub fn bind_data_key_to_factor(
     data_key: &[u8],

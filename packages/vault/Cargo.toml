@@ -9,6 +9,8 @@ version.workspace    = true
 
 [features]
 default           = ["ssh-hardening", "rekey", "passphrase-factor"]
+device-seal       = []
+device-seal-file  = ["device-seal"]
 passphrase-factor = ["argon2"]
 rekey             = []
 ssh-hardening     = []
