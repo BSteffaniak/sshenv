@@ -3,6 +3,7 @@
 pub mod doctor;
 pub mod export;
 pub mod init;
+pub mod migrate;
 pub mod profile;
 pub mod recipient;
 pub mod rekey;

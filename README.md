@@ -59,6 +59,7 @@ pi-openai
 sshenv init [--recipient-key <path-or-pubkey-line>] [--vault <path>]
 sshenv doctor
 sshenv security status
+sshenv migrate-vault --to v2 [--recipient-key <path-or-pubkey-line>]...
 sshenv rotate-key [--recipient-key <path-or-pubkey-line>]...
 
 # Recipients

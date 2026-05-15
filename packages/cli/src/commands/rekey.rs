@@ -1,18 +1,14 @@
-#[cfg(feature = "rekey")]
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use anyhow::{Result, bail};
 use sshenv_cli_models::RotateKeyArgs;
-#[cfg(feature = "rekey")]
 use sshenv_vault::recipient::fingerprint_from_line;
 use sshenv_vault::{DataKey, Vault};
 
 use crate::commands::Context as CmdContext;
 #[cfg(feature = "rekey")]
 use crate::commands::{load_ciphertext_and_fps, unlock_ciphertext};
-#[cfg(feature = "rekey")]
 use crate::identity::discover_public_key_paths;
-#[cfg(feature = "rekey")]
 use crate::pubkey::load_public_key;
 
 #[cfg(feature = "rekey")]
@@ -35,12 +31,7 @@ pub fn rotate_key(_ctx: &CmdContext, _args: RotateKeyArgs) -> Result<()> {
 
 #[cfg(feature = "rekey")]
 pub fn rotate_unlocked_vault(vault: &mut Vault, explicit_keys: &[String]) -> Result<DataKey> {
-    let expected: HashSet<String> = vault
-        .recipients
-        .iter()
-        .map(|recipient| recipient.fingerprint.clone())
-        .collect();
-    let public_key_lines = resolve_recipient_public_key_lines(explicit_keys, &expected)?;
+    let public_key_lines = resolve_current_recipient_public_key_lines(vault, explicit_keys)?;
     vault.rotate_data_key(&public_key_lines)
 }
 
@@ -49,12 +40,24 @@ pub fn rotate_unlocked_vault(_vault: &mut Vault, _explicit_keys: &[String]) -> R
     bail!("this sshenv build was compiled without rekey support")
 }
 
-#[cfg(feature = "rekey")]
-fn resolve_recipient_public_key_lines(
+pub fn resolve_current_recipient_public_key_lines(
+    vault: &Vault,
     explicit_keys: &[String],
-    expected_fingerprints: &HashSet<String>,
 ) -> Result<Vec<String>> {
+    let expected_fingerprints: HashSet<String> = vault
+        .recipients
+        .iter()
+        .map(|recipient| recipient.fingerprint.clone())
+        .collect();
     let mut public_keys_by_fingerprint = BTreeMap::new();
+
+    for recipient in &vault.recipients {
+        if !recipient.public_key_line.is_empty() {
+            public_keys_by_fingerprint
+                .entry(recipient.fingerprint.clone())
+                .or_insert_with(|| recipient.public_key_line.clone());
+        }
+    }
 
     for key in explicit_keys {
         let line = load_public_key(key)?;
@@ -101,7 +104,6 @@ fn resolve_recipient_public_key_lines(
         .collect())
 }
 
-#[cfg(feature = "rekey")]
 fn format_fingerprint_list(values: &[&String]) -> String {
     if values.is_empty() {
         "(none)".to_string()

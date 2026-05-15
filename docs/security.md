@@ -39,14 +39,21 @@ reporting contact.
    responsibility. A stderr warning is printed before values.
 6. **Shoulder-surfing over the user's terminal.** Same.
 
+## Format migration summary
+
+v1 remains the stable compatibility format. v2 is only written through an
+explicit migration command and adds policy metadata plus recipient public
+metadata. That metadata is non-secret and exists so future policy factors and
+rekey operations can preserve the intended recipient set safely.
+
 ## Crypto summary
 
 - **Recipient wrapping**: `age 0.11.1` with the `ssh` feature. The
   wrapped blob is a full `age`-encrypted message; any holder of the
   corresponding SSH private key can decrypt via `age::Decryptor`.
-- **Body encryption**: `aes-siv 0.7` (AES-256-SIV) with AAD =
-  `"sshenv:v1:payload"`. Deterministic; rejects tampering; immune to
-  nonce-reuse because it derives a synthetic IV internally.
+- **Body encryption**: `aes-siv 0.7` (AES-256-SIV) with versioned AAD
+  (`"sshenv:v1:payload"` or `"sshenv:v2:payload"`). Deterministic; rejects
+  tampering; immune to nonce-reuse because it derives a synthetic IV internally.
 - **Key derivation**: `hkdf 0.12` over `sha2 0.10`, salt
   `"sshenv:v1"`, info `"payload"`. Expands 32 input bytes to the 64
   bytes AES-256-SIV wants.

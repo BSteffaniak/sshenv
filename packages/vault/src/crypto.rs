@@ -34,6 +34,15 @@ fn derive_siv_key(data_key: &[u8]) -> Zeroizing<[u8; SIV_KEY_LEN]> {
 ///
 /// Returns an error if the AES-SIV implementation rejects the operation.
 pub fn encrypt_payload(data_key: &[u8], plaintext: &[u8]) -> Result<Vec<u8>> {
+    encrypt_payload_with_aad(data_key, plaintext, PAYLOAD_AAD)
+}
+
+/// Encrypt `plaintext` under `data_key` with an explicit AAD binding.
+///
+/// # Errors
+///
+/// Returns an error if the AES-SIV implementation rejects the operation.
+pub fn encrypt_payload_with_aad(data_key: &[u8], plaintext: &[u8], aad: &[u8]) -> Result<Vec<u8>> {
     let siv = derive_siv_key(data_key);
     let cipher = Aes256SivAead::new(GenericArray::from_slice(siv.as_slice()));
     let nonce = GenericArray::from_slice(&[0_u8; 16]);
@@ -42,7 +51,7 @@ pub fn encrypt_payload(data_key: &[u8], plaintext: &[u8]) -> Result<Vec<u8>> {
             nonce,
             Payload {
                 msg: plaintext,
-                aad: PAYLOAD_AAD,
+                aad,
             },
         )
         .map_err(|e| anyhow::anyhow!("failed to encrypt vault payload: {e}"))
@@ -58,6 +67,20 @@ pub fn encrypt_payload(data_key: &[u8], plaintext: &[u8]) -> Result<Vec<u8>> {
 /// Returns an error if `data_key` does not match, if AAD differs, or if
 /// the ciphertext has been tampered with.
 pub fn decrypt_payload(data_key: &[u8], ciphertext: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
+    decrypt_payload_with_aad(data_key, ciphertext, PAYLOAD_AAD)
+}
+
+/// Decrypt `ciphertext` under `data_key` with an explicit AAD binding.
+///
+/// # Errors
+///
+/// Returns an error if `data_key` does not match, if AAD differs, or if
+/// the ciphertext has been tampered with.
+pub fn decrypt_payload_with_aad(
+    data_key: &[u8],
+    ciphertext: &[u8],
+    aad: &[u8],
+) -> Result<Zeroizing<Vec<u8>>> {
     let siv = derive_siv_key(data_key);
     let cipher = Aes256SivAead::new(GenericArray::from_slice(siv.as_slice()));
     let nonce = GenericArray::from_slice(&[0_u8; 16]);
@@ -66,7 +89,7 @@ pub fn decrypt_payload(data_key: &[u8], ciphertext: &[u8]) -> Result<Zeroizing<V
             nonce,
             Payload {
                 msg: ciphertext,
-                aad: PAYLOAD_AAD,
+                aad,
             },
         )
         .map_err(|e| anyhow::anyhow!("failed to decrypt vault payload: {e}"))?;

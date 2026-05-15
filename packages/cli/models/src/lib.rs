@@ -37,6 +37,8 @@ pub enum Command {
     Doctor,
     /// Rotate the vault data key while preserving current recipients.
     RotateKey(RotateKeyArgs),
+    /// Explicitly migrate a vault to a newer format.
+    MigrateVault(MigrateVaultArgs),
     /// Inspect and configure security posture.
     #[command(subcommand)]
     Security(SecurityCommand),
@@ -74,6 +76,22 @@ pub enum Command {
     /// Manage PATH shims.
     #[command(subcommand)]
     Shims(ShimsCommand),
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum VaultFormatVersionArg {
+    V2,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct MigrateVaultArgs {
+    /// Target vault format version.
+    #[arg(long, value_enum)]
+    pub to: VaultFormatVersionArg,
+    /// Public key for a current recipient. Repeat for each recipient that
+    /// cannot be discovered from local `~/.ssh/*.pub` files.
+    #[arg(long = "recipient-key", value_name = "PATH_OR_LINE")]
+    pub recipient_keys: Vec<String>,
 }
 
 #[derive(Debug, clap::Args)]

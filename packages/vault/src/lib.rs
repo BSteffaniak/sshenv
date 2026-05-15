@@ -23,14 +23,15 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow};
 use sshenv_vault_models::{
-    DATA_KEY_LEN, ProfileMap, RecipientEntry, VaultHeader, VaultModelsError,
+    DATA_KEY_LEN, PAYLOAD_AAD, ProfileMap, RecipientEntry, RecipientMetadataV2, UnlockFactorKindV2,
+    V2_PAYLOAD_AAD, VERSION, VERSION_V2, VaultHeader, VaultModelsError, VaultPolicyMetadataV2,
 };
 use zeroize::Zeroizing;
 
 pub use sshenv_vault_models as models;
 
-use crate::crypto::{decrypt_payload, encrypt_payload, generate_data_key};
-use crate::format::{encode, parse};
+use crate::crypto::{decrypt_payload_with_aad, encrypt_payload_with_aad, generate_data_key};
+use crate::format::{encode, encode_v2, parse};
 use crate::identity::{
     discover_private_key_paths, error_no_identity_unlocked_detailed,
     load_identities_for_vault_from_paths,
@@ -216,6 +217,7 @@ pub fn load_and_unlock_with_private_key_paths(
 #[derive(Debug, Clone)]
 pub struct Vault {
     pub header: VaultHeader,
+    pub policy_metadata: Option<VaultPolicyMetadataV2>,
     pub recipients: Vec<RecipientEntry>,
     pub profiles: ProfileMap,
 }
@@ -239,6 +241,7 @@ impl Vault {
 
         let vault = Self {
             header: VaultHeader::default(),
+            policy_metadata: None,
             recipients: vec![recipient],
             profiles: ProfileMap::default(),
         };
@@ -257,6 +260,7 @@ impl Vault {
         let parsed = parse(&bytes)?;
         Ok(CiphertextVault {
             header: parsed.header,
+            policy_metadata: parsed.policy_metadata,
             recipients: parsed.recipients,
             payload_ciphertext: parsed.payload,
         })
@@ -276,8 +280,10 @@ impl Vault {
         let data_key = recipient::unwrap_data_key(&ciphertext.recipients, identities)
             .context("no configured SSH identity could unwrap the vault data key")?;
 
-        let plaintext = decrypt_payload(data_key.as_slice(), &ciphertext.payload_ciphertext)
-            .context("failed to decrypt vault payload")?;
+        let aad = payload_aad_for_version(ciphertext.header.version)?;
+        let plaintext =
+            decrypt_payload_with_aad(data_key.as_slice(), &ciphertext.payload_ciphertext, aad)
+                .context("failed to decrypt vault payload")?;
 
         let profiles: ProfileMap = if plaintext.is_empty() {
             ProfileMap::default()
@@ -289,6 +295,7 @@ impl Vault {
         Ok((
             Self {
                 header: ciphertext.header,
+                policy_metadata: ciphertext.policy_metadata,
                 recipients: ciphertext.recipients,
                 profiles,
             },
@@ -391,6 +398,68 @@ impl Vault {
         Ok(new_data_key)
     }
 
+    /// Attach public key lines for all current recipients and mark the vault
+    /// for v2 policy-format saving.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the provided keys do not exactly match current
+    /// recipients.
+    pub fn migrate_to_v2(&mut self, recipient_public_key_lines: &[String]) -> Result<()> {
+        self.attach_recipient_public_key_lines(recipient_public_key_lines)?;
+        self.header.version = VERSION_V2;
+        self.policy_metadata = Some(policy_metadata_from_recipients(&self.recipients));
+        Ok(())
+    }
+
+    /// Attach public key lines to existing recipients without changing their
+    /// wrapped keys.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any provided key is invalid, if the provided keys
+    /// contain duplicates, or if their fingerprints do not exactly match the
+    /// vault's current recipients.
+    pub fn attach_recipient_public_key_lines(
+        &mut self,
+        recipient_public_key_lines: &[String],
+    ) -> Result<()> {
+        let expected: BTreeSet<String> = self
+            .recipients
+            .iter()
+            .map(|recipient| recipient.fingerprint.clone())
+            .collect();
+        let mut public_keys_by_fingerprint = BTreeMap::new();
+
+        for public_key_line in recipient_public_key_lines {
+            let fingerprint = recipient::fingerprint_from_line(public_key_line)?;
+            if public_keys_by_fingerprint
+                .insert(fingerprint.clone(), public_key_line.clone())
+                .is_some()
+            {
+                return Err(VaultModelsError::DuplicateRecipient(fingerprint).into());
+            }
+        }
+
+        let provided: BTreeSet<String> = public_keys_by_fingerprint.keys().cloned().collect();
+        if provided != expected {
+            let missing: Vec<&String> = expected.difference(&provided).collect();
+            let unexpected: Vec<&String> = provided.difference(&expected).collect();
+            return Err(anyhow!(
+                "recipient keys do not match current vault recipients; missing: {}; unexpected: {}",
+                format_fingerprint_list(&missing),
+                format_fingerprint_list(&unexpected),
+            ));
+        }
+
+        for recipient in &mut self.recipients {
+            if let Some(public_key_line) = public_keys_by_fingerprint.get(&recipient.fingerprint) {
+                recipient.public_key_line = public_key_line.clone();
+            }
+        }
+        Ok(())
+    }
+
     /// Serialize, encrypt, and atomically write this vault to disk with
     /// mode `0600`.
     ///
@@ -402,10 +471,21 @@ impl Vault {
         let plaintext = serde_json::to_vec(&self.profiles)
             .context("failed to serialize profile map to JSON")?;
         let plaintext = Zeroizing::new(plaintext);
-        let ciphertext = encrypt_payload(data_key.as_slice(), plaintext.as_slice())
+        let aad = payload_aad_for_version(self.header.version)?;
+        let ciphertext = encrypt_payload_with_aad(data_key.as_slice(), plaintext.as_slice(), aad)
             .context("failed to encrypt vault payload")?;
 
-        let encoded = encode(self.header, &self.recipients, &ciphertext)?;
+        let encoded = match self.header.version {
+            VERSION => encode(self.header, &self.recipients, &ciphertext)?,
+            VERSION_V2 => {
+                let metadata = self
+                    .policy_metadata
+                    .clone()
+                    .unwrap_or_else(|| policy_metadata_from_recipients(&self.recipients));
+                encode_v2(self.header, &metadata, &self.recipients, &ciphertext)?
+            }
+            version => return Err(VaultModelsError::UnsupportedVersion(version).into()),
+        };
         atomic_write(path, &encoded, 0o600)?;
         Ok(())
     }
@@ -414,6 +494,7 @@ impl Vault {
 /// A parsed but still-encrypted vault file.
 pub struct CiphertextVault {
     pub header: VaultHeader,
+    pub policy_metadata: Option<VaultPolicyMetadataV2>,
     pub recipients: Vec<RecipientEntry>,
     pub payload_ciphertext: Vec<u8>,
 }
@@ -426,7 +507,28 @@ pub struct CiphertextVault {
 /// # Errors
 ///
 /// Returns an error if any filesystem operation fails.
-#[cfg(feature = "rekey")]
+fn payload_aad_for_version(version: u8) -> Result<&'static [u8]> {
+    match version {
+        VERSION => Ok(PAYLOAD_AAD),
+        VERSION_V2 => Ok(V2_PAYLOAD_AAD),
+        _ => Err(VaultModelsError::UnsupportedVersion(version).into()),
+    }
+}
+
+fn policy_metadata_from_recipients(recipients: &[RecipientEntry]) -> VaultPolicyMetadataV2 {
+    VaultPolicyMetadataV2 {
+        policies: Vec::new(),
+        recipients: recipients
+            .iter()
+            .map(|recipient| RecipientMetadataV2 {
+                fingerprint: recipient.fingerprint.clone(),
+                public_descriptor: recipient.public_key_line.clone(),
+                kind: UnlockFactorKindV2::SshRecipient,
+            })
+            .collect(),
+    }
+}
+
 fn format_fingerprint_list(values: &[&String]) -> String {
     if values.is_empty() {
         "(none)".to_string()
@@ -575,6 +677,32 @@ mod tests {
         v.save(&path, &key).expect("save");
         let meta = fs::metadata(&path).expect("meta");
         assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+    }
+
+    #[test]
+    fn migrate_to_v2_preserves_secret_access_and_public_key_metadata() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("vault");
+
+        let (pubkey, identity) = generate_keypair();
+        let (mut v, key) = Vault::create(&pubkey).expect("create");
+        v.profiles.set("p", "K", "migrated".into());
+        v.migrate_to_v2(std::slice::from_ref(&pubkey))
+            .expect("migrate");
+        v.save(&path, &key).expect("save v2");
+
+        let ct = Vault::load_ciphertext(&path).expect("load v2");
+        assert_eq!(ct.header.version, VERSION_V2);
+        assert_eq!(ct.recipients[0].public_key_line, pubkey);
+        assert!(ct.policy_metadata.is_some());
+
+        let identities: Vec<Box<dyn age::Identity>> = vec![identity];
+        let (unlocked, _) = Vault::unlock(ct, &identities).expect("unlock v2");
+        assert_eq!(unlocked.header.version, VERSION_V2);
+        assert_eq!(
+            unlocked.profiles.get("p").unwrap().get("K").unwrap(),
+            "migrated"
+        );
     }
 
     #[test]

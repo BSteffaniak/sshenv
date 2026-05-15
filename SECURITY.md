@@ -35,7 +35,7 @@
 
 ## Vault file format
 
-Binary, versioned:
+Binary, versioned. v1 is stable and immutable:
 
 ```
 MAGIC       "SSHE"          (4 bytes)
@@ -46,6 +46,11 @@ RECIPIENTS  (variable)      array of { fp_len u16 BE, fp utf8, wrap_len u32 BE, 
 PAYLOAD_LEN u32 BE          (4 bytes)
 PAYLOAD     (variable)      AES-256-SIV ciphertext, AAD = "sshenv:v1:payload"
 ```
+
+v2 is an explicit migration target for policy metadata and stores recipient
+public descriptors so future data-key rotation can preserve recipient sets
+without asking for every public key again. v2 payload AAD is
+`"sshenv:v2:payload"`.
 
 Plaintext payload is JSON: `{ "profiles": { "<name>": { "<VAR>": "<value>" } } }`.
 
