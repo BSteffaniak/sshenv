@@ -88,8 +88,10 @@ changed. To revoke past access, rotate the data key (planned).
 
 v2 vaults can store profiles as independently encrypted profile entries. The
 outer vault payload is still encrypted by the vault payload key, and each
-profile entry also has its own random profile key and ciphertext. This enables
-future targeted profile rotation and per-profile factor enforcement.
+profile entry also has its own random profile key and ciphertext. Use
+`sshenv security profile-policy rotate-key <profile>` to rotate one profile's
+data key without rotating other unchanged profile entries. This enables future
+per-profile factor enforcement.
 
 v2 vaults can also store encrypted advisory policy metadata for individual
 profiles. Policy metadata is not yet a cryptographic boundary by itself.

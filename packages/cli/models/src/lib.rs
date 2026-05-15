@@ -127,8 +127,15 @@ pub enum ProfilePolicyCommand {
     List,
     /// Store profiles as independently encrypted v2 payload entries.
     Migrate,
+    /// Rotate one profile's per-profile data key.
+    RotateKey(ProfilePolicyRotateKeyArgs),
     /// Set advisory policy metadata for a profile.
     Set(ProfilePolicySetArgs),
+}
+
+#[derive(Debug, clap::Args)]
+pub struct ProfilePolicyRotateKeyArgs {
+    pub profile: String,
 }
 
 #[derive(Debug, clap::Args)]

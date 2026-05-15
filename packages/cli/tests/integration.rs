@@ -415,6 +415,23 @@ fn binary_profile_policy_migrate_preserves_secret_access() {
         String::from_utf8_lossy(&profile_migrate_out.stderr)
     );
 
+    let rotate_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("security")
+        .arg("profile-policy")
+        .arg("rotate-key")
+        .arg("myprofile")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run profile-policy rotate-key");
+    assert!(
+        rotate_out.status.success(),
+        "profile-policy rotate-key failed: {}",
+        String::from_utf8_lossy(&rotate_out.stderr)
+    );
+
     let show_out = Command::new(&bin)
         .arg("--vault")
         .arg(&vault_path)

@@ -3,8 +3,8 @@ use std::path::Path;
 
 use anyhow::Result;
 use sshenv_cli_models::{
-    ChangePassphraseArgs, DisablePassphraseArgs, EnablePassphraseArgs, ProfilePolicySetArgs,
-    SecurityPresetArg, SecurityPresetArgs,
+    ChangePassphraseArgs, DisablePassphraseArgs, EnablePassphraseArgs, ProfilePolicyRotateKeyArgs,
+    ProfilePolicySetArgs, SecurityPresetArg, SecurityPresetArgs,
 };
 use sshenv_vault::Vault;
 use sshenv_vault::models::{ProfilePolicy, ProfilePolicyPreset, VERSION, VERSION_V2};
@@ -197,6 +197,14 @@ pub fn profile_policy_migrate(ctx: &CmdContext) -> Result<()> {
     } else {
         eprintln!("Profiles are already stored as independently encrypted v2 entries.");
     }
+    Ok(())
+}
+
+pub fn profile_policy_rotate_key(ctx: &CmdContext, args: ProfilePolicyRotateKeyArgs) -> Result<()> {
+    let (mut vault, data_key) = crate::commands::load_and_unlock(&ctx.vault_path)?;
+    vault.rotate_profile_key(&args.profile)?;
+    save_vault(ctx, &mut vault, &data_key)?;
+    eprintln!("Rotated profile data key for {}.", args.profile);
     Ok(())
 }
 

@@ -18,9 +18,7 @@ pub mod identity;
 pub mod passphrase;
 pub mod recipient;
 
-#[cfg(feature = "rekey")]
-use std::collections::BTreeSet;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -228,6 +226,7 @@ pub struct Vault {
     pub recipients: Vec<RecipientEntry>,
     pub profiles: ProfileMap,
     payload_key_factors: Vec<PayloadKeyFactor>,
+    profile_key_rotations: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -259,6 +258,7 @@ impl Vault {
             recipients: vec![recipient],
             profiles: ProfileMap::default(),
             payload_key_factors: Vec::new(),
+            profile_key_rotations: BTreeSet::new(),
         };
 
         Ok((vault, data_key))
@@ -330,6 +330,7 @@ impl Vault {
                 recipients: ciphertext.recipients,
                 profiles,
                 payload_key_factors,
+                profile_key_rotations: BTreeSet::new(),
             },
             data_key,
         ))
@@ -659,6 +660,25 @@ impl Vault {
         Ok(true)
     }
 
+    /// Rotate the per-profile data key for one profile on the next save.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if profile-key mode is not enabled or if the profile
+    /// does not exist.
+    pub fn rotate_profile_key(&mut self, profile: &str) -> Result<()> {
+        if !self.profile_keys_enabled() {
+            return Err(anyhow!(
+                "profile-key mode is not enabled; run `sshenv security profile-policy migrate` first"
+            ));
+        }
+        if !self.profiles.profiles.contains_key(profile) {
+            return Err(VaultModelsError::MissingProfile(profile.to_string()).into());
+        }
+        self.profile_key_rotations.insert(profile.to_string());
+        Ok(())
+    }
+
     /// True when future saves will use per-profile encrypted entries.
     #[must_use]
     pub fn profile_keys_enabled(&self) -> bool {
@@ -700,6 +720,7 @@ impl Vault {
             &self.profiles,
             payload_key.as_slice(),
             self.profile_keys_enabled(),
+            &self.profile_key_rotations,
         )?;
         let plaintext = Zeroizing::new(plaintext);
         let aad = payload_aad_for_version(self.header.version)?;
@@ -782,8 +803,7 @@ fn decode_profiles_from_payload(payload: &[u8], payload_key: &[u8]) -> Result<Pr
         return Ok(profiles);
     }
 
-    let entries = std::mem::take(&mut profiles.profile_entries);
-    for (profile, entry) in entries {
+    for (profile, entry) in &profiles.profile_entries {
         let profile_key =
             decrypt_payload_with_aad(payload_key, &entry.wrapped_key, V2_PROFILE_KEY_AAD)
                 .with_context(|| format!("failed to decrypt profile key for {profile}"))?;
@@ -801,7 +821,7 @@ fn decode_profiles_from_payload(payload: &[u8], payload_key: &[u8]) -> Result<Pr
         .with_context(|| format!("failed to decrypt profile payload for {profile}"))?;
         let vars: BTreeMap<String, String> = serde_json::from_slice(&profile_plaintext)
             .with_context(|| format!("profile payload for {profile} was not valid JSON"))?;
-        profiles.profiles.insert(profile, vars);
+        profiles.profiles.insert(profile.clone(), vars);
     }
     Ok(profiles)
 }
@@ -810,36 +830,74 @@ fn encode_profiles_for_payload(
     profiles: &ProfileMap,
     payload_key: &[u8],
     profile_keys_enabled: bool,
+    profile_key_rotations: &BTreeSet<String>,
 ) -> Result<Vec<u8>> {
     if !profile_keys_enabled {
-        return serde_json::to_vec(profiles).context("failed to serialize profile map to JSON");
+        let mut encoded = profiles.clone();
+        encoded.profile_entries.clear();
+        return serde_json::to_vec(&encoded).context("failed to serialize profile map to JSON");
     }
 
     let mut encoded = profiles.clone();
     encoded.profile_entries.clear();
     for (profile, vars) in &profiles.profiles {
-        let profile_key = generate_data_key();
-        let profile_plaintext = serde_json::to_vec(vars)
-            .with_context(|| format!("failed to serialize profile {profile}"))?;
-        let ciphertext = encrypt_payload_with_aad(
-            profile_key.as_slice(),
-            &profile_plaintext,
-            V2_PROFILE_PAYLOAD_AAD,
-        )
-        .with_context(|| format!("failed to encrypt profile {profile}"))?;
-        let wrapped_key =
-            encrypt_payload_with_aad(payload_key, profile_key.as_slice(), V2_PROFILE_KEY_AAD)
-                .with_context(|| format!("failed to wrap profile key for {profile}"))?;
-        encoded.profile_entries.insert(
-            profile.clone(),
-            ProfileEntry {
-                wrapped_key,
-                ciphertext,
-            },
-        );
+        let reusable_entry = profiles.profile_entries.get(profile).filter(|entry| {
+            !profile_key_rotations.contains(profile)
+                && profile_entry_matches_vars(entry, payload_key, vars).unwrap_or(false)
+        });
+        let entry = if let Some(entry) = reusable_entry {
+            entry.clone()
+        } else {
+            encrypt_profile_entry(profile, vars, payload_key)?
+        };
+        encoded.profile_entries.insert(profile.clone(), entry);
     }
     encoded.profiles.clear();
     serde_json::to_vec(&encoded).context("failed to serialize profile-entry map to JSON")
+}
+
+fn encrypt_profile_entry(
+    profile: &str,
+    vars: &BTreeMap<String, String>,
+    payload_key: &[u8],
+) -> Result<ProfileEntry> {
+    let profile_key = generate_data_key();
+    let profile_plaintext = serde_json::to_vec(vars)
+        .with_context(|| format!("failed to serialize profile {profile}"))?;
+    let ciphertext = encrypt_payload_with_aad(
+        profile_key.as_slice(),
+        &profile_plaintext,
+        V2_PROFILE_PAYLOAD_AAD,
+    )
+    .with_context(|| format!("failed to encrypt profile {profile}"))?;
+    let wrapped_key =
+        encrypt_payload_with_aad(payload_key, profile_key.as_slice(), V2_PROFILE_KEY_AAD)
+            .with_context(|| format!("failed to wrap profile key for {profile}"))?;
+    Ok(ProfileEntry {
+        wrapped_key,
+        ciphertext,
+    })
+}
+
+fn profile_entry_matches_vars(
+    entry: &ProfileEntry,
+    payload_key: &[u8],
+    vars: &BTreeMap<String, String>,
+) -> Result<bool> {
+    let profile_key = decrypt_payload_with_aad(payload_key, &entry.wrapped_key, V2_PROFILE_KEY_AAD)
+        .context("failed to decrypt existing profile key")?;
+    if profile_key.len() != DATA_KEY_LEN {
+        return Ok(false);
+    }
+    let profile_plaintext = decrypt_payload_with_aad(
+        profile_key.as_slice(),
+        &entry.ciphertext,
+        V2_PROFILE_PAYLOAD_AAD,
+    )
+    .context("failed to decrypt existing profile payload")?;
+    let previous_vars: BTreeMap<String, String> = serde_json::from_slice(&profile_plaintext)
+        .context("existing profile payload was not valid JSON")?;
+    Ok(&previous_vars == vars)
 }
 
 fn payload_key_factors_for_metadata(
@@ -1183,6 +1241,58 @@ mod tests {
             unlocked.profiles.get("p").unwrap().get("K").unwrap(),
             "profile-keyed"
         );
+    }
+
+    #[test]
+    fn rotate_profile_key_changes_only_target_profile_entry() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("vault");
+
+        let (pubkey, identity) = generate_keypair();
+        let (mut v, key) = Vault::create(&pubkey).expect("create");
+        v.profiles.set("p1", "K", "one".into());
+        v.profiles.set("p2", "K", "two".into());
+        v.migrate_to_v2(std::slice::from_ref(&pubkey))
+            .expect("migrate");
+        v.enable_profile_keys().expect("enable profile keys");
+        v.save(&path, &key).expect("save profile-keyed v2");
+
+        let initial_entries = profile_entries_from_saved_vault(&path, key.as_slice());
+        let parsed = Vault::load_ciphertext(&path).expect("load ciphertext");
+        let identities: Vec<Box<dyn age::Identity>> = vec![identity];
+        let (mut unlocked, _) = Vault::unlock(parsed, &identities).expect("unlock");
+        unlocked
+            .rotate_profile_key("p1")
+            .expect("rotate profile key");
+        unlocked.save(&path, &key).expect("save rotation");
+
+        let rotated_entries = profile_entries_from_saved_vault(&path, key.as_slice());
+        assert_ne!(
+            initial_entries.get("p1"),
+            rotated_entries.get("p1"),
+            "target profile entry should be re-encrypted"
+        );
+        assert_eq!(
+            initial_entries.get("p2"),
+            rotated_entries.get("p2"),
+            "untouched profile entry should be preserved"
+        );
+    }
+
+    fn profile_entries_from_saved_vault(
+        path: &Path,
+        data_key: &[u8],
+    ) -> BTreeMap<String, ProfileEntry> {
+        let parsed = Vault::load_ciphertext(path).expect("load ciphertext");
+        let payload_key = payload_key_for_data_key(data_key, &[]);
+        let plaintext = decrypt_payload_with_aad(
+            payload_key.as_slice(),
+            &parsed.payload_ciphertext,
+            V2_PAYLOAD_AAD,
+        )
+        .expect("decrypt outer payload");
+        let encoded: ProfileMap = serde_json::from_slice(&plaintext).expect("profile map json");
+        encoded.profile_entries
     }
 
     #[test]

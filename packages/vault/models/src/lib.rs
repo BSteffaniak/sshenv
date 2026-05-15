@@ -304,6 +304,7 @@ impl ProfileMap {
     pub fn remove_profile(&mut self, profile: &str) -> bool {
         let removed = self.profiles.remove(profile).is_some();
         if removed {
+            self.profile_entries.remove(profile);
             self.profile_policies.remove(profile);
         }
         removed
@@ -329,6 +330,9 @@ impl ProfileMap {
             return Err(VaultModelsError::MissingProfile(from.to_string()));
         };
         self.profiles.insert(to.to_string(), vars);
+        if let Some(entry) = self.profile_entries.remove(from) {
+            self.profile_entries.insert(to.to_string(), entry);
+        }
         if let Some(policy) = self.profile_policies.remove(from) {
             self.profile_policies.insert(to.to_string(), policy);
         }
@@ -444,6 +448,13 @@ mod tests {
     fn profile_policy_moves_and_removes_with_profile() {
         let mut m = ProfileMap::new();
         m.set("old", "K", "v".into());
+        m.profile_entries.insert(
+            "old".to_string(),
+            ProfileEntry {
+                wrapped_key: vec![1],
+                ciphertext: vec![2],
+            },
+        );
         m.set_profile_policy(
             "old",
             ProfilePolicy {
@@ -453,6 +464,8 @@ mod tests {
         .unwrap();
 
         m.rename_profile("old", "new").unwrap();
+        assert!(!m.profile_entries.contains_key("old"));
+        assert!(m.profile_entries.contains_key("new"));
         assert!(m.profile_policy("old").is_none());
         assert_eq!(
             m.profile_policy("new").unwrap().preset,
@@ -460,6 +473,7 @@ mod tests {
         );
 
         assert!(m.remove_profile("new"));
+        assert!(!m.profile_entries.contains_key("new"));
         assert!(m.profile_policy("new").is_none());
     }
 
