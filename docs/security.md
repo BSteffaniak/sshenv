@@ -99,6 +99,7 @@ sshenv security profile-policy require-passphrase <profile> [--passphrase <v>]
 sshenv security profile-policy change-passphrase <profile> [--old-passphrase <v>] [--new-passphrase <v>]
 sshenv security profile-policy disable-passphrase <profile> [--passphrase <v>]
 sshenv security profile-policy require-device-seal <profile>
+sshenv security profile-policy disable-device-seal <profile>
 sshenv security profile-policy clear-requirements <profile>
 ```
 
@@ -106,9 +107,11 @@ These requirements are opt-in. `require-passphrase` creates per-profile
 passphrase metadata and binds the selected profile's inner ciphertext to that
 profile factor when the policy is saved. `change-passphrase` rotates that
 profile-specific factor, and `disable-passphrase` re-encrypts the profile
-without it. Commands that only need one profile (`show`, `export`, and `run`)
-lazily decrypt the selected profile, so normal profiles do not need the profile
-passphrase. For non-interactive use, provide `SSHENV_PROFILE_PASSPHRASE`.
+without it. `require-device-seal` similarly binds only the selected profile to
+the configured device-seal backend; `disable-device-seal` removes that binding.
+Commands that only need one profile (`show`, `export`, and `run`) lazily decrypt
+the selected profile, so normal profiles do not need the profile passphrase. For
+non-interactive use, provide `SSHENV_PROFILE_PASSPHRASE`.
 
 v2 vaults can also store encrypted advisory policy metadata for individual
 profiles. Preset metadata is not yet a cryptographic boundary by itself.

@@ -382,11 +382,65 @@ pub fn profile_policy_disable_passphrase(
     anyhow::bail!("this sshenv build was compiled without passphrase-factor support")
 }
 
+#[cfg(feature = "device-seal")]
 pub fn profile_policy_require_device_seal(
     ctx: &CmdContext,
     args: ProfilePolicyRequirementArgs,
 ) -> Result<()> {
-    profile_policy_require_factor(ctx, args, ProfileFactorRequirement::DeviceSeal)
+    let (mut vault, data_key) = load_and_unlock_profile(&ctx.vault_path, &args.profile)?;
+    vault.require_profile_device_seal(&args.profile)?;
+    save_vault(ctx, &mut vault, &data_key)?;
+    eprintln!(
+        "Required device-seal factor for profile {}. The profile payload is now bound to this device.",
+        args.profile
+    );
+    Ok(())
+}
+
+#[cfg(not(feature = "device-seal"))]
+pub fn profile_policy_require_device_seal(
+    _ctx: &CmdContext,
+    _args: ProfilePolicyRequirementArgs,
+) -> Result<()> {
+    anyhow::bail!("this sshenv build was compiled without device-seal support")
+}
+
+#[cfg(feature = "device-seal")]
+pub fn profile_policy_disable_device_seal(
+    ctx: &CmdContext,
+    args: ProfilePolicyRequirementArgs,
+) -> Result<()> {
+    let (mut vault, data_key) = load_and_unlock_profile(&ctx.vault_path, &args.profile)?;
+    ensure_profile_policy_editable(&vault, &args.profile)?;
+    let mut policy = existing_or_default_profile_policy(&vault, &args.profile);
+    let had_device_seal = policy
+        .factor_metadata
+        .iter()
+        .any(|factor| factor.kind == UnlockFactorKindV2::DeviceSeal)
+        || policy
+            .required_factors
+            .contains(&ProfileFactorRequirement::DeviceSeal);
+    if !had_device_seal {
+        anyhow::bail!("profile {} does not require a device seal", args.profile);
+    }
+    policy
+        .factor_metadata
+        .retain(|factor| factor.kind != UnlockFactorKindV2::DeviceSeal);
+    policy
+        .required_factors
+        .retain(|factor| *factor != ProfileFactorRequirement::DeviceSeal);
+    vault.profiles.set_profile_policy(&args.profile, policy)?;
+    save_vault(ctx, &mut vault, &data_key)?;
+    eprintln!("Disabled device-seal factor for profile {}.", args.profile);
+    Ok(())
+}
+
+#[cfg(not(feature = "device-seal"))]
+pub fn profile_policy_disable_device_seal(
+    _ctx: &CmdContext,
+    _args: ProfilePolicyRequirementArgs,
+) -> Result<()> {
+    anyhow::bail!("this sshenv build was compiled without device-seal support")
 }
 
 pub fn profile_policy_clear_requirements(
@@ -401,34 +455,6 @@ pub fn profile_policy_clear_requirements(
     vault.profiles.set_profile_policy(&args.profile, policy)?;
     save_vault(ctx, &mut vault, &data_key)?;
     eprintln!("Cleared profile factor requirements for {}.", args.profile);
-    Ok(())
-}
-
-fn profile_policy_require_factor(
-    ctx: &CmdContext,
-    args: ProfilePolicyRequirementArgs,
-    requirement: ProfileFactorRequirement,
-) -> Result<()> {
-    let (mut vault, data_key) = load_and_unlock_profile(&ctx.vault_path, &args.profile)?;
-    ensure_profile_policy_editable(&vault, &args.profile)?;
-    let mut policy = existing_or_default_profile_policy(&vault, &args.profile);
-    if !profile_requirement_satisfied(&vault, &policy, requirement) {
-        anyhow::bail!(
-            "profile {} cannot require {} until that factor is available",
-            args.profile,
-            profile_requirement_label(requirement)
-        );
-    }
-    if !policy.required_factors.contains(&requirement) {
-        policy.required_factors.push(requirement);
-    }
-    vault.profiles.set_profile_policy(&args.profile, policy)?;
-    save_vault(ctx, &mut vault, &data_key)?;
-    eprintln!(
-        "Required {} factor for profile {}. This is enforced against vault-level factors until profile-specific factor binding lands.",
-        profile_requirement_label(requirement),
-        args.profile
-    );
     Ok(())
 }
 

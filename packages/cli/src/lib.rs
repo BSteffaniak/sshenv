@@ -63,6 +63,9 @@ pub fn run(cli: Cli) -> Result<()> {
                 ProfilePolicyCommand::RequireDeviceSeal(args) => {
                     commands::security::profile_policy_require_device_seal(&ctx, args)
                 }
+                ProfilePolicyCommand::DisableDeviceSeal(args) => {
+                    commands::security::profile_policy_disable_device_seal(&ctx, args)
+                }
                 ProfilePolicyCommand::ClearRequirements(args) => {
                     commands::security::profile_policy_clear_requirements(&ctx, args)
                 }

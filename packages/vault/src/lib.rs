@@ -641,13 +641,66 @@ impl Vault {
                 .push(ProfileFactorRequirement::Passphrase);
         }
         self.profiles.set_profile_policy(profile, policy)?;
-        self.profile_factor_keys.insert(
-            profile.to_string(),
-            vec![PayloadKeyFactor {
-                kind: UnlockFactorKindV2::Passphrase,
-                key: factor_key,
-            }],
+        let profile_factors = self
+            .profile_factor_keys
+            .entry(profile.to_string())
+            .or_default();
+        profile_factors.retain(|factor| factor.kind != UnlockFactorKindV2::Passphrase);
+        profile_factors.push(PayloadKeyFactor {
+            kind: UnlockFactorKindV2::Passphrase,
+            key: factor_key,
+        });
+        self.profile_key_rotations.insert(profile.to_string());
+        Ok(())
+    }
+
+    /// Require a device seal only for one profile.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if this is not a v2 profile-key vault, if the profile
+    /// is missing, or if no device-seal backend is available.
+    #[cfg(feature = "device-seal")]
+    pub fn require_profile_device_seal(&mut self, profile: &str) -> Result<()> {
+        ensure_v2_for_device_seal(self.header.version)?;
+        if !self.profile_keys_enabled() {
+            return Err(anyhow!(
+                "profile device-seal requirements require profile-key mode; run `sshenv security profile-policy migrate` first"
+            ));
+        }
+        if !self.profiles.profiles.contains_key(profile) {
+            return Err(VaultModelsError::MissingProfile(profile.to_string()).into());
+        }
+        let mut policy = self.profiles.profile_policy(profile).cloned().unwrap_or(
+            sshenv_vault_models::ProfilePolicy {
+                preset: sshenv_vault_models::ProfilePolicyPreset::Standard,
+                required_factors: Vec::new(),
+                factor_metadata: Vec::new(),
+            },
         );
+        let (factor, factor_key) = device::create_factor()?;
+        policy
+            .factor_metadata
+            .retain(|factor| factor.kind != UnlockFactorKindV2::DeviceSeal);
+        policy.factor_metadata.push(factor);
+        if !policy
+            .required_factors
+            .contains(&ProfileFactorRequirement::DeviceSeal)
+        {
+            policy
+                .required_factors
+                .push(ProfileFactorRequirement::DeviceSeal);
+        }
+        self.profiles.set_profile_policy(profile, policy)?;
+        let profile_factors = self
+            .profile_factor_keys
+            .entry(profile.to_string())
+            .or_default();
+        profile_factors.retain(|factor| factor.kind != UnlockFactorKindV2::DeviceSeal);
+        profile_factors.push(PayloadKeyFactor {
+            kind: UnlockFactorKindV2::DeviceSeal,
+            key: factor_key,
+        });
         self.profile_key_rotations.insert(profile.to_string());
         Ok(())
     }

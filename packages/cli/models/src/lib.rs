@@ -137,6 +137,8 @@ pub enum ProfilePolicyCommand {
     DisablePassphrase(ProfilePolicyDisablePassphraseArgs),
     /// Require a device-seal factor before this profile may be used.
     RequireDeviceSeal(ProfilePolicyRequirementArgs),
+    /// Remove a profile-specific device-seal requirement.
+    DisableDeviceSeal(ProfilePolicyRequirementArgs),
     /// Clear all explicit factor requirements for a profile.
     ClearRequirements(ProfilePolicyRequirementArgs),
     /// Set advisory policy metadata for a profile.
