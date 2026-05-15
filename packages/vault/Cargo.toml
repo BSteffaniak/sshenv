@@ -8,9 +8,10 @@ repository.workspace = true
 version.workspace    = true
 
 [features]
-default       = ["ssh-hardening", "rekey"]
-rekey         = []
-ssh-hardening = []
+default           = ["ssh-hardening", "rekey", "passphrase-factor"]
+passphrase-factor = ["argon2"]
+rekey             = []
+ssh-hardening     = []
 
 [dependencies]
 sshenv_vault_models = { workspace = true }
@@ -22,6 +23,7 @@ sha2    = { workspace = true }
 ssh-key = { workspace = true, features = ["ed25519"] }
 
 anyhow = { workspace = true }
+argon2 = { workspace = true, optional = true }
 base64 = { version = "0.22", default-features = false, features = ["std"] }
 dirs = { workspace = true }
 hex = { workspace = true }

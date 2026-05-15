@@ -20,6 +20,22 @@ pub fn generate_data_key() -> Zeroizing<[u8; DATA_KEY_LEN]> {
 }
 
 /// Derive a 64-byte AES-SIV key from the 32-byte data key.
+/// Bind a data key to an additional factor key. The returned key should be
+/// used as the payload encryption key when the factor is required.
+#[cfg(feature = "passphrase-factor")]
+#[must_use]
+pub fn bind_data_key_to_factor(
+    data_key: &[u8],
+    factor_key: &[u8],
+) -> Zeroizing<[u8; DATA_KEY_LEN]> {
+    let hk = Hkdf::<Sha256>::new(Some(factor_key), data_key);
+    let mut out = [0_u8; DATA_KEY_LEN];
+    hk.expand(b"sshenv:v2:factor-bound-payload-key", &mut out)
+        .expect("DATA_KEY_LEN is within HKDF output bounds");
+    Zeroizing::new(out)
+}
+
+/// Derive a 64-byte AES-SIV key from the 32-byte data key.
 fn derive_siv_key(data_key: &[u8]) -> Zeroizing<[u8; SIV_KEY_LEN]> {
     let hk = Hkdf::<Sha256>::new(Some(HKDF_SALT), data_key);
     let mut out = [0_u8; SIV_KEY_LEN];

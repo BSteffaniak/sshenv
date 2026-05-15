@@ -12,6 +12,8 @@
 pub mod crypto;
 pub mod format;
 pub mod identity;
+#[cfg(feature = "passphrase-factor")]
+pub mod passphrase;
 pub mod recipient;
 
 #[cfg(feature = "rekey")]
@@ -30,6 +32,8 @@ use zeroize::Zeroizing;
 
 pub use sshenv_vault_models as models;
 
+#[cfg(feature = "passphrase-factor")]
+use crate::crypto::bind_data_key_to_factor;
 use crate::crypto::{decrypt_payload_with_aad, encrypt_payload_with_aad, generate_data_key};
 use crate::format::{encode, encode_v2, parse};
 use crate::identity::{
@@ -220,6 +224,7 @@ pub struct Vault {
     pub policy_metadata: Option<VaultPolicyMetadataV2>,
     pub recipients: Vec<RecipientEntry>,
     pub profiles: ProfileMap,
+    payload_key_factor: Option<Zeroizing<[u8; DATA_KEY_LEN]>>,
 }
 
 impl Vault {
@@ -244,6 +249,7 @@ impl Vault {
             policy_metadata: None,
             recipients: vec![recipient],
             profiles: ProfileMap::default(),
+            payload_key_factor: None,
         };
 
         Ok((vault, data_key))
@@ -277,12 +283,30 @@ impl Vault {
         ciphertext: CiphertextVault,
         identities: &[Box<dyn age::Identity>],
     ) -> Result<(Self, DataKey)> {
+        Self::unlock_with_passphrase(ciphertext, identities, None)
+    }
+
+    /// Unwrap and decrypt a vault, optionally satisfying a passphrase factor.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if SSH unwrapping fails, a required passphrase is
+    /// missing, or the payload fails to decrypt.
+    pub fn unlock_with_passphrase(
+        ciphertext: CiphertextVault,
+        identities: &[Box<dyn age::Identity>],
+        passphrase: Option<&str>,
+    ) -> Result<(Self, DataKey)> {
         let data_key = recipient::unwrap_data_key(&ciphertext.recipients, identities)
             .context("no configured SSH identity could unwrap the vault data key")?;
+        let payload_key_factor =
+            payload_key_factor_for_metadata(ciphertext.policy_metadata.as_ref(), passphrase)?;
+        let payload_key =
+            payload_key_for_data_key(data_key.as_slice(), payload_key_factor.as_ref());
 
         let aad = payload_aad_for_version(ciphertext.header.version)?;
         let plaintext =
-            decrypt_payload_with_aad(data_key.as_slice(), &ciphertext.payload_ciphertext, aad)
+            decrypt_payload_with_aad(payload_key.as_slice(), &ciphertext.payload_ciphertext, aad)
                 .context("failed to decrypt vault payload")?;
 
         let profiles: ProfileMap = if plaintext.is_empty() {
@@ -298,6 +322,7 @@ impl Vault {
                 policy_metadata: ciphertext.policy_metadata,
                 recipients: ciphertext.recipients,
                 profiles,
+                payload_key_factor,
             },
             data_key,
         ))
@@ -412,6 +437,44 @@ impl Vault {
         Ok(())
     }
 
+    /// Require a passphrase factor in addition to an SSH recipient for future
+    /// payload decrypts.
+    ///
+    /// The vault must already be migrated to v2. The caller must save the
+    /// vault with the original data key after enabling the factor.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the vault is not v2 or if a passphrase factor is
+    /// already configured.
+    #[cfg(feature = "passphrase-factor")]
+    pub fn enable_passphrase_factor(&mut self, passphrase: &str) -> Result<()> {
+        if self.header.version != VERSION_V2 {
+            return Err(anyhow!(
+                "passphrase factors require v2; run `sshenv migrate-vault --to v2` first"
+            ));
+        }
+        let metadata = self
+            .policy_metadata
+            .get_or_insert_with(|| policy_metadata_from_recipients(&self.recipients));
+        if metadata
+            .policies
+            .iter()
+            .flat_map(|policy| &policy.factors)
+            .any(passphrase::is_passphrase_factor)
+        {
+            return Err(anyhow!("passphrase factor is already enabled"));
+        }
+        let (factor, factor_key) = passphrase::create_factor(passphrase)?;
+        metadata.policies.push(sshenv_vault_models::UnlockPolicyV2 {
+            id: "ssh+passphrase".to_string(),
+            threshold: None,
+            factors: vec![factor],
+        });
+        self.payload_key_factor = Some(factor_key);
+        Ok(())
+    }
+
     /// Attach public key lines to existing recipients without changing their
     /// wrapped keys.
     ///
@@ -471,9 +534,12 @@ impl Vault {
         let plaintext = serde_json::to_vec(&self.profiles)
             .context("failed to serialize profile map to JSON")?;
         let plaintext = Zeroizing::new(plaintext);
+        let payload_key =
+            payload_key_for_data_key(data_key.as_slice(), self.payload_key_factor.as_ref());
         let aad = payload_aad_for_version(self.header.version)?;
-        let ciphertext = encrypt_payload_with_aad(data_key.as_slice(), plaintext.as_slice(), aad)
-            .context("failed to encrypt vault payload")?;
+        let ciphertext =
+            encrypt_payload_with_aad(payload_key.as_slice(), plaintext.as_slice(), aad)
+                .context("failed to encrypt vault payload")?;
 
         let encoded = match self.header.version {
             VERSION => encode(self.header, &self.recipients, &ciphertext)?,
@@ -507,6 +573,68 @@ pub struct CiphertextVault {
 /// # Errors
 ///
 /// Returns an error if any filesystem operation fails.
+#[cfg(feature = "passphrase-factor")]
+fn payload_key_for_data_key(
+    data_key: &[u8],
+    payload_key_factor: Option<&Zeroizing<[u8; DATA_KEY_LEN]>>,
+) -> Zeroizing<[u8; DATA_KEY_LEN]> {
+    match payload_key_factor {
+        Some(factor) => bind_data_key_to_factor(data_key, factor.as_slice()),
+        None => copy_data_key(data_key),
+    }
+}
+
+#[cfg(not(feature = "passphrase-factor"))]
+fn payload_key_for_data_key(
+    data_key: &[u8],
+    _payload_key_factor: Option<&Zeroizing<[u8; DATA_KEY_LEN]>>,
+) -> Zeroizing<[u8; DATA_KEY_LEN]> {
+    copy_data_key(data_key)
+}
+
+fn copy_data_key(data_key: &[u8]) -> Zeroizing<[u8; DATA_KEY_LEN]> {
+    let mut out = [0_u8; DATA_KEY_LEN];
+    out.copy_from_slice(data_key);
+    Zeroizing::new(out)
+}
+
+#[cfg(feature = "passphrase-factor")]
+fn payload_key_factor_for_metadata(
+    metadata: Option<&VaultPolicyMetadataV2>,
+    passphrase: Option<&str>,
+) -> Result<Option<Zeroizing<[u8; DATA_KEY_LEN]>>> {
+    let Some(factor) = metadata
+        .into_iter()
+        .flat_map(|metadata| &metadata.policies)
+        .flat_map(|policy| &policy.factors)
+        .find(|factor| factor.kind == UnlockFactorKindV2::Passphrase)
+    else {
+        return Ok(None);
+    };
+    let Some(passphrase) = passphrase else {
+        return Err(anyhow!("vault requires a passphrase factor"));
+    };
+    passphrase::derive_factor_from_metadata(factor, passphrase).map(Some)
+}
+
+#[cfg(not(feature = "passphrase-factor"))]
+fn payload_key_factor_for_metadata(
+    metadata: Option<&VaultPolicyMetadataV2>,
+    _passphrase: Option<&str>,
+) -> Result<Option<Zeroizing<[u8; DATA_KEY_LEN]>>> {
+    if metadata
+        .into_iter()
+        .flat_map(|metadata| &metadata.policies)
+        .flat_map(|policy| &policy.factors)
+        .any(|factor| factor.kind == UnlockFactorKindV2::Passphrase)
+    {
+        return Err(anyhow!(
+            "vault requires a passphrase factor, but this sshenv build was compiled without passphrase support"
+        ));
+    }
+    Ok(None)
+}
+
 fn payload_aad_for_version(version: u8) -> Result<&'static [u8]> {
     match version {
         VERSION => Ok(PAYLOAD_AAD),
@@ -702,6 +830,35 @@ mod tests {
         assert_eq!(
             unlocked.profiles.get("p").unwrap().get("K").unwrap(),
             "migrated"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "passphrase-factor")]
+    fn passphrase_factor_requires_ssh_and_passphrase() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("vault");
+
+        let (pubkey, identity) = generate_keypair();
+        let (mut v, key) = Vault::create(&pubkey).expect("create");
+        v.profiles.set("p", "K", "passphrased".into());
+        v.migrate_to_v2(std::slice::from_ref(&pubkey))
+            .expect("migrate");
+        v.enable_passphrase_factor("correct horse battery staple")
+            .expect("enable passphrase");
+        v.save(&path, &key).expect("save passphrase vault");
+
+        let ct = Vault::load_ciphertext(&path).expect("load");
+        let identities: Vec<Box<dyn age::Identity>> = vec![identity];
+        assert!(Vault::unlock(ct, &identities).is_err());
+
+        let ct = Vault::load_ciphertext(&path).expect("load again");
+        let (unlocked, _) =
+            Vault::unlock_with_passphrase(ct, &identities, Some("correct horse battery staple"))
+                .expect("unlock with passphrase");
+        assert_eq!(
+            unlocked.profiles.get("p").unwrap().get("K").unwrap(),
+            "passphrased"
         );
     }
 

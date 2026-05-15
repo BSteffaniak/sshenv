@@ -13,11 +13,14 @@ pub mod sessions;
 pub mod shims;
 
 use std::collections::HashSet;
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use sshenv_cli_models::Cli;
+use sshenv_vault::models::UnlockFactorKindV2;
 use sshenv_vault::{CiphertextVault, DataKey, Vault};
+use zeroize::Zeroizing;
 
 use crate::identity::{
     discover_private_key_paths, error_no_identity_unlocked_detailed, load_identities_for_vault,
@@ -62,8 +65,20 @@ pub fn load_and_unlock(vault_path: &Path) -> Result<(Vault, DataKey)> {
             &fps,
         ));
     }
-    Vault::unlock(ciphertext, &identities)
-        .map_err(|_| error_no_identity_unlocked_detailed(&discover_private_key_paths(), &fps))
+    let requires_passphrase = ciphertext_requires_passphrase(&ciphertext);
+    let passphrase = passphrase_for_ciphertext(&ciphertext)?;
+    Vault::unlock_with_passphrase(
+        ciphertext,
+        &identities,
+        passphrase.as_ref().map(|p| p.as_str()),
+    )
+    .map_err(|err| {
+        if requires_passphrase {
+            err
+        } else {
+            error_no_identity_unlocked_detailed(&discover_private_key_paths(), &fps)
+        }
+    })
 }
 
 /// Load the ciphertext vault and return both the ciphertext and the
@@ -102,7 +117,52 @@ pub fn unlock_ciphertext(
             recipient_fingerprints,
         ));
     }
-    Vault::unlock(ciphertext, &identities).map_err(|_| {
-        error_no_identity_unlocked_detailed(&discover_private_key_paths(), recipient_fingerprints)
+    let requires_passphrase = ciphertext_requires_passphrase(&ciphertext);
+    let passphrase = passphrase_for_ciphertext(&ciphertext)?;
+    Vault::unlock_with_passphrase(
+        ciphertext,
+        &identities,
+        passphrase.as_ref().map(|p| p.as_str()),
+    )
+    .map_err(|err| {
+        if requires_passphrase {
+            err
+        } else {
+            error_no_identity_unlocked_detailed(
+                &discover_private_key_paths(),
+                recipient_fingerprints,
+            )
+        }
     })
+}
+
+fn passphrase_for_ciphertext(ciphertext: &CiphertextVault) -> Result<Option<Zeroizing<String>>> {
+    if !ciphertext_requires_passphrase(ciphertext) {
+        return Ok(None);
+    }
+
+    if let Ok(value) = std::env::var("SSHENV_PASSPHRASE") {
+        if !value.is_empty() {
+            return Ok(Some(Zeroizing::new(value)));
+        }
+    }
+
+    if !std::io::stdin().is_terminal() {
+        return Err(anyhow::anyhow!(
+            "vault requires a passphrase factor, but stdin is not a terminal; set SSHENV_PASSPHRASE for non-interactive use"
+        ));
+    }
+
+    let value = rpassword::prompt_password("Enter sshenv vault passphrase: ")?;
+    Ok(Some(Zeroizing::new(value)))
+}
+
+fn ciphertext_requires_passphrase(ciphertext: &CiphertextVault) -> bool {
+    ciphertext
+        .policy_metadata
+        .as_ref()
+        .into_iter()
+        .flat_map(|metadata| &metadata.policies)
+        .flat_map(|policy| &policy.factors)
+        .any(|factor| factor.kind == UnlockFactorKindV2::Passphrase)
 }

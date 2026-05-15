@@ -56,7 +56,11 @@ rekey operations can preserve the intended recipient set safely.
   tampering; immune to nonce-reuse because it derives a synthetic IV internally.
 - **Key derivation**: `hkdf 0.12` over `sha2 0.10`, salt
   `"sshenv:v1"`, info `"payload"`. Expands 32 input bytes to the 64
-  bytes AES-256-SIV wants.
+  bytes AES-256-SIV wants. For opt-in passphrase-protected v2 vaults, an
+  additional HKDF step binds the SSH-unwrapped data key to an Argon2id-derived
+  passphrase factor before payload encryption/decryption.
+- **Passphrase factor**: `argon2 0.5` using Argon2id. This is an opt-in v2
+  factor; it requires both an authorized SSH recipient and the passphrase.
 - **RNG for data key**: `OsRng` at `init` time.
 
 ## Recipient semantics

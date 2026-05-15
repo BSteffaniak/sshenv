@@ -28,6 +28,9 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::MigrateVault(args) => commands::migrate::run(&ctx, args),
         Command::Security(sub) => match sub {
             SecurityCommand::Status => commands::security::status(&ctx),
+            SecurityCommand::EnablePassphrase(args) => {
+                commands::security::enable_passphrase(&ctx, args)
+            }
         },
 
         Command::AddRecipient(args) => commands::recipient::add(&ctx, args),

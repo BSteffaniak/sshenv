@@ -2,11 +2,36 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use anyhow::Result;
+use sshenv_cli_models::EnablePassphraseArgs;
 use sshenv_vault::Vault;
 use sshenv_vault::models::{VERSION, VERSION_V2};
 
 use crate::commands::Context as CmdContext;
+#[cfg(feature = "passphrase-factor")]
+use crate::commands::{load_ciphertext_and_fps, unlock_ciphertext};
 use crate::identity::{discover_private_key_paths, public_fingerprint_for_private_key};
+
+#[cfg(feature = "passphrase-factor")]
+pub fn enable_passphrase(ctx: &CmdContext, args: EnablePassphraseArgs) -> Result<()> {
+    let passphrase = match args.passphrase {
+        Some(value) => zeroize::Zeroizing::new(value),
+        None => zeroize::Zeroizing::new(rpassword::prompt_password(
+            "Enter new sshenv vault passphrase: ",
+        )?),
+    };
+
+    let (ciphertext, recipients) = load_ciphertext_and_fps(&ctx.vault_path)?;
+    let (mut vault, data_key) = unlock_ciphertext(ciphertext, &recipients)?;
+    vault.enable_passphrase_factor(passphrase.as_str())?;
+    vault.save(&ctx.vault_path, &data_key)?;
+    eprintln!("Enabled passphrase factor for this v2 vault.");
+    Ok(())
+}
+
+#[cfg(not(feature = "passphrase-factor"))]
+pub fn enable_passphrase(_ctx: &CmdContext, _args: EnablePassphraseArgs) -> Result<()> {
+    anyhow::bail!("this sshenv build was compiled without passphrase-factor support")
+}
 
 pub fn status(ctx: &CmdContext) -> Result<()> {
     println!("sshenv security status");
@@ -65,7 +90,10 @@ fn print_feature_status() {
         enabled_label(cfg!(feature = "ssh-hardening"))
     );
     println!("rekey:          {}", enabled_label(cfg!(feature = "rekey")));
-    println!("passphrase:     planned");
+    println!(
+        "passphrase:     {}",
+        enabled_label(cfg!(feature = "passphrase-factor"))
+    );
     println!("device-seal:    planned");
     println!("hardware keys:  planned");
     println!("threshold:      planned");

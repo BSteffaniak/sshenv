@@ -373,6 +373,80 @@ fn binary_migrate_vault_to_v2_preserves_secret_access() {
 }
 
 #[test]
+fn binary_passphrase_factor_requires_passphrase_after_enable() {
+    let bin = cargo_bin();
+    if !bin.exists() {
+        eprintln!("skipping: {} does not exist", bin.display());
+        return;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let vault_path = dir.path().join("vault");
+    init_vault_with_profile(&bin, &home, &vault_path, "myprofile");
+
+    let migrate_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("migrate-vault")
+        .arg("--to")
+        .arg("v2")
+        .arg("--recipient-key")
+        .arg(home.join(".ssh").join("id_ed25519.pub"))
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run migrate-vault");
+    assert!(migrate_out.status.success());
+
+    let enable_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("security")
+        .arg("enable-passphrase")
+        .arg("--passphrase")
+        .arg("correct horse battery staple")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run security enable-passphrase");
+    assert!(
+        enable_out.status.success(),
+        "enable-passphrase failed: {}",
+        String::from_utf8_lossy(&enable_out.stderr)
+    );
+
+    let missing_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("show")
+        .arg("myprofile")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .env_remove("SSHENV_PASSPHRASE")
+        .output()
+        .expect("run show without passphrase");
+    assert!(!missing_out.status.success());
+
+    let show_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("show")
+        .arg("myprofile")
+        .env("HOME", &home)
+        .env("SSHENV_PASSPHRASE", "correct horse battery staple")
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run show with passphrase");
+    assert!(
+        show_out.status.success(),
+        "show failed with passphrase: {}",
+        String::from_utf8_lossy(&show_out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&show_out.stdout).contains("DUMMY=value"));
+}
+
+#[test]
 fn binary_rotate_key_preserves_secret_access() {
     let bin = cargo_bin();
     if !bin.exists() {

@@ -24,7 +24,8 @@ encrypted vault file.
   data key; the format version is bound via AAD.
 - To unlock: any SSH private key matching an authorized recipient
   (discovered from `~/.ssh/`, passphrase-prompted interactively if
-  encrypted).
+  encrypted). v2 vaults can also opt into an additional sshenv passphrase
+  factor.
 - To run a command with a profile's env loaded, `sshenv run <profile> --
 <cmd> [args...]`. The command's env gets the profile's vars; your parent
   shell never sees them.
@@ -59,6 +60,7 @@ pi-openai
 sshenv init [--recipient-key <path-or-pubkey-line>] [--vault <path>]
 sshenv doctor
 sshenv security status
+sshenv security enable-passphrase [--passphrase <v>]
 sshenv migrate-vault --to v2 [--recipient-key <path-or-pubkey-line>]...
 sshenv rotate-key [--recipient-key <path-or-pubkey-line>]...
 

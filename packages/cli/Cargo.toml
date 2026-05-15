@@ -8,9 +8,10 @@ repository.workspace = true
 version.workspace    = true
 
 [features]
-default       = ["ssh-hardening", "rekey"]
-rekey         = ["sshenv_vault/rekey"]
-ssh-hardening = ["sshenv_vault/ssh-hardening"]
+default           = ["ssh-hardening", "rekey", "passphrase-factor"]
+passphrase-factor = ["sshenv_vault/passphrase-factor"]
+rekey             = ["sshenv_vault/rekey"]
+ssh-hardening     = ["sshenv_vault/ssh-hardening"]
 
 [[bin]]
 name = "sshenv"

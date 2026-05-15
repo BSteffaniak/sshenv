@@ -106,6 +106,15 @@ pub struct RotateKeyArgs {
 pub enum SecurityCommand {
     /// Show vault version, enabled hardening features, and key-strength hints.
     Status,
+    /// Require a passphrase factor in addition to SSH recipient unlock.
+    EnablePassphrase(EnablePassphraseArgs),
+}
+
+#[derive(Debug, clap::Args)]
+pub struct EnablePassphraseArgs {
+    /// Passphrase value. If omitted, read from a hidden prompt.
+    #[arg(long)]
+    pub passphrase: Option<String>,
 }
 
 #[derive(Debug, clap::Args)]

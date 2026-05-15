@@ -66,6 +66,9 @@ private key (via `ssh-agent` or an on-disk identity) can unwrap.
   via `HKDF-SHA-256` over the 32-byte data key with a static salt and
   info string.
 - **`age`** with `ssh-ed25519` and `ssh-rsa` recipients for key wrapping.
+- **Argon2id passphrase factor** for opt-in v2 vaults. When enabled, the
+  payload encryption key is derived from both the SSH-unwrapped data key and
+  the passphrase-derived factor key, so either factor alone is insufficient.
 - **CSPRNG** (`OsRng` via `rand_core`) for the data key at `init` time.
 
 ## Recipient management
