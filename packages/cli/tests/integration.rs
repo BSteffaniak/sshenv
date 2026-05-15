@@ -432,6 +432,56 @@ fn binary_profile_policy_migrate_preserves_secret_access() {
         String::from_utf8_lossy(&rotate_out.stderr)
     );
 
+    let require_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("security")
+        .arg("profile-policy")
+        .arg("require-passphrase")
+        .arg("myprofile")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run profile-policy require-passphrase");
+    assert!(
+        require_out.status.success(),
+        "profile-policy require-passphrase failed: {}",
+        String::from_utf8_lossy(&require_out.stderr)
+    );
+
+    let blocked_show_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("show")
+        .arg("myprofile")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run show with unmet profile requirement");
+    assert!(!blocked_show_out.status.success());
+    assert!(
+        String::from_utf8_lossy(&blocked_show_out.stderr).contains("requires enabled vault factor"),
+        "missing requirement error: {}",
+        String::from_utf8_lossy(&blocked_show_out.stderr)
+    );
+
+    let clear_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("security")
+        .arg("profile-policy")
+        .arg("clear-requirements")
+        .arg("myprofile")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run profile-policy clear-requirements");
+    assert!(
+        clear_out.status.success(),
+        "profile-policy clear-requirements failed: {}",
+        String::from_utf8_lossy(&clear_out.stderr)
+    );
+
     let show_out = Command::new(&bin)
         .arg("--vault")
         .arg(&vault_path)

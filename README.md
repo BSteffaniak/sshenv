@@ -69,6 +69,9 @@ sshenv security preset standard|recommended|portable|paranoid [--recipient-key <
 sshenv security profile-policy list
 sshenv security profile-policy migrate
 sshenv security profile-policy rotate-key <profile>
+sshenv security profile-policy require-passphrase <profile>
+sshenv security profile-policy require-device-seal <profile>
+sshenv security profile-policy clear-requirements <profile>
 sshenv security profile-policy set <profile> --preset standard|recommended|portable|paranoid
 sshenv migrate-vault --to v2 [--recipient-key <path-or-pubkey-line>]...
 sshenv rotate-key [--recipient-key <path-or-pubkey-line>]...

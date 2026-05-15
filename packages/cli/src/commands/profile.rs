@@ -75,6 +75,7 @@ pub fn show(ctx: &CmdContext, args: ShowArgs) -> Result<()> {
     let Some(vars) = vault.profiles.get(&args.profile) else {
         bail!("no such profile: {}", args.profile);
     };
+    crate::commands::security::ensure_profile_factor_requirements_met(&vault, &args.profile)?;
     crate::commands::security::warn_if_profile_policy_unmet(&vault, &args.profile);
 
     eprintln!(

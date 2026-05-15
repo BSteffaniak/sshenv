@@ -90,11 +90,23 @@ v2 vaults can store profiles as independently encrypted profile entries. The
 outer vault payload is still encrypted by the vault payload key, and each
 profile entry also has its own random profile key and ciphertext. Use
 `sshenv security profile-policy rotate-key <profile>` to rotate one profile's
-data key without rotating other unchanged profile entries. This enables future
-per-profile factor enforcement.
+data key without rotating other unchanged profile entries.
+
+Profile policies can also record explicit factor requirements:
+
+```sh
+sshenv security profile-policy require-passphrase <profile>
+sshenv security profile-policy require-device-seal <profile>
+sshenv security profile-policy clear-requirements <profile>
+```
+
+These requirements are opt-in and currently enforced against vault-level
+factors before a profile is shown, exported, or used by `sshenv run`. They are
+scaffolding for future cryptographic binding of individual profile keys to
+profile-specific factors.
 
 v2 vaults can also store encrypted advisory policy metadata for individual
-profiles. Policy metadata is not yet a cryptographic boundary by itself.
+profiles. Preset metadata is not yet a cryptographic boundary by itself.
 Commands that set this metadata print that limitation explicitly.
 
 ## Rollback protection considerations

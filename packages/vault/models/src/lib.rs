@@ -241,6 +241,19 @@ pub struct ProfileEntry {
 pub struct ProfilePolicy {
     /// Intended profile security preset.
     pub preset: ProfilePolicyPreset,
+    /// Extra factors this profile requires to be enabled at the vault level
+    /// before the profile may be used. These are enforcement scaffolding for
+    /// future per-profile cryptographic binding.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_factors: Vec<ProfileFactorRequirement>,
+}
+
+/// One profile-level factor requirement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProfileFactorRequirement {
+    Passphrase,
+    DeviceSeal,
 }
 
 /// Intended profile security posture.
@@ -459,6 +472,7 @@ mod tests {
             "old",
             ProfilePolicy {
                 preset: ProfilePolicyPreset::Paranoid,
+                required_factors: Vec::new(),
             },
         )
         .unwrap();

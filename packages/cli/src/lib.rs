@@ -51,6 +51,15 @@ pub fn run(cli: Cli) -> Result<()> {
                 ProfilePolicyCommand::RotateKey(args) => {
                     commands::security::profile_policy_rotate_key(&ctx, args)
                 }
+                ProfilePolicyCommand::RequirePassphrase(args) => {
+                    commands::security::profile_policy_require_passphrase(&ctx, args)
+                }
+                ProfilePolicyCommand::RequireDeviceSeal(args) => {
+                    commands::security::profile_policy_require_device_seal(&ctx, args)
+                }
+                ProfilePolicyCommand::ClearRequirements(args) => {
+                    commands::security::profile_policy_clear_requirements(&ctx, args)
+                }
                 ProfilePolicyCommand::Set(args) => {
                     commands::security::profile_policy_set(&ctx, args)
                 }

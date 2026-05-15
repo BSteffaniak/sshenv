@@ -3,11 +3,15 @@ use std::path::Path;
 
 use anyhow::Result;
 use sshenv_cli_models::{
-    ChangePassphraseArgs, DisablePassphraseArgs, EnablePassphraseArgs, ProfilePolicyRotateKeyArgs,
-    ProfilePolicySetArgs, SecurityPresetArg, SecurityPresetArgs,
+    ChangePassphraseArgs, DisablePassphraseArgs, EnablePassphraseArgs,
+    ProfilePolicyRequirementArgs, ProfilePolicyRotateKeyArgs, ProfilePolicySetArgs,
+    SecurityPresetArg, SecurityPresetArgs,
 };
 use sshenv_vault::Vault;
-use sshenv_vault::models::{ProfilePolicy, ProfilePolicyPreset, VERSION, VERSION_V2};
+use sshenv_vault::models::{
+    ProfileFactorRequirement, ProfilePolicy, ProfilePolicyPreset, UnlockFactorKindV2, VERSION,
+    VERSION_V2,
+};
 
 use crate::commands::Context as CmdContext;
 #[cfg(feature = "passphrase-factor")]
@@ -101,11 +105,12 @@ pub fn profile_policy_list(ctx: &CmdContext) -> Result<()> {
     }
     for (profile, policy) in &vault.profiles.profile_policies {
         let findings = profile_policy_findings(&vault, policy.preset);
+        let requirements = format_profile_requirements(policy);
         if findings.is_empty() {
-            println!("{profile}\t{:?}\tok", policy.preset);
+            println!("{profile}\t{:?}\t{requirements}\tok", policy.preset);
         } else {
             println!(
-                "{profile}\t{:?}\tadvisory-only; unmet: {}",
+                "{profile}\t{:?}\t{requirements}\tadvisory-only; unmet: {}",
                 policy.preset,
                 findings.join(", ")
             );
@@ -131,13 +136,66 @@ pub fn warn_if_profile_policy_unmet(vault: &Vault, profile: &str) {
     );
 }
 
+/// Enforce explicit profile factor requirements against the current vault
+/// posture. This is an opt-in UX enforcement layer until profile keys can be
+/// cryptographically bound to per-profile factors.
+pub fn ensure_profile_factor_requirements_met(vault: &Vault, profile: &str) -> Result<()> {
+    let Some(policy) = vault.profiles.profile_policy(profile) else {
+        return Ok(());
+    };
+    let missing: Vec<&'static str> = policy
+        .required_factors
+        .iter()
+        .copied()
+        .filter(|requirement| !profile_requirement_satisfied(vault, *requirement))
+        .map(profile_requirement_label)
+        .collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "profile '{profile}' requires enabled vault factor(s): {}. Enable the missing factor(s) or run `sshenv security profile-policy clear-requirements {profile}` to remove this opt-in requirement.",
+        missing.join(", ")
+    )
+}
+
+fn format_profile_requirements(policy: &ProfilePolicy) -> String {
+    if policy.required_factors.is_empty() {
+        return "required: none".to_string();
+    }
+    let requirements = policy
+        .required_factors
+        .iter()
+        .copied()
+        .map(profile_requirement_label)
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("required: {requirements}")
+}
+
+fn profile_requirement_satisfied(vault: &Vault, requirement: ProfileFactorRequirement) -> bool {
+    match requirement {
+        ProfileFactorRequirement::Passphrase => {
+            vault_has_factor(vault, UnlockFactorKindV2::Passphrase)
+        }
+        ProfileFactorRequirement::DeviceSeal => {
+            vault_has_factor(vault, UnlockFactorKindV2::DeviceSeal)
+        }
+    }
+}
+
+const fn profile_requirement_label(requirement: ProfileFactorRequirement) -> &'static str {
+    match requirement {
+        ProfileFactorRequirement::Passphrase => "passphrase",
+        ProfileFactorRequirement::DeviceSeal => "device-seal",
+    }
+}
+
 fn profile_policy_findings(vault: &Vault, preset: ProfilePolicyPreset) -> Vec<String> {
     let mut findings = Vec::new();
     let has_v2 = vault.header.version == VERSION_V2;
-    let has_passphrase =
-        vault_has_factor(vault, sshenv_vault::models::UnlockFactorKindV2::Passphrase);
-    let has_device_seal =
-        vault_has_factor(vault, sshenv_vault::models::UnlockFactorKindV2::DeviceSeal);
+    let has_passphrase = vault_has_factor(vault, UnlockFactorKindV2::Passphrase);
+    let has_device_seal = vault_has_factor(vault, UnlockFactorKindV2::DeviceSeal);
 
     match preset {
         ProfilePolicyPreset::Standard => {}
@@ -178,7 +236,7 @@ fn profile_policy_findings(vault: &Vault, preset: ProfilePolicyPreset) -> Vec<St
     findings
 }
 
-fn vault_has_factor(vault: &Vault, kind: sshenv_vault::models::UnlockFactorKindV2) -> bool {
+fn vault_has_factor(vault: &Vault, kind: UnlockFactorKindV2) -> bool {
     vault
         .policy_metadata
         .as_ref()
@@ -208,6 +266,83 @@ pub fn profile_policy_rotate_key(ctx: &CmdContext, args: ProfilePolicyRotateKeyA
     Ok(())
 }
 
+pub fn profile_policy_require_passphrase(
+    ctx: &CmdContext,
+    args: ProfilePolicyRequirementArgs,
+) -> Result<()> {
+    profile_policy_require_factor(ctx, args, ProfileFactorRequirement::Passphrase)
+}
+
+pub fn profile_policy_require_device_seal(
+    ctx: &CmdContext,
+    args: ProfilePolicyRequirementArgs,
+) -> Result<()> {
+    profile_policy_require_factor(ctx, args, ProfileFactorRequirement::DeviceSeal)
+}
+
+pub fn profile_policy_clear_requirements(
+    ctx: &CmdContext,
+    args: ProfilePolicyRequirementArgs,
+) -> Result<()> {
+    let (mut vault, data_key) = crate::commands::load_and_unlock(&ctx.vault_path)?;
+    ensure_profile_policy_editable(&vault, &args.profile)?;
+    let mut policy = existing_or_default_profile_policy(&vault, &args.profile);
+    policy.required_factors.clear();
+    vault.profiles.set_profile_policy(&args.profile, policy)?;
+    save_vault(ctx, &mut vault, &data_key)?;
+    eprintln!("Cleared profile factor requirements for {}.", args.profile);
+    Ok(())
+}
+
+fn profile_policy_require_factor(
+    ctx: &CmdContext,
+    args: ProfilePolicyRequirementArgs,
+    requirement: ProfileFactorRequirement,
+) -> Result<()> {
+    let (mut vault, data_key) = crate::commands::load_and_unlock(&ctx.vault_path)?;
+    ensure_profile_policy_editable(&vault, &args.profile)?;
+    let mut policy = existing_or_default_profile_policy(&vault, &args.profile);
+    if !policy.required_factors.contains(&requirement) {
+        policy.required_factors.push(requirement);
+    }
+    vault.profiles.set_profile_policy(&args.profile, policy)?;
+    save_vault(ctx, &mut vault, &data_key)?;
+    eprintln!(
+        "Required {} factor for profile {}. This is enforced against vault-level factors until profile-specific factor binding lands.",
+        profile_requirement_label(requirement),
+        args.profile
+    );
+    Ok(())
+}
+
+fn ensure_profile_policy_editable(vault: &Vault, profile: &str) -> Result<()> {
+    if vault.header.version != VERSION_V2 {
+        anyhow::bail!(
+            "profile policy metadata requires v2; run `sshenv migrate-vault --to v2` first"
+        );
+    }
+    if !vault.profile_keys_enabled() {
+        anyhow::bail!(
+            "profile factor requirements require profile-key mode; run `sshenv security profile-policy migrate` first"
+        );
+    }
+    if !vault.profiles.profiles.contains_key(profile) {
+        anyhow::bail!("no such profile: {profile}");
+    }
+    Ok(())
+}
+
+fn existing_or_default_profile_policy(vault: &Vault, profile: &str) -> ProfilePolicy {
+    vault
+        .profiles
+        .profile_policy(profile)
+        .cloned()
+        .unwrap_or(ProfilePolicy {
+            preset: ProfilePolicyPreset::Standard,
+            required_factors: Vec::new(),
+        })
+}
+
 pub fn profile_policy_set(ctx: &CmdContext, args: ProfilePolicySetArgs) -> Result<()> {
     let (mut vault, data_key) = crate::commands::load_and_unlock(&ctx.vault_path)?;
     if vault.header.version != VERSION_V2 {
@@ -216,9 +351,9 @@ pub fn profile_policy_set(ctx: &CmdContext, args: ProfilePolicySetArgs) -> Resul
         );
     }
     let preset = profile_policy_preset(args.preset);
-    vault
-        .profiles
-        .set_profile_policy(&args.profile, ProfilePolicy { preset })?;
+    let mut policy = existing_or_default_profile_policy(&vault, &args.profile);
+    policy.preset = preset;
+    vault.profiles.set_profile_policy(&args.profile, policy)?;
     save_vault(ctx, &mut vault, &data_key)?;
     eprintln!(
         "Set advisory profile policy for {} to {:?}. Per-profile cryptographic enforcement is planned but not active yet.",
