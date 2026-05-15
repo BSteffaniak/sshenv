@@ -114,6 +114,31 @@ pub enum SecurityCommand {
     DisablePassphrase(DisablePassphraseArgs),
     /// Require a local device seal in addition to SSH recipient unlock.
     EnableDeviceSeal,
+    /// Apply a named security preset.
+    Preset(SecurityPresetArgs),
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum SecurityPresetArg {
+    Standard,
+    Recommended,
+    Portable,
+    Paranoid,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct SecurityPresetArgs {
+    /// Preset to apply.
+    #[arg(value_enum)]
+    pub preset: SecurityPresetArg,
+    /// Public key for a current recipient when migration cannot discover it.
+    /// Repeat as needed.
+    #[arg(long = "recipient-key", value_name = "PATH_OR_LINE")]
+    pub recipient_keys: Vec<String>,
+    /// New passphrase for presets that enable the passphrase factor. If
+    /// omitted, read from a hidden prompt.
+    #[arg(long)]
+    pub passphrase: Option<String>,
 }
 
 #[derive(Debug, clap::Args)]

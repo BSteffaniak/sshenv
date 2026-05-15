@@ -64,6 +64,7 @@ sshenv security enable-passphrase [--passphrase <v>]
 sshenv security change-passphrase [--old-passphrase <v>] [--new-passphrase <v>]
 sshenv security disable-passphrase [--passphrase <v>]
 sshenv security enable-device-seal
+sshenv security preset standard|recommended|portable|paranoid [--recipient-key <path-or-pubkey-line>]... [--passphrase <v>]
 sshenv migrate-vault --to v2 [--recipient-key <path-or-pubkey-line>]...
 sshenv rotate-key [--recipient-key <path-or-pubkey-line>]...
 

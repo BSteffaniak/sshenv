@@ -2,15 +2,17 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use anyhow::Result;
-use sshenv_cli_models::{ChangePassphraseArgs, DisablePassphraseArgs, EnablePassphraseArgs};
+use sshenv_cli_models::{
+    ChangePassphraseArgs, DisablePassphraseArgs, EnablePassphraseArgs, SecurityPresetArg,
+    SecurityPresetArgs,
+};
 use sshenv_vault::Vault;
 use sshenv_vault::models::{VERSION, VERSION_V2};
 
 use crate::commands::Context as CmdContext;
 #[cfg(feature = "passphrase-factor")]
-use crate::commands::{
-    load_ciphertext_and_fps, unlock_ciphertext, unlock_ciphertext_with_passphrase,
-};
+use crate::commands::unlock_ciphertext_with_passphrase;
+use crate::commands::{load_ciphertext_and_fps, unlock_ciphertext};
 use crate::identity::{discover_private_key_paths, public_fingerprint_for_private_key};
 
 #[cfg(feature = "passphrase-factor")]
@@ -89,6 +91,103 @@ pub fn enable_device_seal(ctx: &CmdContext) -> Result<()> {
 #[cfg(not(feature = "device-seal"))]
 pub fn enable_device_seal(_ctx: &CmdContext) -> Result<()> {
     anyhow::bail!("this sshenv build was compiled without device-seal support")
+}
+
+pub fn preset(ctx: &CmdContext, args: SecurityPresetArgs) -> Result<()> {
+    match args.preset {
+        SecurityPresetArg::Standard => {
+            eprintln!(
+                "Standard preset leaves the vault on SSH-recipient unlock. No changes applied."
+            );
+            Ok(())
+        }
+        SecurityPresetArg::Recommended => apply_preset(ctx, args, false, true),
+        SecurityPresetArg::Portable => apply_preset(ctx, args, true, false),
+        SecurityPresetArg::Paranoid => apply_preset(ctx, args, true, true),
+    }
+}
+
+fn apply_preset(
+    ctx: &CmdContext,
+    args: SecurityPresetArgs,
+    wants_passphrase: bool,
+    wants_device_seal: bool,
+) -> Result<()> {
+    let preset = args.preset;
+    let (ciphertext, recipients) = load_ciphertext_and_fps(&ctx.vault_path)?;
+    let (mut vault, data_key) = unlock_ciphertext(ciphertext, &recipients)?;
+    let mut changed = false;
+
+    changed |= migrate_to_v2_if_needed(&mut vault, &args.recipient_keys)?;
+
+    if wants_passphrase {
+        changed |= enable_passphrase_if_needed(&mut vault, args.passphrase)?;
+    }
+
+    if wants_device_seal {
+        changed |= enable_device_seal_if_available(
+            &mut vault,
+            matches!(preset, SecurityPresetArg::Paranoid),
+        )?;
+    }
+
+    if changed {
+        vault.save(&ctx.vault_path, &data_key)?;
+        eprintln!("Applied {preset:?} security preset.");
+    } else {
+        eprintln!("{preset:?} security preset was already satisfied.");
+    }
+    Ok(())
+}
+
+fn migrate_to_v2_if_needed(vault: &mut Vault, recipient_keys: &[String]) -> Result<bool> {
+    if vault.header.version == VERSION_V2 {
+        return Ok(false);
+    }
+    let public_key_lines =
+        crate::commands::rekey::resolve_current_recipient_public_key_lines(vault, recipient_keys)?;
+    vault.migrate_to_v2(&public_key_lines)?;
+    Ok(true)
+}
+
+#[cfg(feature = "passphrase-factor")]
+fn enable_passphrase_if_needed(vault: &mut Vault, passphrase: Option<String>) -> Result<bool> {
+    if vault.passphrase_factor_enabled() {
+        return Ok(false);
+    }
+    let passphrase = passphrase_arg_or_prompt(passphrase, "Enter new sshenv vault passphrase: ")?;
+    vault.enable_passphrase_factor(passphrase.as_str())?;
+    Ok(true)
+}
+
+#[cfg(not(feature = "passphrase-factor"))]
+fn enable_passphrase_if_needed(_vault: &mut Vault, _passphrase: Option<String>) -> Result<bool> {
+    anyhow::bail!("this sshenv build was compiled without passphrase-factor support")
+}
+
+#[cfg(feature = "device-seal")]
+fn enable_device_seal_if_available(vault: &mut Vault, required: bool) -> Result<bool> {
+    if vault.device_seal_factor_enabled() {
+        return Ok(false);
+    }
+    if device_seal_backend_status() == "none" {
+        if required {
+            anyhow::bail!("no device-seal backend is available in this build")
+        }
+        eprintln!("note: no device-seal backend is available; skipping device seal");
+        return Ok(false);
+    }
+    vault.enable_device_seal_factor()?;
+    Ok(true)
+}
+
+#[cfg(not(feature = "device-seal"))]
+fn enable_device_seal_if_available(_vault: &mut Vault, required: bool) -> Result<bool> {
+    if required {
+        anyhow::bail!("this sshenv build was compiled without device-seal support")
+    }
+    eprintln!("note: this sshenv build has no device-seal support; skipping device seal");
+    Ok(false)
 }
 
 pub fn status(ctx: &CmdContext) -> Result<()> {

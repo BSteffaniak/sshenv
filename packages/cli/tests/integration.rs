@@ -373,6 +373,50 @@ fn binary_migrate_vault_to_v2_preserves_secret_access() {
 }
 
 #[test]
+fn binary_security_preset_recommended_migrates_to_v2() {
+    let bin = cargo_bin();
+    if !bin.exists() {
+        eprintln!("skipping: {} does not exist", bin.display());
+        return;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let vault_path = dir.path().join("vault");
+    init_vault_with_profile(&bin, &home, &vault_path, "myprofile");
+
+    let preset_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("security")
+        .arg("preset")
+        .arg("recommended")
+        .arg("--recipient-key")
+        .arg(home.join(".ssh").join("id_ed25519.pub"))
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run security preset recommended");
+    assert!(
+        preset_out.status.success(),
+        "security preset recommended failed: {}",
+        String::from_utf8_lossy(&preset_out.stderr)
+    );
+
+    let recipients_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("list-recipients")
+        .arg("--verbose")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run list-recipients");
+    assert!(recipients_out.status.success());
+    assert!(String::from_utf8_lossy(&recipients_out.stdout).contains("ssh-ed25519"));
+}
+
+#[test]
 fn binary_passphrase_factor_requires_passphrase_after_enable() {
     let bin = cargo_bin();
     if !bin.exists() {
