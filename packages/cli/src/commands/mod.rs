@@ -282,6 +282,11 @@ fn check_rollback(vault_path: &Path, ciphertext: &CiphertextVault) -> Result<()>
 }
 
 #[cfg(not(feature = "rollback-protection"))]
+#[allow(
+    clippy::missing_const_for_fn,
+    clippy::unnecessary_wraps,
+    reason = "feature-gated no-op preserves fallible call sites when rollback protection is disabled"
+)]
 fn check_rollback(_vault_path: &Path, _ciphertext: &CiphertextVault) -> Result<()> {
     Ok(())
 }
@@ -292,6 +297,11 @@ fn record_rollback(vault_path: &Path, generation: Option<u64>) -> Result<()> {
 }
 
 #[cfg(not(feature = "rollback-protection"))]
+#[allow(
+    clippy::missing_const_for_fn,
+    clippy::unnecessary_wraps,
+    reason = "feature-gated no-op preserves fallible call sites when rollback protection is disabled"
+)]
 fn record_rollback(_vault_path: &Path, _generation: Option<u64>) -> Result<()> {
     Ok(())
 }

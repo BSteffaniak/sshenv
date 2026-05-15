@@ -5,7 +5,7 @@ use std::path::Path;
 use anyhow::Context as AnyhowContext;
 use anyhow::Result;
 use sshenv_cli_models::{
-    ChangePassphraseArgs, DisablePassphraseArgs, EnablePassphraseArgs,
+    ChangePassphraseArgs, DisablePassphraseArgs, EnablePassphraseArgs, ProfilePolicyApplyArgs,
     ProfilePolicyChangePassphraseArgs, ProfilePolicyDisablePassphraseArgs,
     ProfilePolicyRequirePassphraseArgs, ProfilePolicyRequirementArgs, ProfilePolicyRotateKeyArgs,
     ProfilePolicySetArgs, ProfilePolicyStatusArgs, SecurityPresetArg, SecurityPresetArgs,
@@ -629,6 +629,101 @@ fn existing_or_default_profile_policy(vault: &Vault, profile: &str) -> ProfilePo
         })
 }
 
+pub fn profile_policy_apply(ctx: &CmdContext, args: ProfilePolicyApplyArgs) -> Result<()> {
+    let (mut vault, data_key) = load_and_unlock_profile(&ctx.vault_path, &args.profile)?;
+    if vault.header.version != VERSION_V2 {
+        anyhow::bail!(
+            "profile policy enforcement requires v2; run `sshenv migrate-vault --to v2` first"
+        );
+    }
+    if !vault.profile_keys_enabled() {
+        vault.enable_profile_keys()?;
+    }
+    ensure_profile_policy_editable(&vault, &args.profile)?;
+
+    let preset = profile_policy_preset(args.preset);
+    match preset {
+        ProfilePolicyPreset::Standard => {
+            let mut policy = existing_or_default_profile_policy(&vault, &args.profile);
+            policy.preset = preset;
+            policy.required_factors.clear();
+            policy.factor_metadata.clear();
+            vault.profiles.set_profile_policy(&args.profile, policy)?;
+        }
+        ProfilePolicyPreset::Portable => {
+            apply_profile_passphrase_if_needed(&mut vault, &args.profile, args.passphrase)?;
+            set_profile_policy_preset(&mut vault, &args.profile, preset)?;
+        }
+        ProfilePolicyPreset::Recommended => {
+            #[cfg(feature = "device-seal")]
+            apply_profile_device_seal_if_available(&mut vault, &args.profile)?;
+            #[cfg(not(feature = "device-seal"))]
+            note_profile_device_seal_unavailable();
+            set_profile_policy_preset(&mut vault, &args.profile, preset)?;
+        }
+        ProfilePolicyPreset::Paranoid => {
+            apply_profile_passphrase_if_needed(&mut vault, &args.profile, args.passphrase)?;
+            #[cfg(feature = "device-seal")]
+            apply_profile_device_seal_if_available(&mut vault, &args.profile)?;
+            #[cfg(not(feature = "device-seal"))]
+            note_profile_device_seal_unavailable();
+            set_profile_policy_preset(&mut vault, &args.profile, preset)?;
+            vault.rotate_profile_key(&args.profile)?;
+        }
+    }
+
+    save_vault(ctx, &mut vault, &data_key)?;
+    eprintln!(
+        "Applied {:?} profile policy enforcement to {}.",
+        preset, args.profile
+    );
+    Ok(())
+}
+
+fn set_profile_policy_preset(
+    vault: &mut Vault,
+    profile: &str,
+    preset: ProfilePolicyPreset,
+) -> Result<()> {
+    let mut policy = existing_or_default_profile_policy(vault, profile);
+    policy.preset = preset;
+    vault.profiles.set_profile_policy(profile, policy)?;
+    Ok(())
+}
+
+#[cfg(feature = "passphrase-factor")]
+fn apply_profile_passphrase_if_needed(
+    vault: &mut Vault,
+    profile: &str,
+    passphrase: Option<String>,
+) -> Result<()> {
+    let passphrase = passphrase_arg_or_prompt(passphrase, "Enter new sshenv profile passphrase: ")?;
+    vault.require_profile_passphrase(profile, passphrase.as_str())
+}
+
+#[cfg(not(feature = "passphrase-factor"))]
+fn apply_profile_passphrase_if_needed(
+    _vault: &mut Vault,
+    _profile: &str,
+    _passphrase: Option<String>,
+) -> Result<()> {
+    anyhow::bail!("this sshenv build was compiled without passphrase-factor support")
+}
+
+#[cfg(feature = "device-seal")]
+fn apply_profile_device_seal_if_available(vault: &mut Vault, profile: &str) -> Result<()> {
+    if device_seal_backend_status() == "none" {
+        eprintln!("note: no device-seal backend is available; skipping profile device seal");
+        return Ok(());
+    }
+    vault.require_profile_device_seal(profile)
+}
+
+#[cfg(not(feature = "device-seal"))]
+fn note_profile_device_seal_unavailable() {
+    eprintln!("note: this sshenv build has no device-seal support; skipping profile device seal");
+}
+
 pub fn profile_policy_set(ctx: &CmdContext, args: ProfilePolicySetArgs) -> Result<()> {
     let (mut vault, data_key) = load_and_unlock_profile(&ctx.vault_path, &args.profile)?;
     if vault.header.version != VERSION_V2 {
@@ -949,7 +1044,7 @@ fn key_hardening_status(path: &Path) -> String {
 }
 
 #[cfg(not(feature = "ssh-hardening"))]
-fn key_hardening_status(_path: &Path) -> String {
+const fn key_hardening_status(_path: &Path) -> String {
     String::new()
 }
 

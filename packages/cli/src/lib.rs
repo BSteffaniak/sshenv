@@ -72,6 +72,9 @@ pub fn run(cli: Cli) -> Result<()> {
                 ProfilePolicyCommand::ClearRequirements(args) => {
                     commands::security::profile_policy_clear_requirements(&ctx, args)
                 }
+                ProfilePolicyCommand::Apply(args) => {
+                    commands::security::profile_policy_apply(&ctx, args)
+                }
                 ProfilePolicyCommand::Set(args) => {
                     commands::security::profile_policy_set(&ctx, args)
                 }

@@ -10,6 +10,7 @@ use crate::commands::{Context as CmdContext, load_and_unlock_profile};
 use crate::session_registry;
 
 pub fn run(ctx: &CmdContext, args: RunArgs) -> Result<()> {
+    #[cfg(feature = "runtime-hardening")]
     apply_runtime_hardening()?;
 
     if args.command.is_empty() {
@@ -143,11 +144,6 @@ fn resolve_command_skipping_shim_dir_in(
 fn apply_runtime_hardening() -> Result<()> {
     crate::runtime_hardening::apply_for_secret_runtime()
         .context("failed to apply runtime hardening")
-}
-
-#[cfg(not(feature = "runtime-hardening"))]
-fn apply_runtime_hardening() -> Result<()> {
-    Ok(())
 }
 
 #[cfg(unix)]

@@ -573,6 +573,96 @@ fn binary_profile_policy_migrate_preserves_secret_access() {
         .expect("run show after profile-policy disable-passphrase");
     assert!(show_without_passphrase_out.status.success());
     assert!(String::from_utf8_lossy(&show_without_passphrase_out.stdout).contains("DUMMY=value"));
+
+    let apply_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("security")
+        .arg("profile-policy")
+        .arg("apply")
+        .arg("myprofile")
+        .arg("--preset")
+        .arg("portable")
+        .arg("--passphrase")
+        .arg("apply-passphrase")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run profile-policy apply portable");
+    assert!(
+        apply_out.status.success(),
+        "profile-policy apply portable failed: {}",
+        String::from_utf8_lossy(&apply_out.stderr)
+    );
+
+    let apply_status_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("security")
+        .arg("profile-policy")
+        .arg("status")
+        .arg("myprofile")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run profile-policy status after apply");
+    assert!(apply_status_out.status.success());
+    let apply_status_stdout = String::from_utf8_lossy(&apply_status_out.stdout);
+    assert!(
+        apply_status_stdout.contains("preset: Portable"),
+        "missing applied preset: {apply_status_stdout}"
+    );
+    assert!(
+        apply_status_stdout
+            .contains("requirement passphrase: profile-specific cryptographic binding"),
+        "missing applied binding: {apply_status_stdout}"
+    );
+
+    let apply_show_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("show")
+        .arg("myprofile")
+        .env("HOME", &home)
+        .env("SSHENV_PROFILE_PASSPHRASE", "apply-passphrase")
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run show after profile-policy apply");
+    assert!(apply_show_out.status.success());
+    assert!(String::from_utf8_lossy(&apply_show_out.stdout).contains("DUMMY=value"));
+
+    let apply_standard_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("security")
+        .arg("profile-policy")
+        .arg("apply")
+        .arg("myprofile")
+        .arg("--preset")
+        .arg("standard")
+        .env("HOME", &home)
+        .env("SSHENV_PROFILE_PASSPHRASE", "apply-passphrase")
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run profile-policy apply standard");
+    assert!(
+        apply_standard_out.status.success(),
+        "profile-policy apply standard failed: {}",
+        String::from_utf8_lossy(&apply_standard_out.stderr)
+    );
+
+    let standard_show_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("show")
+        .arg("myprofile")
+        .env("HOME", &home)
+        .env_remove("SSHENV_PROFILE_PASSPHRASE")
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run show after profile-policy apply standard");
+    assert!(standard_show_out.status.success());
+    assert!(String::from_utf8_lossy(&standard_show_out.stdout).contains("DUMMY=value"));
 }
 
 #[test]

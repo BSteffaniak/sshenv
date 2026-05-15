@@ -143,6 +143,8 @@ pub enum ProfilePolicyCommand {
     DisableDeviceSeal(ProfilePolicyRequirementArgs),
     /// Clear all explicit factor requirements for a profile.
     ClearRequirements(ProfilePolicyRequirementArgs),
+    /// Apply a preset as concrete profile-specific enforcement.
+    Apply(ProfilePolicyApplyArgs),
     /// Set advisory policy metadata for a profile.
     Set(ProfilePolicySetArgs),
 }
@@ -185,6 +187,17 @@ pub struct ProfilePolicyChangePassphraseArgs {
 pub struct ProfilePolicyDisablePassphraseArgs {
     pub profile: String,
     /// Current profile passphrase. If omitted, read from `$SSHENV_PROFILE_PASSPHRASE` or prompt.
+    #[arg(long)]
+    pub passphrase: Option<String>,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct ProfilePolicyApplyArgs {
+    pub profile: String,
+    /// Preset to apply as concrete profile-specific enforcement.
+    #[arg(long, value_enum)]
+    pub preset: SecurityPresetArg,
+    /// New profile passphrase for presets that require one. If omitted, read from a hidden prompt.
     #[arg(long)]
     pub passphrase: Option<String>,
 }
