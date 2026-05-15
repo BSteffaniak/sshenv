@@ -787,6 +787,49 @@ fn binary_profile_policy_repair_enforces_advisory_portable() {
         String::from_utf8_lossy(&set_out.stderr)
     );
 
+    let advisory_status_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("security")
+        .arg("profile-policy")
+        .arg("status")
+        .arg("myprofile")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run advisory profile-policy status");
+    assert!(advisory_status_out.status.success());
+    let advisory_stdout = String::from_utf8_lossy(&advisory_status_out.stdout);
+    assert!(
+        advisory_stdout.contains("preset Portable expects profile-specific passphrase binding"),
+        "{advisory_stdout}"
+    );
+    assert!(
+        advisory_stdout.contains(
+            "repair: sshenv security profile-policy repair myprofile --passphrase <value>"
+        ),
+        "{advisory_stdout}"
+    );
+
+    let advisory_json_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("security")
+        .arg("profile-policy")
+        .arg("status")
+        .arg("myprofile")
+        .arg("--json")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run advisory profile-policy status json");
+    assert!(advisory_json_out.status.success());
+    let advisory_json = String::from_utf8_lossy(&advisory_json_out.stdout);
+    assert!(
+        advisory_json.contains("\"repair_recommended\": true"),
+        "{advisory_json}"
+    );
+
     let repair_out = Command::new(&bin)
         .arg("--vault")
         .arg(&vault_path)
@@ -825,6 +868,7 @@ fn binary_profile_policy_repair_enforces_advisory_portable() {
         stdout.contains("requirement passphrase: profile-specific cryptographic binding"),
         "{stdout}"
     );
+    assert!(stdout.contains("warnings: none"), "{stdout}");
 
     let show_out = Command::new(&bin)
         .arg("--vault")

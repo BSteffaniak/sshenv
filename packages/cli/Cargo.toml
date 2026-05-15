@@ -35,16 +35,17 @@ sshenv_cli_models = { workspace = true }
 sshenv_shims      = { workspace = true }
 sshenv_vault      = { workspace = true }
 
-age       = { workspace = true }
-anyhow    = { workspace = true }
-clap      = { workspace = true }
-dirs      = { workspace = true }
-libc      = { workspace = true }
-rpassword = { workspace = true }
-serde     = { workspace = true }
-tempfile  = { workspace = true }
-toml      = { workspace = true }
-zeroize   = { workspace = true }
+age        = { workspace = true }
+anyhow     = { workspace = true }
+clap       = { workspace = true }
+dirs       = { workspace = true }
+libc       = { workspace = true }
+rpassword  = { workspace = true }
+serde      = { workspace = true }
+serde_json = { workspace = true }
+tempfile   = { workspace = true }
+toml       = { workspace = true }
+zeroize    = { workspace = true }
 
 [dev-dependencies]
 rand_core = { version = "0.6", default-features = false, features = [

@@ -4,6 +4,7 @@ use std::path::Path;
 #[cfg(feature = "passphrase-factor")]
 use anyhow::Context as AnyhowContext;
 use anyhow::Result;
+use serde::Serialize;
 use sshenv_cli_models::{
     ChangePassphraseArgs, DisablePassphraseArgs, EnablePassphraseArgs, ProfilePolicyApplyArgs,
     ProfilePolicyChangePassphraseArgs, ProfilePolicyDisablePassphraseArgs, ProfilePolicyRepairArgs,
@@ -129,59 +130,155 @@ pub fn profile_policy_list(ctx: &CmdContext) -> Result<()> {
 
 pub fn profile_policy_status(ctx: &CmdContext, args: ProfilePolicyStatusArgs) -> Result<()> {
     let (vault, _key) = load_and_unlock_metadata(&ctx.vault_path)?;
-    let profile_exists = vault.profiles.profiles.contains_key(&args.profile)
-        || vault.profiles.profile_entries.contains_key(&args.profile);
-    let policy = vault.profiles.profile_policy(&args.profile);
-    if !profile_exists && policy.is_none() {
-        anyhow::bail!("no such profile: {}", args.profile);
+    let status = build_profile_policy_status(&vault, &args.profile)?;
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&status)?);
+        return Ok(());
     }
 
-    let profile_key_mode = vault.profile_keys_enabled();
-    let independently_encrypted = vault.profiles.profile_entries.contains_key(&args.profile);
-
-    println!("profile: {}", args.profile);
-    println!("exists: {}", yes_no(profile_exists));
-    println!("profile-key mode: {}", enabled_disabled(profile_key_mode));
+    println!("profile: {}", status.profile);
+    println!("exists: {}", yes_no(status.exists));
+    println!(
+        "profile-key mode: {}",
+        enabled_disabled(status.profile_key_mode)
+    );
     println!(
         "independently encrypted: {}",
-        yes_no(independently_encrypted)
+        yes_no(status.independently_encrypted)
     );
-
-    let Some(policy) = policy else {
-        println!("policy metadata: absent");
-        return Ok(());
-    };
-
-    println!("policy metadata: present");
-    println!("preset: {:?}", policy.preset);
-    println!("{}", format_profile_requirements(policy));
     println!(
-        "profile factor metadata: passphrase={}, device-seal={}",
-        yes_no(profile_has_factor_metadata(
-            policy,
-            UnlockFactorKindV2::Passphrase
-        )),
-        profile_device_seal_metadata_label(policy)
+        "policy metadata: {}",
+        if status.policy_metadata_present {
+            "present"
+        } else {
+            "absent"
+        }
     );
 
-    for requirement in &policy.required_factors {
+    if let Some(preset) = &status.preset {
+        println!("preset: {preset}");
+        println!("required: {}", status.required_factors.join(", "));
         println!(
-            "requirement {}: {}",
-            profile_requirement_label(*requirement),
-            profile_requirement_source(&vault, policy, *requirement)
+            "profile factor metadata: passphrase={}, device-seal={}",
+            yes_no(status.factor_metadata.passphrase),
+            status.factor_metadata.device_seal_label
         );
+        for requirement in &status.requirements {
+            println!("requirement {}: {}", requirement.factor, requirement.source);
+        }
     }
 
-    let warnings = profile_status_warnings(&vault, &args.profile, profile_exists, policy);
-    if warnings.is_empty() {
+    if status.warnings.is_empty() {
         println!("warnings: none");
     } else {
         println!("warnings:");
-        for warning in warnings {
+        for warning in &status.warnings {
             println!("- {warning}");
         }
     }
+    if let Some(hint) = &status.repair_hint {
+        println!("repair: {hint}");
+    }
     Ok(())
+}
+
+#[derive(Debug, Serialize)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "status JSON intentionally exposes independent boolean facts"
+)]
+struct ProfilePolicyStatusOutput {
+    profile: String,
+    exists: bool,
+    profile_key_mode: bool,
+    independently_encrypted: bool,
+    policy_metadata_present: bool,
+    preset: Option<String>,
+    required_factors: Vec<&'static str>,
+    factor_metadata: ProfileFactorMetadataStatus,
+    requirements: Vec<ProfileRequirementStatus>,
+    warnings: Vec<String>,
+    repair_recommended: bool,
+    repair_hint: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ProfileFactorMetadataStatus {
+    passphrase: bool,
+    device_seal: bool,
+    device_seal_label: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ProfileRequirementStatus {
+    factor: &'static str,
+    source: String,
+}
+
+fn build_profile_policy_status(vault: &Vault, profile: &str) -> Result<ProfilePolicyStatusOutput> {
+    let profile_exists = vault.profiles.profiles.contains_key(profile)
+        || vault.profiles.profile_entries.contains_key(profile);
+    let policy = vault.profiles.profile_policy(profile);
+    if !profile_exists && policy.is_none() {
+        anyhow::bail!("no such profile: {profile}");
+    }
+
+    let independently_encrypted = vault.profiles.profile_entries.contains_key(profile);
+    let warnings = policy.map_or_else(Vec::new, |policy| {
+        profile_status_warnings(vault, profile, profile_exists, policy)
+    });
+    let repair_hint =
+        policy.and_then(|policy| profile_repair_hint(vault, profile, policy, &warnings));
+
+    Ok(ProfilePolicyStatusOutput {
+        profile: profile.to_string(),
+        exists: profile_exists,
+        profile_key_mode: vault.profile_keys_enabled(),
+        independently_encrypted,
+        policy_metadata_present: policy.is_some(),
+        preset: policy.map(|policy| format!("{:?}", policy.preset)),
+        required_factors: policy.map_or_else(
+            || vec!["none"],
+            |policy| {
+                if policy.required_factors.is_empty() {
+                    return vec!["none"];
+                }
+                policy
+                    .required_factors
+                    .iter()
+                    .copied()
+                    .map(profile_requirement_label)
+                    .collect()
+            },
+        ),
+        factor_metadata: policy.map_or_else(
+            || ProfileFactorMetadataStatus {
+                passphrase: false,
+                device_seal: false,
+                device_seal_label: "no".to_string(),
+            },
+            |policy| ProfileFactorMetadataStatus {
+                passphrase: profile_has_factor_metadata(policy, UnlockFactorKindV2::Passphrase),
+                device_seal: profile_has_factor_metadata(policy, UnlockFactorKindV2::DeviceSeal),
+                device_seal_label: profile_device_seal_metadata_label(policy),
+            },
+        ),
+        requirements: policy.map_or_else(Vec::new, |policy| {
+            policy
+                .required_factors
+                .iter()
+                .copied()
+                .map(|requirement| ProfileRequirementStatus {
+                    factor: profile_requirement_label(requirement),
+                    source: profile_requirement_source(vault, policy, requirement),
+                })
+                .collect()
+        }),
+        repair_recommended: repair_hint.is_some(),
+        repair_hint,
+        warnings,
+    })
 }
 
 /// Print a warning when a profile's advisory policy is stronger than the
@@ -313,7 +410,69 @@ fn profile_status_warnings(
             ));
         }
     }
+    for requirement in profile_preset_expected_requirements(policy.preset) {
+        let kind = unlock_factor_kind_for_profile_requirement(requirement);
+        if !profile_has_factor_metadata(policy, kind) {
+            warnings.push(format!(
+                "preset {:?} expects profile-specific {} binding",
+                policy.preset,
+                profile_requirement_label(requirement)
+            ));
+        }
+    }
     warnings
+}
+
+fn profile_repair_hint(
+    vault: &Vault,
+    profile: &str,
+    policy: &ProfilePolicy,
+    warnings: &[String],
+) -> Option<String> {
+    if warnings.is_empty() {
+        return None;
+    }
+    let mut hint = format!("sshenv security profile-policy repair {profile}");
+    if vault.header.version != VERSION_V2 {
+        hint.push_str(" --recipient-key <path-or-public-key-line>");
+    }
+    if profile_repair_needs_passphrase(policy) {
+        hint.push_str(" --passphrase <value>");
+    }
+    Some(hint)
+}
+
+fn profile_repair_needs_passphrase(policy: &ProfilePolicy) -> bool {
+    let preset_needs_passphrase = profile_preset_expected_requirements(policy.preset)
+        .contains(&ProfileFactorRequirement::Passphrase);
+    let requirement_needs_passphrase = policy
+        .required_factors
+        .contains(&ProfileFactorRequirement::Passphrase);
+    (preset_needs_passphrase || requirement_needs_passphrase)
+        && !profile_has_factor_metadata(policy, UnlockFactorKindV2::Passphrase)
+}
+
+fn profile_preset_expected_requirements(
+    preset: ProfilePolicyPreset,
+) -> Vec<ProfileFactorRequirement> {
+    match preset {
+        ProfilePolicyPreset::Standard => Vec::new(),
+        ProfilePolicyPreset::Portable => vec![ProfileFactorRequirement::Passphrase],
+        ProfilePolicyPreset::Recommended => {
+            if device_seal_backend_status() == "none" {
+                Vec::new()
+            } else {
+                vec![ProfileFactorRequirement::DeviceSeal]
+            }
+        }
+        ProfilePolicyPreset::Paranoid => {
+            let mut requirements = vec![ProfileFactorRequirement::Passphrase];
+            if device_seal_backend_status() != "none" {
+                requirements.push(ProfileFactorRequirement::DeviceSeal);
+            }
+            requirements
+        }
+    }
 }
 
 const fn unlock_factor_kind_for_profile_requirement(

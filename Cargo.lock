@@ -1824,6 +1824,7 @@ dependencies = [
  "rand_core 0.6.4",
  "rpassword",
  "serde",
+ "serde_json",
  "ssh-key",
  "sshenv_cli_models",
  "sshenv_shims",

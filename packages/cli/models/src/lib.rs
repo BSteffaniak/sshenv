@@ -154,6 +154,9 @@ pub enum ProfilePolicyCommand {
 #[derive(Debug, clap::Args)]
 pub struct ProfilePolicyStatusArgs {
     pub profile: String,
+    /// Print machine-readable JSON.
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Debug, clap::Args)]
