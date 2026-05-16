@@ -10,9 +10,9 @@ use anyhow::Result;
 use serde::Serialize;
 use sshenv_cli_models::{
     ChangePassphraseArgs, DisablePassphraseArgs, EnablePassphraseArgs, ProfilePolicyApplyAllArgs,
-    ProfilePolicyApplyArgs, ProfilePolicyChangePassphraseArgs, ProfilePolicyCheckArgs,
-    ProfilePolicyDisablePassphraseArgs, ProfilePolicyRepairAllArgs, ProfilePolicyRepairArgs,
-    ProfilePolicyRequirePassphraseArgs, ProfilePolicyRequirementArgs,
+    ProfilePolicyApplyArgs, ProfilePolicyBackupsArgs, ProfilePolicyChangePassphraseArgs,
+    ProfilePolicyCheckArgs, ProfilePolicyDisablePassphraseArgs, ProfilePolicyRepairAllArgs,
+    ProfilePolicyRepairArgs, ProfilePolicyRequirePassphraseArgs, ProfilePolicyRequirementArgs,
     ProfilePolicyRestoreBackupArgs, ProfilePolicyRotateKeyArgs, ProfilePolicySetArgs,
     ProfilePolicyStatusArgs, SecurityPresetArg, SecurityPresetArgs,
 };
@@ -110,6 +110,126 @@ pub fn enable_device_seal(ctx: &CmdContext) -> Result<()> {
 #[cfg(not(feature = "device-seal"))]
 pub fn enable_device_seal(_ctx: &CmdContext) -> Result<()> {
     anyhow::bail!("this sshenv build was compiled without device-seal support")
+}
+
+pub fn profile_policy_backups(ctx: &CmdContext, args: ProfilePolicyBackupsArgs) -> Result<()> {
+    let output = build_profile_policy_backups(ctx)?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        print_profile_policy_backups(&output);
+    }
+    Ok(())
+}
+
+fn build_profile_policy_backups(ctx: &CmdContext) -> Result<ProfilePolicyBackupsOutput> {
+    let vault_file_name = ctx
+        .vault_path
+        .file_name()
+        .map_or_else(|| "vault".into(), |name| name.to_string_lossy());
+    let parent = ctx.vault_path.parent().unwrap_or_else(|| Path::new("."));
+    let mut backups = Vec::new();
+
+    if parent.exists() {
+        for entry in fs::read_dir(parent)? {
+            let entry = entry?;
+            let path = entry.path();
+            let file_name = entry.file_name();
+            let file_name = file_name.to_string_lossy();
+            let Some(kind) = profile_policy_backup_kind(&file_name, &vault_file_name) else {
+                continue;
+            };
+            backups.push(profile_policy_backup_info(path, kind));
+        }
+    }
+
+    backups.sort_by(|left, right| left.path.cmp(&right.path));
+    Ok(ProfilePolicyBackupsOutput { backups })
+}
+
+fn profile_policy_backup_kind(file_name: &str, vault_file_name: &str) -> Option<&'static str> {
+    if file_name.starts_with(&format!("{vault_file_name}.pre-restore.bak.")) {
+        Some("pre-restore")
+    } else if file_name.starts_with(&format!("{vault_file_name}.bak.")) {
+        Some("bulk-backup")
+    } else {
+        None
+    }
+}
+
+fn profile_policy_backup_info(path: PathBuf, kind: &'static str) -> ProfilePolicyBackupInfo {
+    let metadata_result = fs::metadata(&path);
+    let modified_unix_seconds = metadata_result
+        .as_ref()
+        .ok()
+        .and_then(|metadata| metadata.modified().ok())
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_secs());
+    let size = metadata_result.as_ref().ok().map(fs::Metadata::len);
+
+    let (version, generation, parse_error) = match Vault::load_ciphertext(&path) {
+        Ok(ciphertext) => (
+            Some(ciphertext.header.version),
+            ciphertext.generation(),
+            None,
+        ),
+        Err(error) => (None, None, Some(error.to_string())),
+    };
+    let error = metadata_result
+        .err()
+        .map(|error| error.to_string())
+        .or(parse_error);
+
+    ProfilePolicyBackupInfo {
+        path: path.display().to_string(),
+        kind,
+        modified_unix_seconds,
+        size,
+        version,
+        generation,
+        error,
+    }
+}
+
+fn print_profile_policy_backups(output: &ProfilePolicyBackupsOutput) {
+    if output.backups.is_empty() {
+        println!("profile policy backups: none");
+        return;
+    }
+    println!("profile policy backups");
+    println!("======================");
+    for backup in &output.backups {
+        println!("path: {}", backup.path);
+        println!("kind: {}", backup.kind);
+        println!(
+            "modified unix seconds: {}",
+            backup
+                .modified_unix_seconds
+                .map_or_else(|| "unknown".to_string(), |value| value.to_string())
+        );
+        println!(
+            "size: {}",
+            backup
+                .size
+                .map_or_else(|| "unknown".to_string(), |value| value.to_string())
+        );
+        println!(
+            "version: {}",
+            backup
+                .version
+                .map_or_else(|| "unknown".to_string(), |value| value.to_string())
+        );
+        println!(
+            "generation: {}",
+            backup
+                .generation
+                .map_or_else(|| "unknown".to_string(), |value| value.to_string())
+        );
+        if let Some(error) = &backup.error {
+            println!("error: {error}");
+        }
+        println!();
+    }
 }
 
 pub fn profile_policy_list(ctx: &CmdContext) -> Result<()> {
@@ -282,6 +402,22 @@ struct ProfilePolicyRepairAllPlanOutput {
     requires_device_seal_count: usize,
     requires_recipient_key_count: usize,
     profiles: Vec<ProfilePolicyRepairPlan>,
+}
+
+#[derive(Debug, Serialize)]
+struct ProfilePolicyBackupsOutput {
+    backups: Vec<ProfilePolicyBackupInfo>,
+}
+
+#[derive(Debug, Serialize)]
+struct ProfilePolicyBackupInfo {
+    path: String,
+    kind: &'static str,
+    modified_unix_seconds: Option<u64>,
+    size: Option<u64>,
+    version: Option<u8>,
+    generation: Option<u64>,
+    error: Option<String>,
 }
 
 #[derive(Debug, Serialize)]

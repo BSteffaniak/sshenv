@@ -125,6 +125,8 @@ pub enum SecurityCommand {
 pub enum ProfilePolicyCommand {
     /// List profile policy metadata.
     List,
+    /// List profile-policy backup files adjacent to the current vault.
+    Backups(ProfilePolicyBackupsArgs),
     /// Show effective security posture for one profile.
     Status(ProfilePolicyStatusArgs),
     /// Validate policy consistency across all profiles.
@@ -157,6 +159,13 @@ pub enum ProfilePolicyCommand {
     RestoreBackup(ProfilePolicyRestoreBackupArgs),
     /// Set advisory policy metadata for a profile.
     Set(ProfilePolicySetArgs),
+}
+
+#[derive(Debug, clap::Args)]
+pub struct ProfilePolicyBackupsArgs {
+    /// Print machine-readable JSON.
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Debug, clap::Args)]

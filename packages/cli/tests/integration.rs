@@ -1988,6 +1988,57 @@ fn binary_profile_policy_repair_all_enforces_advisory_portable() {
         .expect("backup path in repair-all stderr");
     assert!(backup_path.exists(), "missing backup at {backup_path:?}");
 
+    let backups_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("security")
+        .arg("profile-policy")
+        .arg("backups")
+        .env("HOME", &home)
+        .env_remove("SSHENV_PROFILE_PASSPHRASE")
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run profile-policy backups");
+    assert!(backups_out.status.success());
+    let backups_stdout = String::from_utf8_lossy(&backups_out.stdout);
+    let backup_file_name = backup_path
+        .file_name()
+        .expect("backup file name")
+        .to_string_lossy();
+    assert!(
+        backups_stdout.contains("kind: bulk-backup"),
+        "{backups_stdout}"
+    );
+    assert!(
+        backups_stdout.contains(backup_file_name.as_ref()),
+        "{backups_stdout}"
+    );
+
+    let backups_json_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("security")
+        .arg("profile-policy")
+        .arg("backups")
+        .arg("--json")
+        .env("HOME", &home)
+        .env_remove("SSHENV_PROFILE_PASSPHRASE")
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run profile-policy backups json");
+    assert!(backups_json_out.status.success());
+    let backups_json = String::from_utf8_lossy(&backups_json_out.stdout);
+    assert!(
+        backups_json.contains("\"kind\": \"bulk-backup\""),
+        "{backups_json}"
+    );
+    assert!(backups_json.contains("\"version\":"), "{backups_json}");
+    assert!(backups_json.contains("\"generation\":"), "{backups_json}");
+    assert!(
+        backups_json.contains(backup_file_name.as_ref()),
+        "{backups_json}"
+    );
+
     let backup_show_out = Command::new(&bin)
         .arg("--vault")
         .arg(&backup_path)

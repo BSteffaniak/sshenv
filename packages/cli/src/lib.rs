@@ -47,6 +47,9 @@ pub fn run(cli: Cli) -> Result<()> {
             SecurityCommand::Preset(args) => commands::security::preset(&ctx, args),
             SecurityCommand::ProfilePolicy(sub) => match sub {
                 ProfilePolicyCommand::List => commands::security::profile_policy_list(&ctx),
+                ProfilePolicyCommand::Backups(args) => {
+                    commands::security::profile_policy_backups(&ctx, args)
+                }
                 ProfilePolicyCommand::Status(args) => {
                     commands::security::profile_policy_status(&ctx, args)
                 }
