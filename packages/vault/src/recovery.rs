@@ -21,6 +21,34 @@ pub struct BreakGlassRecoveryPlan {
 }
 
 use thiserror::Error;
+#[cfg(feature = "shamir-sharing")]
+use zeroize::ZeroizeOnDrop;
+
+#[cfg(feature = "shamir-sharing")]
+#[derive(Debug, Clone, PartialEq, Eq, ZeroizeOnDrop)]
+pub struct ShamirShare {
+    pub index: u8,
+    pub value: Vec<u8>,
+}
+
+#[cfg(feature = "shamir-sharing")]
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum ShamirError {
+    #[error("Shamir threshold must be at least 1")]
+    InvalidThreshold,
+    #[error("Shamir share count must be at least 1 and at most 255")]
+    InvalidShareCount,
+    #[error("Shamir threshold {threshold} exceeds share count {share_count}")]
+    ThresholdExceedsShareCount { threshold: u8, share_count: u8 },
+    #[error("not enough shares: need {threshold}, got {provided}")]
+    NotEnoughShares { threshold: u8, provided: usize },
+    #[error("duplicate Shamir share index: {0}")]
+    DuplicateShareIndex(u8),
+    #[error("Shamir share index must be non-zero")]
+    ZeroShareIndex,
+    #[error("Shamir shares have inconsistent lengths")]
+    InconsistentShareLength,
+}
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum RecoveryShareMetadataError {
@@ -107,6 +135,155 @@ pub fn plan_m_of_n_unlock(
         ready: missing_share_count == 0,
     })
 }
+
+#[cfg(feature = "shamir-sharing")]
+pub fn split_secret_shamir(
+    secret: &[u8],
+    threshold: u8,
+    share_count: u8,
+) -> Result<Vec<ShamirShare>, ShamirError> {
+    validate_shamir_parameters(threshold, share_count)?;
+
+    let mut shares = (1..=share_count)
+        .map(|index| ShamirShare {
+            index,
+            value: Vec::with_capacity(secret.len()),
+        })
+        .collect::<Vec<_>>();
+
+    for &secret_byte in secret {
+        let mut coefficients = vec![0_u8; usize::from(threshold.saturating_sub(1))];
+        rand_core::RngCore::fill_bytes(&mut rand_core::OsRng, &mut coefficients);
+        for share in &mut shares {
+            share
+                .value
+                .push(evaluate_polynomial(secret_byte, &coefficients, share.index));
+        }
+    }
+
+    Ok(shares)
+}
+
+#[cfg(feature = "shamir-sharing")]
+pub fn combine_shamir_shares(
+    shares: &[ShamirShare],
+    threshold: u8,
+) -> Result<Vec<u8>, ShamirError> {
+    if threshold == 0 {
+        return Err(ShamirError::InvalidThreshold);
+    }
+    if shares.len() < usize::from(threshold) {
+        return Err(ShamirError::NotEnoughShares {
+            threshold,
+            provided: shares.len(),
+        });
+    }
+
+    let share_len = shares.first().map_or(0, |share| share.value.len());
+    let mut seen = BTreeSet::new();
+    for share in shares.iter().take(usize::from(threshold)) {
+        if share.index == 0 {
+            return Err(ShamirError::ZeroShareIndex);
+        }
+        if !seen.insert(share.index) {
+            return Err(ShamirError::DuplicateShareIndex(share.index));
+        }
+        if share.value.len() != share_len {
+            return Err(ShamirError::InconsistentShareLength);
+        }
+    }
+
+    let selected = &shares[..usize::from(threshold)];
+    let mut secret = vec![0_u8; share_len];
+    for (byte_index, secret_byte) in secret.iter_mut().enumerate() {
+        let mut recovered = 0_u8;
+        for (i, share_i) in selected.iter().enumerate() {
+            let mut coefficient = 1_u8;
+            for (j, share_j) in selected.iter().enumerate() {
+                if i == j {
+                    continue;
+                }
+                coefficient = gf_mul(coefficient, share_j.index);
+                coefficient = gf_mul(coefficient, gf_inv(share_i.index ^ share_j.index));
+            }
+            recovered ^= gf_mul(share_i.value[byte_index], coefficient);
+        }
+        *secret_byte = recovered;
+    }
+    Ok(secret)
+}
+
+#[cfg(feature = "shamir-sharing")]
+const fn validate_shamir_parameters(threshold: u8, share_count: u8) -> Result<(), ShamirError> {
+    if threshold == 0 {
+        return Err(ShamirError::InvalidThreshold);
+    }
+    if share_count == 0 {
+        return Err(ShamirError::InvalidShareCount);
+    }
+    if threshold > share_count {
+        return Err(ShamirError::ThresholdExceedsShareCount {
+            threshold,
+            share_count,
+        });
+    }
+    Ok(())
+}
+
+#[cfg(feature = "shamir-sharing")]
+fn evaluate_polynomial(secret_byte: u8, coefficients: &[u8], x: u8) -> u8 {
+    coefficients
+        .iter()
+        .rev()
+        .fold(0_u8, |acc, coefficient| gf_mul(acc, x) ^ coefficient)
+        .pipe(|tail| gf_mul(tail, x) ^ secret_byte)
+}
+
+#[cfg(feature = "shamir-sharing")]
+const fn gf_mul(mut left: u8, mut right: u8) -> u8 {
+    let mut product = 0_u8;
+    while right != 0 {
+        if right & 1 != 0 {
+            product ^= left;
+        }
+        let carry = left & 0x80;
+        left <<= 1;
+        if carry != 0 {
+            left ^= 0x1b;
+        }
+        right >>= 1;
+    }
+    product
+}
+
+#[cfg(feature = "shamir-sharing")]
+fn gf_inv(value: u8) -> u8 {
+    debug_assert_ne!(value, 0);
+    gf_pow(value, 254)
+}
+
+#[cfg(feature = "shamir-sharing")]
+const fn gf_pow(mut value: u8, mut exponent: u16) -> u8 {
+    let mut result = 1_u8;
+    while exponent != 0 {
+        if exponent & 1 != 0 {
+            result = gf_mul(result, value);
+        }
+        value = gf_mul(value, value);
+        exponent >>= 1;
+    }
+    result
+}
+
+#[cfg(feature = "shamir-sharing")]
+trait Pipe: Sized {
+    fn pipe<T>(self, f: impl FnOnce(Self) -> T) -> T {
+        f(self)
+    }
+}
+
+#[cfg(feature = "shamir-sharing")]
+impl<T> Pipe for T {}
 
 pub fn plan_break_glass_recovery(
     set: &RecoveryShareSetMetadataV2,
@@ -214,6 +391,43 @@ mod tests {
             plan.warnings
                 .iter()
                 .any(|warning| warning.contains("emergency"))
+        );
+    }
+
+    #[cfg(feature = "shamir-sharing")]
+    #[test]
+    fn shamir_roundtrip_recovers_secret_from_threshold_shares() {
+        let secret = b"vault-data-key-material";
+        let shares = super::split_secret_shamir(secret, 3, 5).unwrap();
+        assert_eq!(shares.len(), 5);
+
+        let recovered = super::combine_shamir_shares(&shares[1..4], 3).unwrap();
+        assert_eq!(recovered, secret);
+    }
+
+    #[cfg(feature = "shamir-sharing")]
+    #[test]
+    fn shamir_rejects_duplicate_share_indices() {
+        let secret = b"secret";
+        let shares = super::split_secret_shamir(secret, 2, 3).unwrap();
+        let duplicate = vec![shares[0].clone(), shares[0].clone()];
+        assert_eq!(
+            super::combine_shamir_shares(&duplicate, 2),
+            Err(super::ShamirError::DuplicateShareIndex(shares[0].index))
+        );
+    }
+
+    #[cfg(feature = "shamir-sharing")]
+    #[test]
+    fn shamir_requires_threshold_shares() {
+        let secret = b"secret";
+        let shares = super::split_secret_shamir(secret, 3, 5).unwrap();
+        assert_eq!(
+            super::combine_shamir_shares(&shares[..2], 3),
+            Err(super::ShamirError::NotEnoughShares {
+                threshold: 3,
+                provided: 2,
+            })
         );
     }
 
