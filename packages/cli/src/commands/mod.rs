@@ -339,6 +339,7 @@ fn check_ssh_key_hardening(_vault_recipients: &HashSet<String>) -> Result<()> {
 
 #[cfg(feature = "rollback-protection")]
 fn check_rollback(vault_path: &Path, ciphertext: &CiphertextVault) -> Result<()> {
+    crate::rollback_checkpoint::enforce_env_checkpoint(vault_path, ciphertext.generation())?;
     crate::rollback::check_generation(vault_path, ciphertext.generation())
 }
 

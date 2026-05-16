@@ -8,10 +8,13 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[allow(
+    unused_imports,
+    reason = "Context trait is only used by feature-gated commands"
+)]
 use anyhow::Context as AnyhowContext;
 use anyhow::Result;
-use serde::{Deserialize, Serialize};
-use ssh_key::{PublicKey, SshSig};
+use serde::Serialize;
 use sshenv_cli_models::{
     ChangePassphraseArgs, DeviceBackendArg, DevicePlanArgs, DisablePassphraseArgs,
     EnablePassphraseArgs, HardenArgs, HardwareKindArg, HardwarePlanArgs, HardwareStatusArgs,
@@ -223,17 +226,6 @@ struct RollbackPlanOutput {
     failure_modes: Vec<String>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "kebab-case")]
-struct RollbackCheckpointDocument {
-    backend: String,
-    vault_id: String,
-    generation: u64,
-    created_unix: u64,
-    signer: Option<String>,
-    signature: Option<String>,
-}
-
 #[derive(Debug, Serialize)]
 struct RollbackCheckpointValidationOutput {
     valid: bool,
@@ -353,7 +345,7 @@ pub fn rollback_checkpoint_template(
     let created_unix = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| duration.as_secs());
-    let document = RollbackCheckpointDocument {
+    let document = crate::rollback_checkpoint::RollbackCheckpointDocument {
         backend: "remote-checkpoint".to_string(),
         vault_id: args
             .vault_id
@@ -368,32 +360,12 @@ pub fn rollback_checkpoint_template(
 }
 
 pub fn rollback_validate_checkpoint(ctx: &CmdContext, args: RollbackCheckpointArgs) -> Result<()> {
-    let content = fs::read_to_string(&args.checkpoint_path).with_context(|| {
-        format!(
-            "failed to read rollback checkpoint {}",
-            args.checkpoint_path.display()
-        )
-    })?;
-    let checkpoint: RollbackCheckpointDocument =
-        serde_json::from_str(&content).with_context(|| {
-            format!(
-                "failed to parse rollback checkpoint {}",
-                args.checkpoint_path.display()
-            )
-        })?;
-    if checkpoint.backend != "remote-checkpoint" {
-        anyhow::bail!(
-            "rollback checkpoint backend '{}' is not supported",
-            checkpoint.backend
-        );
-    }
-    if checkpoint.vault_id.trim().is_empty() {
-        anyhow::bail!("rollback checkpoint vault-id is empty");
-    }
+    let checkpoint = crate::rollback_checkpoint::load_checkpoint(&args.checkpoint_path)?;
+    crate::rollback_checkpoint::validate_checkpoint_shape(&checkpoint)?;
     let current_generation = vault_generation(&ctx.vault_path);
     let would_reject_current_vault =
         current_generation.is_some_and(|generation| generation < checkpoint.generation);
-    let signature_verified = verify_rollback_checkpoint_signature(&checkpoint)?;
+    let signature_verified = crate::rollback_checkpoint::verify_checkpoint_signature(&checkpoint)?;
     let mut notes = vec!["checkpoint metadata is non-secret".to_string()];
     if signature_verified {
         notes.push("checkpoint SSH signature verified".to_string());
@@ -429,43 +401,6 @@ pub fn rollback_validate_checkpoint(ctx: &CmdContext, args: RollbackCheckpointAr
         println!("signature verified: {}", yes_no(output.signature_verified));
     }
     Ok(())
-}
-
-const ROLLBACK_CHECKPOINT_SSHSIG_NAMESPACE: &str = "sshenv-rollback-checkpoint-v1";
-
-fn verify_rollback_checkpoint_signature(checkpoint: &RollbackCheckpointDocument) -> Result<bool> {
-    match (&checkpoint.signer, &checkpoint.signature) {
-        (None, None) => Ok(false),
-        (Some(_), None) => {
-            anyhow::bail!("rollback checkpoint signer is set but signature is missing")
-        }
-        (None, Some(_)) => {
-            anyhow::bail!("rollback checkpoint signature is set but signer is missing")
-        }
-        (Some(signer), Some(signature)) => {
-            let public_key = signer
-                .parse::<PublicKey>()
-                .context("failed to parse rollback checkpoint signer public key")?;
-            let signature = signature
-                .parse::<SshSig>()
-                .context("failed to parse rollback checkpoint SSH signature")?;
-            public_key
-                .verify(
-                    ROLLBACK_CHECKPOINT_SSHSIG_NAMESPACE,
-                    rollback_checkpoint_signed_payload(checkpoint).as_bytes(),
-                    &signature,
-                )
-                .context("rollback checkpoint SSH signature verification failed")?;
-            Ok(true)
-        }
-    }
-}
-
-fn rollback_checkpoint_signed_payload(checkpoint: &RollbackCheckpointDocument) -> String {
-    format!(
-        "sshenv rollback checkpoint v1\nbackend:{}\nvault-id:{}\ngeneration:{}\ncreated-unix:{}\n",
-        checkpoint.backend, checkpoint.vault_id, checkpoint.generation, checkpoint.created_unix
-    )
 }
 
 fn vault_generation(vault_path: &Path) -> Option<u64> {
@@ -4577,47 +4512,4 @@ fn print_recommendations(vault_recipients: Option<&HashSet<String>>) {
         );
     }
     println!("- Migrate to the future v2 policy format before enabling multi-factor policies.");
-}
-
-#[cfg(test)]
-mod tests {
-    use ssh_key::{HashAlg, LineEnding, PrivateKey};
-
-    use super::*;
-
-    const TEST_PRIVATE_KEY: &str = r"
------BEGIN OPENSSH PRIVATE KEY-----
-b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
-QyNTUxOQAAACCzPq7zfqLffKoBDe/eo04kH2XxtSmk9D7RQyf1xUqrYgAAAJgAIAxdACAM
-XQAAAAtzc2gtZWQyNTUxOQAAACCzPq7zfqLffKoBDe/eo04kH2XxtSmk9D7RQyf1xUqrYg
-AAAEC2BsIi0QwW2uFscKTUUXNHLsYX4FxlaSDSblbAj7WR7bM+rvN+ot98qgEN796jTiQf
-ZfG1KaT0PtFDJ/XFSqtiAAAAEHVzZXJAZXhhbXBsZS5jb20BAgMEBQ==
------END OPENSSH PRIVATE KEY-----
-";
-
-    #[test]
-    fn rollback_checkpoint_signature_verifies_and_detects_tampering() {
-        let private_key = TEST_PRIVATE_KEY.parse::<PrivateKey>().unwrap();
-        let mut checkpoint = RollbackCheckpointDocument {
-            backend: "remote-checkpoint".to_string(),
-            vault_id: "vault-1".to_string(),
-            generation: 7,
-            created_unix: 4_102_444_800,
-            signer: Some(private_key.public_key().to_openssh().unwrap()),
-            signature: None,
-        };
-        let signature = private_key
-            .sign(
-                ROLLBACK_CHECKPOINT_SSHSIG_NAMESPACE,
-                HashAlg::default(),
-                rollback_checkpoint_signed_payload(&checkpoint).as_bytes(),
-            )
-            .unwrap();
-        checkpoint.signature = Some(signature.to_pem(LineEnding::LF).unwrap());
-
-        assert!(verify_rollback_checkpoint_signature(&checkpoint).unwrap());
-
-        checkpoint.generation += 1;
-        assert!(verify_rollback_checkpoint_signature(&checkpoint).is_err());
-    }
 }

@@ -12,6 +12,7 @@ pub mod process;
 pub mod pubkey;
 #[cfg(feature = "rollback-protection")]
 pub mod rollback;
+pub mod rollback_checkpoint;
 #[cfg(feature = "runtime-hardening")]
 pub mod runtime_hardening;
 pub mod security_state;
