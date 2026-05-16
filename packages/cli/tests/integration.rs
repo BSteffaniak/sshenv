@@ -494,6 +494,62 @@ fn binary_recovery_metadata_import_list_remove_roundtrip() {
     );
     assert_eq!(plan_json["missing_share_count"], 1);
 
+    let apply_team_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .args([
+            "security",
+            "profile-policy",
+            "apply-all",
+            "--preset",
+            "team",
+            "--no-backup",
+        ])
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run profile-policy apply-all team");
+    assert!(
+        apply_team_out.status.success(),
+        "profile-policy apply-all team failed: {}",
+        String::from_utf8_lossy(&apply_team_out.stderr)
+    );
+
+    let team_status_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .args([
+            "security",
+            "profile-policy",
+            "status",
+            "myprofile",
+            "--json",
+        ])
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run profile-policy status after team apply");
+    assert!(
+        team_status_out.status.success(),
+        "profile-policy status failed: {}",
+        String::from_utf8_lossy(&team_status_out.stderr)
+    );
+    let team_status_json: serde_json::Value =
+        serde_json::from_slice(&team_status_out.stdout).unwrap();
+    assert_eq!(team_status_json["preset"], "Team");
+    assert!(
+        !team_status_json["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|warning| {
+                warning
+                    .as_str()
+                    .is_some_and(|message| message.contains("expects at least one recovery-share"))
+            }),
+        "{team_status_json}"
+    );
+
     let remove_out = Command::new(&bin)
         .arg("--vault")
         .arg(&vault_path)
