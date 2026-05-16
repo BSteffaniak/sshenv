@@ -11,10 +11,10 @@ use serde::Serialize;
 use sshenv_cli_models::{
     ChangePassphraseArgs, DisablePassphraseArgs, EnablePassphraseArgs, ProfilePolicyApplyAllArgs,
     ProfilePolicyApplyArgs, ProfilePolicyBackupsArgs, ProfilePolicyChangePassphraseArgs,
-    ProfilePolicyCheckArgs, ProfilePolicyDisablePassphraseArgs, ProfilePolicyRepairAllArgs,
-    ProfilePolicyRepairArgs, ProfilePolicyRequirePassphraseArgs, ProfilePolicyRequirementArgs,
-    ProfilePolicyRestoreBackupArgs, ProfilePolicyRotateKeyArgs, ProfilePolicySetArgs,
-    ProfilePolicyStatusArgs, SecurityPresetArg, SecurityPresetArgs,
+    ProfilePolicyCheckArgs, ProfilePolicyDisablePassphraseArgs, ProfilePolicyPruneBackupsArgs,
+    ProfilePolicyRepairAllArgs, ProfilePolicyRepairArgs, ProfilePolicyRequirePassphraseArgs,
+    ProfilePolicyRequirementArgs, ProfilePolicyRestoreBackupArgs, ProfilePolicyRotateKeyArgs,
+    ProfilePolicySetArgs, ProfilePolicyStatusArgs, SecurityPresetArg, SecurityPresetArgs,
 };
 use sshenv_vault::models::{
     ProfileFactorRequirement, ProfilePolicy, ProfilePolicyFinding, ProfilePolicyFindingCode,
@@ -122,7 +122,36 @@ pub fn profile_policy_backups(ctx: &CmdContext, args: ProfilePolicyBackupsArgs) 
     Ok(())
 }
 
+pub fn profile_policy_prune_backups(
+    ctx: &CmdContext,
+    args: ProfilePolicyPruneBackupsArgs,
+) -> Result<()> {
+    let dry_run = args.dry_run || !args.confirm;
+    let output = build_profile_policy_prune_backups(ctx, args.keep, dry_run)?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        print_profile_policy_prune_backups(&output);
+    }
+    if !output.errors.is_empty() {
+        anyhow::bail!(
+            "failed to prune {} profile-policy backup(s)",
+            output.errors.len()
+        );
+    }
+    Ok(())
+}
+
 fn build_profile_policy_backups(ctx: &CmdContext) -> Result<ProfilePolicyBackupsOutput> {
+    let mut backups = profile_policy_backup_candidates(ctx)?
+        .into_iter()
+        .map(|candidate| candidate.info)
+        .collect::<Vec<_>>();
+    backups.sort_by(|left, right| left.path.cmp(&right.path));
+    Ok(ProfilePolicyBackupsOutput { backups })
+}
+
+fn profile_policy_backup_candidates(ctx: &CmdContext) -> Result<Vec<ProfilePolicyBackupCandidate>> {
     let vault_file_name = ctx
         .vault_path
         .file_name()
@@ -139,12 +168,11 @@ fn build_profile_policy_backups(ctx: &CmdContext) -> Result<ProfilePolicyBackups
             let Some(kind) = profile_policy_backup_kind(&file_name, &vault_file_name) else {
                 continue;
             };
-            backups.push(profile_policy_backup_info(path, kind));
+            backups.push(profile_policy_backup_candidate(path, kind));
         }
     }
 
-    backups.sort_by(|left, right| left.path.cmp(&right.path));
-    Ok(ProfilePolicyBackupsOutput { backups })
+    Ok(backups)
 }
 
 fn profile_policy_backup_kind(file_name: &str, vault_file_name: &str) -> Option<&'static str> {
@@ -157,12 +185,16 @@ fn profile_policy_backup_kind(file_name: &str, vault_file_name: &str) -> Option<
     }
 }
 
-fn profile_policy_backup_info(path: PathBuf, kind: &'static str) -> ProfilePolicyBackupInfo {
+fn profile_policy_backup_candidate(
+    path: PathBuf,
+    kind: &'static str,
+) -> ProfilePolicyBackupCandidate {
     let metadata_result = fs::metadata(&path);
-    let modified_unix_seconds = metadata_result
+    let modified = metadata_result
         .as_ref()
         .ok()
-        .and_then(|metadata| metadata.modified().ok())
+        .and_then(|metadata| metadata.modified().ok());
+    let modified_unix_seconds = modified
         .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
         .map(|duration| duration.as_secs());
     let size = metadata_result.as_ref().ok().map(fs::Metadata::len);
@@ -180,7 +212,7 @@ fn profile_policy_backup_info(path: PathBuf, kind: &'static str) -> ProfilePolic
         .map(|error| error.to_string())
         .or(parse_error);
 
-    ProfilePolicyBackupInfo {
+    let info = ProfilePolicyBackupInfo {
         path: path.display().to_string(),
         kind,
         modified_unix_seconds,
@@ -188,7 +220,56 @@ fn profile_policy_backup_info(path: PathBuf, kind: &'static str) -> ProfilePolic
         version,
         generation,
         error,
+    };
+    ProfilePolicyBackupCandidate {
+        path,
+        modified,
+        info,
     }
+}
+
+fn build_profile_policy_prune_backups(
+    ctx: &CmdContext,
+    keep: usize,
+    dry_run: bool,
+) -> Result<ProfilePolicyPruneBackupsOutput> {
+    let mut backups = profile_policy_backup_candidates(ctx)?;
+    backups.sort_by(|left, right| {
+        right
+            .modified
+            .cmp(&left.modified)
+            .then_with(|| right.path.cmp(&left.path))
+    });
+
+    let kept = backups
+        .iter()
+        .take(keep)
+        .map(|candidate| candidate.info.clone())
+        .collect::<Vec<_>>();
+    let prune_candidates = backups.into_iter().skip(keep).collect::<Vec<_>>();
+    let mut pruned = Vec::new();
+    let mut errors = Vec::new();
+
+    for candidate in prune_candidates {
+        if !dry_run {
+            if let Err(error) = fs::remove_file(&candidate.path) {
+                errors.push(ProfilePolicyPruneBackupError {
+                    path: candidate.info.path.clone(),
+                    error: error.to_string(),
+                });
+                continue;
+            }
+        }
+        pruned.push(candidate.info);
+    }
+
+    Ok(ProfilePolicyPruneBackupsOutput {
+        keep,
+        dry_run,
+        kept,
+        pruned,
+        errors,
+    })
 }
 
 fn print_profile_policy_backups(output: &ProfilePolicyBackupsOutput) {
@@ -199,36 +280,64 @@ fn print_profile_policy_backups(output: &ProfilePolicyBackupsOutput) {
     println!("profile policy backups");
     println!("======================");
     for backup in &output.backups {
-        println!("path: {}", backup.path);
-        println!("kind: {}", backup.kind);
-        println!(
-            "modified unix seconds: {}",
-            backup
-                .modified_unix_seconds
-                .map_or_else(|| "unknown".to_string(), |value| value.to_string())
-        );
-        println!(
-            "size: {}",
-            backup
-                .size
-                .map_or_else(|| "unknown".to_string(), |value| value.to_string())
-        );
-        println!(
-            "version: {}",
-            backup
-                .version
-                .map_or_else(|| "unknown".to_string(), |value| value.to_string())
-        );
-        println!(
-            "generation: {}",
-            backup
-                .generation
-                .map_or_else(|| "unknown".to_string(), |value| value.to_string())
-        );
-        if let Some(error) = &backup.error {
-            println!("error: {error}");
-        }
+        print_profile_policy_backup_info(backup);
         println!();
+    }
+}
+
+fn print_profile_policy_prune_backups(output: &ProfilePolicyPruneBackupsOutput) {
+    println!("profile policy prune-backups plan");
+    println!("==================================");
+    println!("keep: {}", output.keep);
+    println!("dry-run: {}", yes_no(output.dry_run));
+    println!("kept: {}", output.kept.len());
+    println!("pruned: {}", output.pruned.len());
+    if output.dry_run && !output.pruned.is_empty() {
+        println!("planned prune:");
+    } else if !output.pruned.is_empty() {
+        println!("pruned:");
+    }
+    for backup in &output.pruned {
+        println!();
+        print_profile_policy_backup_info(backup);
+    }
+    if !output.errors.is_empty() {
+        println!("errors:");
+        for error in &output.errors {
+            println!("- {}: {}", error.path, error.error);
+        }
+    }
+}
+
+fn print_profile_policy_backup_info(backup: &ProfilePolicyBackupInfo) {
+    println!("path: {}", backup.path);
+    println!("kind: {}", backup.kind);
+    println!(
+        "modified unix seconds: {}",
+        backup
+            .modified_unix_seconds
+            .map_or_else(|| "unknown".to_string(), |value| value.to_string())
+    );
+    println!(
+        "size: {}",
+        backup
+            .size
+            .map_or_else(|| "unknown".to_string(), |value| value.to_string())
+    );
+    println!(
+        "version: {}",
+        backup
+            .version
+            .map_or_else(|| "unknown".to_string(), |value| value.to_string())
+    );
+    println!(
+        "generation: {}",
+        backup
+            .generation
+            .map_or_else(|| "unknown".to_string(), |value| value.to_string())
+    );
+    if let Some(error) = &backup.error {
+        println!("error: {error}");
     }
 }
 
@@ -409,7 +518,7 @@ struct ProfilePolicyBackupsOutput {
     backups: Vec<ProfilePolicyBackupInfo>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 struct ProfilePolicyBackupInfo {
     path: String,
     kind: &'static str,
@@ -418,6 +527,28 @@ struct ProfilePolicyBackupInfo {
     version: Option<u8>,
     generation: Option<u64>,
     error: Option<String>,
+}
+
+#[derive(Debug)]
+struct ProfilePolicyBackupCandidate {
+    path: PathBuf,
+    modified: Option<SystemTime>,
+    info: ProfilePolicyBackupInfo,
+}
+
+#[derive(Debug, Serialize)]
+struct ProfilePolicyPruneBackupsOutput {
+    keep: usize,
+    dry_run: bool,
+    kept: Vec<ProfilePolicyBackupInfo>,
+    pruned: Vec<ProfilePolicyBackupInfo>,
+    errors: Vec<ProfilePolicyPruneBackupError>,
+}
+
+#[derive(Debug, Serialize)]
+struct ProfilePolicyPruneBackupError {
+    path: String,
+    error: String,
 }
 
 #[derive(Debug, Serialize)]

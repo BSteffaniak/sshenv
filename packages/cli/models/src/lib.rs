@@ -127,6 +127,8 @@ pub enum ProfilePolicyCommand {
     List,
     /// List profile-policy backup files adjacent to the current vault.
     Backups(ProfilePolicyBackupsArgs),
+    /// Prune older profile-policy backup files adjacent to the current vault.
+    PruneBackups(ProfilePolicyPruneBackupsArgs),
     /// Show effective security posture for one profile.
     Status(ProfilePolicyStatusArgs),
     /// Validate policy consistency across all profiles.
@@ -163,6 +165,22 @@ pub enum ProfilePolicyCommand {
 
 #[derive(Debug, clap::Args)]
 pub struct ProfilePolicyBackupsArgs {
+    /// Print machine-readable JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct ProfilePolicyPruneBackupsArgs {
+    /// Number of newest backups to keep.
+    #[arg(long)]
+    pub keep: usize,
+    /// Show what would be pruned without deleting files.
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Delete planned files. Without this, prune-backups only plans.
+    #[arg(long)]
+    pub confirm: bool,
     /// Print machine-readable JSON.
     #[arg(long)]
     pub json: bool,

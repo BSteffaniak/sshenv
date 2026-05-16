@@ -2155,6 +2155,53 @@ fn binary_profile_policy_repair_all_enforces_advisory_portable() {
         "show against pre-restore backup failed: {}",
         String::from_utf8_lossy(&pre_restore_show_out.stderr)
     );
+
+    let prune_dry_run_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("security")
+        .arg("profile-policy")
+        .arg("prune-backups")
+        .arg("--keep")
+        .arg("1")
+        .arg("--dry-run")
+        .arg("--json")
+        .env("HOME", &home)
+        .env_remove("SSHENV_PROFILE_PASSPHRASE")
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run profile-policy prune-backups dry-run");
+    assert!(prune_dry_run_out.status.success());
+    let prune_json = String::from_utf8_lossy(&prune_dry_run_out.stdout);
+    assert!(prune_json.contains("\"dry_run\": true"), "{prune_json}");
+    assert!(prune_json.contains("\"pruned\": ["), "{prune_json}");
+    assert!(backup_path.exists());
+    assert!(pre_restore_backup_path.exists());
+
+    let prune_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("security")
+        .arg("profile-policy")
+        .arg("prune-backups")
+        .arg("--keep")
+        .arg("1")
+        .arg("--confirm")
+        .env("HOME", &home)
+        .env_remove("SSHENV_PROFILE_PASSPHRASE")
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run profile-policy prune-backups confirm");
+    assert!(
+        prune_out.status.success(),
+        "profile-policy prune-backups failed: {}",
+        String::from_utf8_lossy(&prune_out.stderr)
+    );
+    let remaining_backups = [backup_path.exists(), pre_restore_backup_path.exists()]
+        .into_iter()
+        .filter(|exists| *exists)
+        .count();
+    assert_eq!(remaining_backups, 1);
 }
 
 #[test]

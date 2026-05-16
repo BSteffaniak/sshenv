@@ -50,6 +50,9 @@ pub fn run(cli: Cli) -> Result<()> {
                 ProfilePolicyCommand::Backups(args) => {
                     commands::security::profile_policy_backups(&ctx, args)
                 }
+                ProfilePolicyCommand::PruneBackups(args) => {
+                    commands::security::profile_policy_prune_backups(&ctx, args)
+                }
                 ProfilePolicyCommand::Status(args) => {
                     commands::security::profile_policy_status(&ctx, args)
                 }
