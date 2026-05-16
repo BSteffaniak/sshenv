@@ -136,6 +136,12 @@ pub enum SecurityCommand {
     /// Manage local device-seal authorization.
     #[command(subcommand)]
     Device(DeviceCommand),
+    /// Plan threshold/break-glass recovery from non-secret metadata.
+    #[command(subcommand)]
+    Recovery(RecoveryCommand),
+    /// Validate remote/KMS factor metadata.
+    #[command(subcommand)]
+    Remote(RemoteCommand),
     /// Manage advisory per-profile security policy metadata.
     #[command(subcommand)]
     ProfilePolicy(ProfilePolicyCommand),
@@ -149,6 +155,53 @@ pub enum DeviceCommand {
     Authorize,
     /// Remove the vault-level device-seal factor.
     Remove,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum RecoveryCommand {
+    /// Validate a recovery-share metadata JSON file.
+    Validate(RecoveryMetadataArgs),
+    /// Plan an M-of-N or break-glass recovery flow from metadata and provided share ids.
+    Plan(RecoveryPlanArgs),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum RemoteCommand {
+    /// Validate a remote/KMS factor metadata JSON file.
+    Validate(RemoteMetadataArgs),
+}
+
+#[derive(Debug, clap::Args)]
+pub struct RemoteMetadataArgs {
+    /// Path to a JSON RemoteFactorMetadataV2 document.
+    pub metadata_path: PathBuf,
+    /// Print machine-readable JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct RecoveryMetadataArgs {
+    /// Path to a JSON RecoveryShareSetMetadataV2 document.
+    pub metadata_path: PathBuf,
+    /// Print machine-readable JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct RecoveryPlanArgs {
+    /// Path to a JSON RecoveryShareSetMetadataV2 document.
+    pub metadata_path: PathBuf,
+    /// Recovery share id that is available. Repeat for each collected share.
+    #[arg(long = "share-id")]
+    pub share_ids: Vec<String>,
+    /// Include break-glass emergency steps instead of only threshold readiness.
+    #[arg(long)]
+    pub break_glass: bool,
+    /// Print machine-readable JSON.
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Debug, Subcommand)]

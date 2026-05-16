@@ -5,6 +5,8 @@
 //! integrations that manage their own paths.
 
 use std::collections::HashSet;
+#[cfg(feature = "age-plugin-recipient")]
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{Cursor, IsTerminal};
 use std::path::{Path, PathBuf};
@@ -188,7 +190,9 @@ fn append_pub_extension(path: &Path) -> PathBuf {
 /// Never returns `Err` under normal conditions; per-key failures are logged
 /// to stderr and skipped.
 pub fn load_identities() -> Result<Vec<Box<dyn age::Identity>>> {
-    load_identities_from_paths(&discover_private_key_paths())
+    let mut identities = load_identities_from_paths(&discover_private_key_paths())?;
+    append_age_plugin_identities(&mut identities);
+    Ok(identities)
 }
 
 /// Load private keys from explicit paths as `age` identities.
@@ -254,6 +258,12 @@ pub fn load_identities_for_vault_from_paths(
     for path in private_key_paths {
         try_load_matching(path, recipient_fingerprints, &mut out);
     }
+    if recipient_fingerprints
+        .iter()
+        .any(|fingerprint| fingerprint.starts_with("AGE-PLUGIN-SHA256:"))
+    {
+        append_age_plugin_identities(&mut out);
+    }
     Ok(out)
 }
 
@@ -269,6 +279,88 @@ pub fn load_identities_for_vault_in(
 ) -> Result<Vec<Box<dyn age::Identity>>> {
     let paths = discover_private_key_paths_in(ssh_dir);
     load_identities_for_vault_from_paths(&paths, recipient_fingerprints)
+}
+
+#[cfg(feature = "age-plugin-recipient")]
+fn append_age_plugin_identities(sink: &mut Vec<Box<dyn age::Identity>>) {
+    let identities = discover_age_plugin_identity_paths()
+        .into_iter()
+        .filter_map(|path| match fs::read_to_string(&path) {
+            Ok(content) => Some(plugin_identities_from_text(&content)),
+            Err(error) => {
+                eprintln!(
+                    "note: skipping age-plugin identity file {} ({error})",
+                    path.display()
+                );
+                None
+            }
+        })
+        .flatten()
+        .collect::<Vec<_>>();
+
+    let mut by_plugin = BTreeMap::<String, Vec<age::plugin::Identity>>::new();
+    for identity in identities {
+        by_plugin
+            .entry(identity.plugin().to_string())
+            .or_default()
+            .push(identity);
+    }
+
+    for (plugin, identities) in by_plugin {
+        match age::plugin::IdentityPluginV1::new(&plugin, &identities, age::NoCallbacks) {
+            Ok(identity) => sink.push(Box::new(identity)),
+            Err(error) => {
+                eprintln!("note: skipping age-plugin identities for plugin {plugin} ({error})");
+            }
+        }
+    }
+}
+
+#[cfg(not(feature = "age-plugin-recipient"))]
+fn append_age_plugin_identities(_sink: &mut Vec<Box<dyn age::Identity>>) {}
+
+#[cfg(feature = "age-plugin-recipient")]
+fn discover_age_plugin_identity_paths() -> Vec<PathBuf> {
+    let mut paths = BTreeSet::new();
+    if let Some(raw) = std::env::var_os("SSHENV_AGE_PLUGIN_IDENTITIES") {
+        for path in std::env::split_paths(&raw) {
+            if path.is_file() {
+                paths.insert(path);
+            }
+        }
+    }
+
+    if let Some(home) = dirs::home_dir() {
+        let file = home.join(".sshenv").join("age-plugin-identities");
+        if file.is_file() {
+            paths.insert(file);
+        }
+        let dir = home.join(".sshenv").join("age-plugin-identities.d");
+        if let Ok(entries) = fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_file() {
+                    paths.insert(path);
+                }
+            }
+        }
+    }
+    paths.into_iter().collect()
+}
+
+#[cfg(feature = "age-plugin-recipient")]
+fn plugin_identities_from_text(content: &str) -> Vec<age::plugin::Identity> {
+    content
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                None
+            } else {
+                trimmed.parse::<age::plugin::Identity>().ok()
+            }
+        })
+        .collect()
 }
 
 fn try_load_matching(
@@ -528,6 +620,15 @@ mod tests {
         let (priv_path, _, written_fingerprint) = write_keypair(dir.path(), "id_ed25519");
         let fingerprint = public_fingerprint_for_private_key(&priv_path).unwrap();
         assert_eq!(fingerprint, written_fingerprint);
+    }
+
+    #[cfg(feature = "age-plugin-recipient")]
+    #[test]
+    fn plugin_identities_from_text_parses_non_comment_lines() {
+        let content = "# comment\nAGE-PLUGIN-FOOBAR-1QVHULF\n\nnot-an-identity\n";
+        let identities = super::plugin_identities_from_text(content);
+        assert_eq!(identities.len(), 1);
+        assert_eq!(identities[0].plugin(), "foobar");
     }
 
     #[test]

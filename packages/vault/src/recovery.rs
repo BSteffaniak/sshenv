@@ -1,8 +1,9 @@
 use std::collections::BTreeSet;
 
+use serde::Serialize;
 use sshenv_vault_models::RecoveryShareSetMetadataV2;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RecoveryUnlockPlan {
     pub set_id: String,
     pub threshold: u8,
@@ -11,7 +12,7 @@ pub struct RecoveryUnlockPlan {
     pub ready: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct BreakGlassRecoveryPlan {
     pub set_id: String,
     pub ready: bool,

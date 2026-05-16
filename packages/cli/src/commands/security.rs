@@ -4,7 +4,11 @@ use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-#[cfg(feature = "passphrase-factor")]
+#[cfg(any(
+    feature = "passphrase-factor",
+    feature = "recovery-shares",
+    feature = "remote-factor"
+))]
 use anyhow::Context as AnyhowContext;
 use anyhow::Result;
 use serde::Serialize;
@@ -15,7 +19,8 @@ use sshenv_cli_models::{
     ProfilePolicyPruneBackupsArgs, ProfilePolicyRepairAllArgs, ProfilePolicyRepairArgs,
     ProfilePolicyRequirePassphraseArgs, ProfilePolicyRequirementArgs,
     ProfilePolicyRestoreBackupArgs, ProfilePolicyRotateKeyArgs, ProfilePolicySetArgs,
-    ProfilePolicyStatusArgs, ProfilePolicyVerifyBackupArgs, SecurityPresetArg, SecurityPresetArgs,
+    ProfilePolicyStatusArgs, ProfilePolicyVerifyBackupArgs, RecoveryMetadataArgs, RecoveryPlanArgs,
+    RemoteMetadataArgs, SecurityPresetArg, SecurityPresetArgs,
 };
 use sshenv_vault::models::{
     ProfileFactorRequirement, ProfilePolicy, ProfilePolicyFinding, ProfilePolicyFindingCode,
@@ -170,6 +175,135 @@ pub fn device_remove(ctx: &CmdContext) -> Result<()> {
 #[cfg(not(feature = "device-seal"))]
 pub fn device_remove(_ctx: &CmdContext) -> Result<()> {
     anyhow::bail!("this sshenv build was compiled without device-seal support")
+}
+
+#[cfg(feature = "recovery-shares")]
+pub fn recovery_validate(args: RecoveryMetadataArgs) -> Result<()> {
+    let metadata = load_recovery_share_metadata(&args.metadata_path)?;
+    sshenv_vault::recovery::validate_recovery_share_set_metadata(&metadata)?;
+    if args.json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "valid": true,
+                "set_id": metadata.id,
+                "threshold": metadata.threshold,
+                "share_count": metadata.shares.len(),
+                "shamir": metadata.shamir,
+            })
+        );
+    } else {
+        println!("recovery metadata: valid");
+        println!("set id: {}", metadata.id);
+        println!("threshold: {}", metadata.threshold);
+        println!("shares: {}", metadata.shares.len());
+        println!(
+            "shamir: {}",
+            if metadata.shamir.is_some() {
+                "configured"
+            } else {
+                "not configured"
+            }
+        );
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "recovery-shares"))]
+pub fn recovery_validate(_args: RecoveryMetadataArgs) -> Result<()> {
+    anyhow::bail!("this sshenv build was compiled without recovery-shares support")
+}
+
+#[cfg(feature = "recovery-shares")]
+pub fn recovery_plan(args: RecoveryPlanArgs) -> Result<()> {
+    let metadata = load_recovery_share_metadata(&args.metadata_path)?;
+    if args.break_glass {
+        let plan = sshenv_vault::recovery::plan_break_glass_recovery(&metadata, &args.share_ids)?;
+        if args.json {
+            println!("{}", serde_json::to_string_pretty(&plan)?);
+        } else {
+            println!("break-glass recovery plan");
+            println!("=========================");
+            println!("set id: {}", plan.set_id);
+            println!("ready: {}", yes_no(plan.ready));
+            println!("steps:");
+            for step in &plan.steps {
+                println!("- {step}");
+            }
+            println!("warnings:");
+            for warning in &plan.warnings {
+                println!("- {warning}");
+            }
+        }
+    } else {
+        let plan = sshenv_vault::recovery::plan_m_of_n_unlock(&metadata, &args.share_ids)?;
+        if args.json {
+            println!("{}", serde_json::to_string_pretty(&plan)?);
+        } else {
+            println!("recovery unlock plan");
+            println!("====================");
+            println!("set id: {}", plan.set_id);
+            println!("threshold: {}", plan.threshold);
+            println!("provided valid shares: {}", plan.provided_share_ids.len());
+            println!("missing shares: {}", plan.missing_share_count);
+            println!("ready: {}", yes_no(plan.ready));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "recovery-shares"))]
+pub fn recovery_plan(_args: RecoveryPlanArgs) -> Result<()> {
+    anyhow::bail!("this sshenv build was compiled without recovery-shares support")
+}
+
+#[cfg(feature = "recovery-shares")]
+fn load_recovery_share_metadata(
+    path: &Path,
+) -> Result<sshenv_vault::models::RecoveryShareSetMetadataV2> {
+    let content = fs::read_to_string(path)
+        .with_context(|| format!("failed to read recovery metadata {}", path.display()))?;
+    serde_json::from_str(&content)
+        .with_context(|| format!("failed to parse recovery metadata {}", path.display()))
+}
+
+#[cfg(feature = "remote-factor")]
+pub fn remote_validate(args: RemoteMetadataArgs) -> Result<()> {
+    let metadata = load_remote_factor_metadata(&args.metadata_path)?;
+    sshenv_vault::remote::validate_remote_factor_metadata(&metadata).map_err(anyhow::Error::msg)?;
+    if args.json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "valid": true,
+                "id": metadata.id,
+                "backend": metadata.backend,
+                "label": metadata.label,
+                "params": metadata.params,
+            })
+        );
+    } else {
+        println!("remote factor metadata: valid");
+        println!("id: {}", metadata.id);
+        println!("backend: {:?}", metadata.backend);
+        println!("params: {}", metadata.params.len());
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "remote-factor"))]
+pub fn remote_validate(_args: RemoteMetadataArgs) -> Result<()> {
+    anyhow::bail!("this sshenv build was compiled without remote-factor support")
+}
+
+#[cfg(feature = "remote-factor")]
+fn load_remote_factor_metadata(
+    path: &Path,
+) -> Result<sshenv_vault::models::RemoteFactorMetadataV2> {
+    let content = fs::read_to_string(path)
+        .with_context(|| format!("failed to read remote factor metadata {}", path.display()))?;
+    serde_json::from_str(&content)
+        .with_context(|| format!("failed to parse remote factor metadata {}", path.display()))
 }
 
 pub fn profile_policy_backups(ctx: &CmdContext, args: ProfilePolicyBackupsArgs) -> Result<()> {
