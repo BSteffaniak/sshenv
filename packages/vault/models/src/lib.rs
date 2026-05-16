@@ -412,6 +412,45 @@ pub struct ProfilePolicyCheck {
     pub profiles: BTreeMap<String, ProfilePolicyValidation>,
 }
 
+/// Repair action planned for a profile policy finding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProfilePolicyRepairAction {
+    MigrateToV2,
+    EnableProfileKeyMode,
+    RegenerateProfileEntry,
+    BindPassphrase,
+    BindDeviceSeal,
+    RotateProfileKey,
+}
+
+impl ProfilePolicyRepairAction {
+    /// Human-readable action label.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::MigrateToV2 => "migrated vault to v2",
+            Self::EnableProfileKeyMode => "enabled profile-key mode",
+            Self::RegenerateProfileEntry => "regenerated encrypted profile entry",
+            Self::BindPassphrase => "bound profile payload to passphrase",
+            Self::BindDeviceSeal => "bound profile payload to device seal",
+            Self::RotateProfileKey => "rotated profile data key",
+        }
+    }
+}
+
+/// Repair plan for a profile policy.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProfilePolicyRepairPlan {
+    pub profile: String,
+    pub repairable: bool,
+    pub already_consistent: bool,
+    pub actions: Vec<ProfilePolicyRepairAction>,
+    pub action_labels: Vec<String>,
+    pub unrepairable: Vec<String>,
+    pub findings: Vec<ProfilePolicyFinding>,
+}
+
 /// One profile-level factor requirement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]

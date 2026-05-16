@@ -14,7 +14,8 @@ use sshenv_cli_models::{
 };
 use sshenv_vault::models::{
     ProfileFactorRequirement, ProfilePolicy, ProfilePolicyFinding, ProfilePolicyFindingCode,
-    ProfilePolicyPreset, ProfilePolicyValidation, UnlockFactorKindV2, VERSION, VERSION_V2,
+    ProfilePolicyPreset, ProfilePolicyRepairAction, ProfilePolicyRepairPlan, UnlockFactorKindV2,
+    VERSION, VERSION_V2,
 };
 use sshenv_vault::{DataKey, Vault};
 
@@ -241,7 +242,7 @@ struct ProfilePolicyStatusOutput {
     findings: Vec<ProfilePolicyFinding>,
     repair_recommended: bool,
     repairable: bool,
-    repair_actions: Vec<&'static str>,
+    repair_actions: Vec<String>,
     unrepairable: Vec<String>,
     repair_hint: Option<String>,
 }
@@ -331,13 +332,9 @@ fn build_profile_policy_status(vault: &Vault, profile: &str) -> Result<ProfilePo
     let independently_encrypted = vault.profiles.profile_entries.contains_key(profile);
     let warnings = validation.warning_messages();
     let errors = validation.error_messages();
-    let repair_plan = ProfilePolicyRepairPlan::from_validation(vault, profile, &validation);
-    let repair_actions = repair_plan
-        .actions
-        .iter()
-        .map(|action| action.label())
-        .collect();
-    let repairable = !repair_plan.actions.is_empty() && repair_plan.unrepairable.is_empty();
+    let repair_plan = vault.plan_profile_policy_repair(profile, Some(&validation));
+    let repair_actions = repair_plan.action_labels.clone();
+    let repairable = repair_plan.repairable && !repair_plan.actions.is_empty();
     let repair_hint =
         policy.and_then(|policy| profile_repair_hint(vault, profile, policy, &validation.findings));
 
@@ -578,7 +575,7 @@ fn validate_profile_policy_for_save(vault: &Vault, profile: &str) -> Result<()> 
     Ok(())
 }
 
-fn print_profile_policy_repair_plan(output: &ProfilePolicyRepairOutput) {
+fn print_profile_policy_repair_plan(output: &ProfilePolicyRepairPlan) {
     println!("profile policy repair plan");
     println!("==========================");
     println!("profile: {}", output.profile);
@@ -598,148 +595,6 @@ fn print_profile_policy_repair_plan(output: &ProfilePolicyRepairOutput) {
         println!("unrepairable:");
         for item in &output.unrepairable {
             println!("- {item}");
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "kebab-case")]
-enum ProfilePolicyRepairAction {
-    MigrateToV2,
-    EnableProfileKeyMode,
-    RegenerateProfileEntry,
-    BindPassphrase,
-    BindDeviceSeal,
-    RotateProfileKey,
-}
-
-impl ProfilePolicyRepairAction {
-    const fn label(self) -> &'static str {
-        match self {
-            Self::MigrateToV2 => "migrated vault to v2",
-            Self::EnableProfileKeyMode => "enabled profile-key mode",
-            Self::RegenerateProfileEntry => "regenerated encrypted profile entry",
-            Self::BindPassphrase => "bound profile payload to passphrase",
-            Self::BindDeviceSeal => "bound profile payload to device seal",
-            Self::RotateProfileKey => "rotated profile data key",
-        }
-    }
-}
-
-#[derive(Debug, Serialize)]
-struct ProfilePolicyRepairOutput {
-    profile: String,
-    repairable: bool,
-    already_consistent: bool,
-    actions: Vec<ProfilePolicyRepairAction>,
-    action_labels: Vec<&'static str>,
-    unrepairable: Vec<String>,
-    findings: Vec<ProfilePolicyFinding>,
-}
-
-#[derive(Debug, Default)]
-struct ProfilePolicyRepairPlan {
-    actions: Vec<ProfilePolicyRepairAction>,
-    unrepairable: Vec<String>,
-}
-
-impl ProfilePolicyRepairPlan {
-    fn output(
-        &self,
-        profile: &str,
-        findings: Vec<ProfilePolicyFinding>,
-    ) -> ProfilePolicyRepairOutput {
-        ProfilePolicyRepairOutput {
-            profile: profile.to_string(),
-            repairable: self.unrepairable.is_empty(),
-            already_consistent: self.actions.is_empty() && self.unrepairable.is_empty(),
-            actions: self.actions.clone(),
-            action_labels: self.actions.iter().map(|action| action.label()).collect(),
-            unrepairable: self.unrepairable.clone(),
-            findings,
-        }
-    }
-
-    fn from_validation(vault: &Vault, profile: &str, validation: &ProfilePolicyValidation) -> Self {
-        let mut plan = Self::default();
-        if vault.header.version != VERSION_V2 {
-            plan.push_action(ProfilePolicyRepairAction::MigrateToV2);
-        }
-        if !vault.profile_keys_enabled() {
-            plan.push_action(ProfilePolicyRepairAction::EnableProfileKeyMode);
-        }
-
-        for finding in &validation.findings {
-            match finding.code {
-                ProfilePolicyFindingCode::PolicyForMissingProfile => {
-                    plan.unrepairable.push(format!(
-                        "policy metadata exists for missing profile {profile}"
-                    ));
-                }
-                ProfilePolicyFindingCode::ProfileFactorsWithoutProfileKeyMode => {
-                    plan.push_action(ProfilePolicyRepairAction::EnableProfileKeyMode);
-                }
-                ProfilePolicyFindingCode::MissingProfileEntry => {
-                    plan.push_action(ProfilePolicyRepairAction::RegenerateProfileEntry);
-                }
-                ProfilePolicyFindingCode::UnsatisfiedRequirement
-                | ProfilePolicyFindingCode::MissingPresetBinding => {
-                    plan.add_factor_binding(finding);
-                }
-                ProfilePolicyFindingCode::UnsupportedFactorMetadata => {
-                    plan.unrepairable.push(finding.message.clone());
-                }
-            }
-        }
-
-        if plan.actions.iter().any(|action| {
-            matches!(
-                action,
-                ProfilePolicyRepairAction::BindPassphrase
-                    | ProfilePolicyRepairAction::BindDeviceSeal
-                    | ProfilePolicyRepairAction::RegenerateProfileEntry
-            )
-        }) {
-            plan.push_action(ProfilePolicyRepairAction::RotateProfileKey);
-        }
-        plan
-    }
-
-    fn add_factor_binding(&mut self, finding: &ProfilePolicyFinding) {
-        match finding.factor {
-            Some(UnlockFactorKindV2::Passphrase) => {
-                if cfg!(feature = "passphrase-factor") {
-                    self.push_action(ProfilePolicyRepairAction::BindPassphrase);
-                } else {
-                    self.unrepairable.push(
-                        "passphrase binding requires a build with passphrase-factor support"
-                            .to_string(),
-                    );
-                }
-            }
-            Some(UnlockFactorKindV2::DeviceSeal) => {
-                if device_seal_backend_status() == "none" {
-                    self.unrepairable.push(
-                        "device-seal binding requires an available device-seal backend".to_string(),
-                    );
-                } else {
-                    self.push_action(ProfilePolicyRepairAction::BindDeviceSeal);
-                }
-            }
-            Some(kind) => {
-                self.unrepairable
-                    .push(format!("cannot repair unsupported factor kind {kind:?}"));
-            }
-            None => self.unrepairable.push(format!(
-                "cannot infer repair action for {}",
-                finding.message
-            )),
-        }
-    }
-
-    fn push_action(&mut self, action: ProfilePolicyRepairAction) {
-        if !self.actions.contains(&action) {
-            self.actions.push(action);
         }
     }
 }
@@ -1136,18 +991,17 @@ pub fn profile_policy_apply(ctx: &CmdContext, args: ProfilePolicyApplyArgs) -> R
 pub fn profile_policy_repair(ctx: &CmdContext, args: ProfilePolicyRepairArgs) -> Result<()> {
     let (mut vault, data_key) = load_and_unlock_profile(&ctx.vault_path, &args.profile)?;
     let initial_validation = vault.validate_profile_policy(&args.profile);
-    let plan = ProfilePolicyRepairPlan::from_validation(&vault, &args.profile, &initial_validation);
+    let plan = vault.plan_profile_policy_repair(&args.profile, Some(&initial_validation));
     if args.dry_run || args.json {
-        let output = plan.output(&args.profile, initial_validation.findings);
         if args.json {
-            println!("{}", serde_json::to_string_pretty(&output)?);
+            println!("{}", serde_json::to_string_pretty(&plan)?);
         } else {
-            print_profile_policy_repair_plan(&output);
+            print_profile_policy_repair_plan(&plan);
         }
-        if !output.unrepairable.is_empty() {
+        if !plan.unrepairable.is_empty() {
             anyhow::bail!(
                 "profile policy has unrecoverable validation issue(s): {}",
-                output.unrepairable.join(", ")
+                plan.unrepairable.join(", ")
             );
         }
         return Ok(());

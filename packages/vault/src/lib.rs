@@ -27,10 +27,10 @@ use anyhow::{Context, Result, anyhow};
 use sshenv_vault_models::{
     DATA_KEY_LEN, PAYLOAD_AAD, PROFILE_ENTRY_MISSING_WARNING, ProfileEntry,
     ProfileFactorRequirement, ProfileMap, ProfilePolicy, ProfilePolicyCheck, ProfilePolicyFinding,
-    ProfilePolicyFindingCode, ProfilePolicyPreset, ProfilePolicyValidation, RecipientEntry,
-    RecipientMetadataV2, UnlockFactorKindV2, V2_PAYLOAD_AAD, V2_PROFILE_KEY_AAD,
-    V2_PROFILE_PAYLOAD_AAD, VERSION, VERSION_V2, VaultHeader, VaultModelsError,
-    VaultPolicyMetadataV2,
+    ProfilePolicyFindingCode, ProfilePolicyPreset, ProfilePolicyRepairAction,
+    ProfilePolicyRepairPlan, ProfilePolicyValidation, RecipientEntry, RecipientMetadataV2,
+    UnlockFactorKindV2, V2_PAYLOAD_AAD, V2_PROFILE_KEY_AAD, V2_PROFILE_PAYLOAD_AAD, VERSION,
+    VERSION_V2, VaultHeader, VaultModelsError, VaultPolicyMetadataV2,
 };
 use zeroize::Zeroizing;
 
@@ -1008,6 +1008,90 @@ impl Vault {
         }
     }
 
+    /// Plan profile policy repair actions from validation findings.
+    #[must_use]
+    pub fn plan_profile_policy_repair(
+        &self,
+        profile: &str,
+        validation: Option<&ProfilePolicyValidation>,
+    ) -> ProfilePolicyRepairPlan {
+        let validation = validation
+            .cloned()
+            .unwrap_or_else(|| self.validate_profile_policy(profile));
+        let mut actions = Vec::new();
+        let mut unrepairable = Vec::new();
+
+        if self.header.version != VERSION_V2 {
+            push_profile_policy_repair_action(&mut actions, ProfilePolicyRepairAction::MigrateToV2);
+        }
+        if !self.profile_keys_enabled() {
+            push_profile_policy_repair_action(
+                &mut actions,
+                ProfilePolicyRepairAction::EnableProfileKeyMode,
+            );
+        }
+
+        for finding in &validation.findings {
+            match finding.code {
+                ProfilePolicyFindingCode::PolicyForMissingProfile => {
+                    unrepairable.push(format!(
+                        "policy metadata exists for missing profile {profile}"
+                    ));
+                }
+                ProfilePolicyFindingCode::ProfileFactorsWithoutProfileKeyMode => {
+                    push_profile_policy_repair_action(
+                        &mut actions,
+                        ProfilePolicyRepairAction::EnableProfileKeyMode,
+                    );
+                }
+                ProfilePolicyFindingCode::MissingProfileEntry => {
+                    push_profile_policy_repair_action(
+                        &mut actions,
+                        ProfilePolicyRepairAction::RegenerateProfileEntry,
+                    );
+                }
+                ProfilePolicyFindingCode::UnsatisfiedRequirement
+                | ProfilePolicyFindingCode::MissingPresetBinding => {
+                    add_profile_policy_factor_repair_action(
+                        &mut actions,
+                        &mut unrepairable,
+                        finding,
+                    );
+                }
+                ProfilePolicyFindingCode::UnsupportedFactorMetadata => {
+                    unrepairable.push(finding.message.clone());
+                }
+            }
+        }
+
+        if actions.iter().any(|action| {
+            matches!(
+                action,
+                ProfilePolicyRepairAction::BindPassphrase
+                    | ProfilePolicyRepairAction::BindDeviceSeal
+                    | ProfilePolicyRepairAction::RegenerateProfileEntry
+            )
+        }) {
+            push_profile_policy_repair_action(
+                &mut actions,
+                ProfilePolicyRepairAction::RotateProfileKey,
+            );
+        }
+        let action_labels = actions
+            .iter()
+            .map(|action| action.label().to_string())
+            .collect();
+        ProfilePolicyRepairPlan {
+            profile: profile.to_string(),
+            repairable: unrepairable.is_empty(),
+            already_consistent: actions.is_empty() && unrepairable.is_empty(),
+            actions,
+            action_labels,
+            unrepairable,
+            findings: validation.findings,
+        }
+    }
+
     /// Return the v2 metadata generation, if present.
     #[must_use]
     pub fn generation(&self) -> Option<u64> {
@@ -1511,6 +1595,54 @@ const fn device_seal_backend_status() -> &'static str {
     }
 }
 
+fn push_profile_policy_repair_action(
+    actions: &mut Vec<ProfilePolicyRepairAction>,
+    action: ProfilePolicyRepairAction,
+) {
+    if !actions.contains(&action) {
+        actions.push(action);
+    }
+}
+
+fn add_profile_policy_factor_repair_action(
+    actions: &mut Vec<ProfilePolicyRepairAction>,
+    unrepairable: &mut Vec<String>,
+    finding: &ProfilePolicyFinding,
+) {
+    match finding.factor {
+        Some(UnlockFactorKindV2::Passphrase) => {
+            if cfg!(feature = "passphrase-factor") {
+                push_profile_policy_repair_action(
+                    actions,
+                    ProfilePolicyRepairAction::BindPassphrase,
+                );
+            } else {
+                unrepairable.push(
+                    "passphrase binding requires a build with passphrase-factor support"
+                        .to_string(),
+                );
+            }
+        }
+        Some(UnlockFactorKindV2::DeviceSeal) => {
+            if device_seal_backend_status() == "none" {
+                unrepairable.push(
+                    "device-seal binding requires an available device-seal backend".to_string(),
+                );
+            } else {
+                push_profile_policy_repair_action(
+                    actions,
+                    ProfilePolicyRepairAction::BindDeviceSeal,
+                );
+            }
+        }
+        Some(kind) => unrepairable.push(format!("cannot repair unsupported factor kind {kind:?}")),
+        None => unrepairable.push(format!(
+            "cannot infer repair action for {}",
+            finding.message
+        )),
+    }
+}
+
 fn payload_key_factors_for_metadata(
     metadata: Option<&VaultPolicyMetadataV2>,
     passphrase: Option<&str>,
@@ -1900,6 +2032,40 @@ mod tests {
         assert_eq!(check.warnings, 1);
         assert_eq!(check.errors, 0);
         assert!(check.profiles.contains_key("p"));
+    }
+
+    #[test]
+    fn profile_policy_repair_plan_uses_structured_findings() {
+        let mut vault = test_vault_with_profile_key_mode();
+        vault
+            .profiles
+            .set_profile_policy(
+                "p",
+                ProfilePolicy {
+                    preset: ProfilePolicyPreset::Portable,
+                    required_factors: Vec::new(),
+                    factor_metadata: Vec::new(),
+                },
+            )
+            .expect("set policy");
+
+        let validation = vault.validate_profile_policy("p");
+        let plan = vault.plan_profile_policy_repair("p", Some(&validation));
+
+        assert!(plan.repairable, "{:?}", plan.unrepairable);
+        assert!(
+            plan.actions
+                .contains(&ProfilePolicyRepairAction::BindPassphrase),
+            "{:?}",
+            plan.actions
+        );
+        assert!(
+            plan.actions
+                .contains(&ProfilePolicyRepairAction::RotateProfileKey),
+            "{:?}",
+            plan.actions
+        );
+        assert_eq!(plan.findings, validation.findings);
     }
 
     #[test]
