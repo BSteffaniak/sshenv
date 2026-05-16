@@ -1853,9 +1853,17 @@ fn remote_plan_notes(backend: RemoteBackendArg) -> Vec<String> {
                 "cloud KMS deployments should bind requests to vault identity and operator IAM"
                     .to_string(),
             );
+            notes.push(
+                "external KMS CLIs can be integrated with a non-secret `command` param plus `remote command-wrap` / `remote command-unwrap`"
+                    .to_string(),
+            );
         }
         RemoteBackendArg::OidcApproval => {
             notes.push("OIDC approval flows should bind approval subject, device, vault generation, and expiry".to_string());
+            notes.push(
+                "approval brokers can be integrated with a non-secret `command` param plus `remote command-wrap` / `remote command-unwrap`"
+                    .to_string(),
+            );
         }
     }
     notes

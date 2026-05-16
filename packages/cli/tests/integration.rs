@@ -883,6 +883,63 @@ esac
         unwrap_json["payload_key_hex"],
         "00112233445566778899aabbccddeeff"
     );
+
+    let cloud_metadata_path = dir.path().join("remote-command-cloud.json");
+    std::fs::write(
+        &cloud_metadata_path,
+        format!(
+            r#"{{
+  "id": "command-kms",
+  "backend": "cloud-kms",
+  "label": "command kms",
+  "params": {{ "key": "alias/sshenv", "command": "{}" }}
+}}"#,
+            command_path.display()
+        ),
+    )
+    .unwrap();
+    let cloud_request_path = dir.path().join("request-cloud.json");
+    std::fs::write(
+        &cloud_request_path,
+        r#"{
+  "factor_id": "command-kms",
+  "context": {
+    "vault-id": "vault",
+    "request-id": "req-2",
+    "generation": "1",
+    "expires-unix": "4102444800",
+    "encryption-context": "sshenv:vault"
+  }
+}"#,
+    )
+    .unwrap();
+    let mut cloud_wrap = Command::new(&bin)
+        .args(["security", "remote", "command-wrap"])
+        .arg(&cloud_metadata_path)
+        .arg(&cloud_request_path)
+        .arg("--payload-key-hex-stdin")
+        .arg("--json")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn cloud command-wrap");
+    cloud_wrap
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(b"00112233445566778899aabbccddeeff")
+        .unwrap();
+    let cloud_wrap_out = cloud_wrap
+        .wait_with_output()
+        .expect("wait cloud command-wrap");
+    assert!(
+        cloud_wrap_out.status.success(),
+        "cloud command-wrap failed: {}",
+        String::from_utf8_lossy(&cloud_wrap_out.stderr)
+    );
+    let cloud_wrap_json: serde_json::Value =
+        serde_json::from_slice(&cloud_wrap_out.stdout).unwrap();
+    assert_eq!(cloud_wrap_json["wrapped_key_hex"], "deadbeef");
 }
 
 #[cfg(feature = "remote-factor")]

@@ -71,6 +71,7 @@ pub trait RemoteFactorBackend {
 
 impl CommandRemoteFactorBackend {
     pub fn from_metadata(metadata: RemoteFactorMetadataV2) -> Result<Self, RemoteFactorError> {
+        validate_remote_factor_metadata(&metadata).map_err(RemoteFactorError::InvalidRequest)?;
         let command = metadata
             .params
             .get("command")
