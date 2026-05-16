@@ -4,6 +4,7 @@
 #![allow(clippy::multiple_crate_versions)]
 
 pub mod commands;
+pub mod config;
 pub mod identity;
 pub mod picker;
 pub mod process;

@@ -1819,6 +1819,64 @@ fn binary_security_preset_recommended_migrates_to_v2() {
 }
 
 #[test]
+fn binary_ssh_hardening_config_denies_unencrypted_authorized_key() {
+    let bin = cargo_bin();
+    if !bin.exists() {
+        eprintln!("skipping: {} does not exist", bin.display());
+        return;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let vault_path = dir.path().join("vault");
+    init_vault_with_profile(&bin, &home, &vault_path, "myprofile");
+
+    let config_path = home.join(".sshenv").join("config.toml");
+    std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &config_path,
+        "[security]\nunencrypted_ssh_keys = \"deny\"\n",
+    )
+    .unwrap();
+
+    let denied_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("show")
+        .arg("myprofile")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run show with deny config");
+    assert!(!denied_out.status.success());
+    let denied_stderr = String::from_utf8_lossy(&denied_out.stderr);
+    assert!(
+        denied_stderr.contains("authorized unencrypted SSH private key(s) denied by config"),
+        "{denied_stderr}"
+    );
+
+    std::fs::write(
+        &config_path,
+        "[security]\nunencrypted_ssh_keys = \"allow\"\n",
+    )
+    .unwrap();
+    let allowed_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("show")
+        .arg("myprofile")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run show with allow config");
+    assert!(
+        allowed_out.status.success(),
+        "show with allow config failed: {}",
+        String::from_utf8_lossy(&allowed_out.stderr)
+    );
+}
+
+#[test]
 fn binary_profile_policy_apply_all_no_backup_suppresses_default_backup() {
     let bin = cargo_bin();
     if !bin.exists() {
@@ -2139,6 +2197,47 @@ fn binary_profile_policy_repair_all_enforces_advisory_portable() {
             String::from_utf8_lossy(&show_out.stderr)
         );
     }
+
+    let restore_dry_run_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("security")
+        .arg("profile-policy")
+        .arg("restore-backup")
+        .arg(&backup_path)
+        .arg("--dry-run")
+        .arg("--json")
+        .env("HOME", &home)
+        .env_remove("SSHENV_PROFILE_PASSPHRASE")
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run profile-policy restore-backup dry-run");
+    assert!(
+        restore_dry_run_out.status.success(),
+        "profile-policy restore-backup dry-run failed: {}",
+        String::from_utf8_lossy(&restore_dry_run_out.stderr)
+    );
+    let restore_dry_run_json = String::from_utf8_lossy(&restore_dry_run_out.stdout);
+    assert!(
+        restore_dry_run_json.contains("\"would_restore\": true"),
+        "{restore_dry_run_json}"
+    );
+    assert!(
+        restore_dry_run_json.contains("\"generation_rollback\": true"),
+        "{restore_dry_run_json}"
+    );
+
+    let dry_run_preserved_current_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("show")
+        .arg("myprofile")
+        .env("HOME", &home)
+        .env_remove("SSHENV_PROFILE_PASSPHRASE")
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run show after restore-backup dry-run");
+    assert!(!dry_run_preserved_current_out.status.success());
 
     let restore_out = Command::new(&bin)
         .arg("--vault")

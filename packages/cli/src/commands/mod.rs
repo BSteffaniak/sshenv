@@ -60,6 +60,7 @@ pub fn load_and_unlock(vault_path: &Path) -> Result<(Vault, DataKey)> {
         .iter()
         .map(|r| r.fingerprint.clone())
         .collect();
+    check_ssh_key_hardening(&fps)?;
     let identities = load_identities_for_vault(&fps)?;
     if identities.is_empty() {
         return Err(error_no_identity_unlocked_detailed(
@@ -102,6 +103,7 @@ pub fn load_and_unlock_metadata(vault_path: &Path) -> Result<(Vault, DataKey)> {
         .iter()
         .map(|r| r.fingerprint.clone())
         .collect();
+    check_ssh_key_hardening(&fps)?;
     let identities = load_identities_for_vault(&fps)?;
     if identities.is_empty() {
         return Err(error_no_identity_unlocked_detailed(
@@ -157,6 +159,7 @@ pub fn load_and_unlock_profile_with_passphrase(
         .iter()
         .map(|r| r.fingerprint.clone())
         .collect();
+    check_ssh_key_hardening(&fps)?;
     let identities = load_identities_for_vault(&fps)?;
     if identities.is_empty() {
         return Err(error_no_identity_unlocked_detailed(
@@ -237,6 +240,7 @@ pub fn unlock_ciphertext_with_passphrase(
     recipient_fingerprints: &HashSet<String>,
     explicit_passphrase: Option<&str>,
 ) -> Result<(Vault, DataKey)> {
+    check_ssh_key_hardening(recipient_fingerprints)?;
     let identities = load_identities_for_vault(recipient_fingerprints)?;
     if identities.is_empty() {
         return Err(error_no_identity_unlocked_detailed(
@@ -273,6 +277,62 @@ pub fn save_vault(ctx: &Context, vault: &mut Vault, data_key: &DataKey) -> Resul
     let generation = vault.bump_generation();
     vault.save(&ctx.vault_path, data_key)?;
     record_rollback(&ctx.vault_path, generation)?;
+    Ok(())
+}
+
+#[cfg(feature = "ssh-hardening")]
+fn check_ssh_key_hardening(vault_recipients: &HashSet<String>) -> Result<()> {
+    use crate::config::UnencryptedSshKeysPolicy;
+
+    let policy = crate::config::load()?.security.unencrypted_ssh_keys;
+    if policy == UnencryptedSshKeysPolicy::Allow {
+        return Ok(());
+    }
+
+    let mut findings = Vec::new();
+    for path in discover_private_key_paths() {
+        let Some(fingerprint) = crate::identity::public_fingerprint_for_private_key(&path) else {
+            continue;
+        };
+        if !vault_recipients.contains(&fingerprint) {
+            continue;
+        }
+        if matches!(
+            crate::identity::inspect_private_key_security(&path),
+            Ok(crate::identity::PrivateKeySecurity::Unencrypted)
+        ) {
+            findings.push(format!("{} ({fingerprint})", path.display()));
+        }
+    }
+
+    if findings.is_empty() {
+        return Ok(());
+    }
+
+    match policy {
+        UnencryptedSshKeysPolicy::Allow => Ok(()),
+        UnencryptedSshKeysPolicy::Warn => {
+            for finding in findings {
+                eprintln!(
+                    "warning: authorized SSH private key is unencrypted: {finding}; set [security] unencrypted_ssh_keys = \"allow\" to silence or \"deny\" to fail"
+                );
+            }
+            Ok(())
+        }
+        UnencryptedSshKeysPolicy::Deny => anyhow::bail!(
+            "authorized unencrypted SSH private key(s) denied by config: {}",
+            findings.join(", ")
+        ),
+    }
+}
+
+#[cfg(not(feature = "ssh-hardening"))]
+#[allow(
+    clippy::missing_const_for_fn,
+    clippy::unnecessary_wraps,
+    reason = "feature-gated no-op preserves fallible call sites when ssh hardening is disabled"
+)]
+fn check_ssh_key_hardening(_vault_recipients: &HashSet<String>) -> Result<()> {
     Ok(())
 }
 

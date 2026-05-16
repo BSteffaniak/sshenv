@@ -195,6 +195,71 @@ fn profile_policy_backup_candidates(ctx: &CmdContext) -> Result<Vec<ProfilePolic
     Ok(backups)
 }
 
+fn backup_verification_succeeded(output: &ProfilePolicyVerifyBackupOutput) -> bool {
+    output.readable && output.unlockable && output.errors.unwrap_or(0) == 0
+}
+
+fn build_profile_policy_restore_backup_preview(
+    ctx: &CmdContext,
+    backup_path: &Path,
+) -> ProfilePolicyRestoreBackupPreviewOutput {
+    let current = build_profile_policy_verify_backup(&ctx.vault_path);
+    let backup = build_profile_policy_verify_backup(backup_path);
+    let generation_rollback = current
+        .generation
+        .zip(backup.generation)
+        .map(|(current, backup)| backup < current);
+    let mut error = None;
+    if !backup_verification_succeeded(&backup) {
+        error = backup
+            .error
+            .clone()
+            .or_else(|| Some("backup verification failed".to_string()));
+    } else if !current.readable {
+        error = current
+            .error
+            .clone()
+            .or_else(|| Some("current vault is not readable".to_string()));
+    }
+    let would_restore = error.is_none();
+    ProfilePolicyRestoreBackupPreviewOutput {
+        current,
+        backup,
+        would_restore,
+        would_create_pre_restore_backup: would_restore,
+        would_update_rollback_baseline: would_restore,
+        generation_rollback,
+        error,
+    }
+}
+
+fn print_profile_policy_restore_backup_preview(output: &ProfilePolicyRestoreBackupPreviewOutput) {
+    println!("profile policy restore-backup preview");
+    println!("=====================================");
+    println!("would restore: {}", yes_no(output.would_restore));
+    println!(
+        "would create pre-restore backup: {}",
+        yes_no(output.would_create_pre_restore_backup)
+    );
+    println!(
+        "would update rollback baseline: {}",
+        yes_no(output.would_update_rollback_baseline)
+    );
+    println!(
+        "generation rollback: {}",
+        output.generation_rollback.map_or("unknown", yes_no)
+    );
+    if let Some(error) = &output.error {
+        println!("error: {error}");
+    }
+    println!();
+    println!("current:");
+    print_profile_policy_verify_backup(&output.current);
+    println!();
+    println!("backup:");
+    print_profile_policy_verify_backup(&output.backup);
+}
+
 fn build_profile_policy_verify_backup(path: &Path) -> ProfilePolicyVerifyBackupOutput {
     let mut output = ProfilePolicyVerifyBackupOutput {
         path: path.display().to_string(),
@@ -653,6 +718,17 @@ struct ProfilePolicyVerifyBackupOutput {
     profiles_checked: Option<usize>,
     warnings: Option<usize>,
     errors: Option<usize>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ProfilePolicyRestoreBackupPreviewOutput {
+    current: ProfilePolicyVerifyBackupOutput,
+    backup: ProfilePolicyVerifyBackupOutput,
+    would_restore: bool,
+    would_create_pre_restore_backup: bool,
+    would_update_rollback_baseline: bool,
+    generation_rollback: Option<bool>,
     error: Option<String>,
 }
 
@@ -1829,14 +1905,30 @@ pub fn profile_policy_restore_backup(
         anyhow::bail!("backup path must be different from the current vault path");
     }
 
+    let preview = build_profile_policy_restore_backup_preview(ctx, &backup);
+    if args.dry_run || args.json {
+        if args.json {
+            println!("{}", serde_json::to_string_pretty(&preview)?);
+        } else {
+            print_profile_policy_restore_backup_preview(&preview);
+        }
+        if !preview.would_restore {
+            anyhow::bail!(
+                "profile policy backup restore preview failed for {}",
+                preview.backup.path
+            );
+        }
+        return Ok(());
+    }
+    if !preview.would_restore {
+        anyhow::bail!(
+            "profile policy backup verification failed for {}",
+            preview.backup.path
+        );
+    }
+
     let backup_ciphertext = Vault::load_ciphertext(&backup)?;
     let restored_generation = backup_ciphertext.generation();
-    let recipient_fingerprints = backup_ciphertext
-        .recipients
-        .iter()
-        .map(|recipient| recipient.fingerprint.clone())
-        .collect::<HashSet<_>>();
-    unlock_ciphertext(backup_ciphertext, &recipient_fingerprints)?;
 
     let pre_restore_backup = timestamped_vault_backup_path(&ctx.vault_path, "pre-restore.bak")?;
     copy_vault_file(&ctx.vault_path, &pre_restore_backup)?;
@@ -2428,8 +2520,9 @@ fn print_feature_status() {
     println!("Compiled security features");
     println!("--------------------------");
     println!(
-        "ssh-hardening: {}",
-        enabled_label(cfg!(feature = "ssh-hardening"))
+        "ssh-hardening: {} ({})",
+        enabled_label(cfg!(feature = "ssh-hardening")),
+        ssh_hardening_policy_label()
     );
     println!("rekey:          {}", enabled_label(cfg!(feature = "rekey")));
     println!(
@@ -2459,6 +2552,24 @@ fn print_feature_status() {
 
 const fn enabled_label(enabled: bool) -> &'static str {
     if enabled { "enabled" } else { "disabled" }
+}
+
+#[cfg(feature = "ssh-hardening")]
+fn ssh_hardening_policy_label() -> String {
+    crate::config::load().map_or_else(
+        |error| format!("config-error: {error}"),
+        |config| {
+            format!(
+                "unencrypted authorized keys: {}",
+                config.security.unencrypted_ssh_keys.label()
+            )
+        },
+    )
+}
+
+#[cfg(not(feature = "ssh-hardening"))]
+fn ssh_hardening_policy_label() -> String {
+    "disabled".to_string()
 }
 
 const fn device_seal_backend_status() -> &'static str {

@@ -304,6 +304,12 @@ pub struct ProfilePolicyApplyAllArgs {
 pub struct ProfilePolicyRestoreBackupArgs {
     /// Backup vault file to restore over the current vault.
     pub backup_path: PathBuf,
+    /// Preview the restore without changing the current vault.
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Print the restore preview as machine-readable JSON without changing the vault.
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Debug, clap::Args)]
