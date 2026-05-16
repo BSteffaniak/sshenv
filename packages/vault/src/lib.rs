@@ -455,7 +455,7 @@ impl Vault {
         public_key_line: &str,
         data_key: &[u8; DATA_KEY_LEN],
     ) -> Result<&RecipientEntry> {
-        let entry = recipient::build_entry_for_public_key_line(public_key_line, data_key)?;
+        let entry = recipient::build_entry_for_recipient_descriptor(public_key_line, data_key)?;
         if self
             .recipients
             .iter()
@@ -506,7 +506,7 @@ impl Vault {
         let mut provided = BTreeSet::new();
 
         for public_key_line in recipient_public_key_lines {
-            let entry = recipient::build_entry_for_public_key_line(
+            let entry = recipient::build_entry_for_recipient_descriptor(
                 public_key_line,
                 new_data_key.as_slice(),
             )?;
@@ -840,7 +840,7 @@ impl Vault {
         let mut public_keys_by_fingerprint = BTreeMap::new();
 
         for public_key_line in recipient_public_key_lines {
-            let fingerprint = recipient::fingerprint_from_line(public_key_line)?;
+            let fingerprint = recipient::fingerprint_from_recipient_descriptor(public_key_line)?;
             if public_keys_by_fingerprint
                 .insert(fingerprint.clone(), public_key_line.clone())
                 .is_some()
@@ -1864,7 +1864,7 @@ fn policy_metadata_from_recipients(recipients: &[RecipientEntry]) -> VaultPolicy
             .map(|recipient| RecipientMetadataV2 {
                 fingerprint: recipient.fingerprint.clone(),
                 public_descriptor: recipient.public_key_line.clone(),
-                kind: UnlockFactorKindV2::SshRecipient,
+                kind: recipient::recipient_descriptor_kind(&recipient.public_key_line),
             })
             .collect(),
         recovery_share_sets: Vec::new(),

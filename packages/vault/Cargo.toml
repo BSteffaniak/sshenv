@@ -8,7 +8,7 @@ repository.workspace = true
 version.workspace    = true
 
 [features]
-age-plugin-recipient = ["hardware-recipient"]
+age-plugin-recipient = ["hardware-recipient", "age/plugin"]
 default              = ["ssh-hardening", "rekey", "passphrase-factor", "profile-keys"]
 device-seal          = []
 device-seal-file     = ["device-seal"]

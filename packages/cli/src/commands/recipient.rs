@@ -3,7 +3,11 @@ use std::io::IsTerminal;
 
 use anyhow::{Context, Result, bail};
 use sshenv_cli_models::{AddRecipientArgs, ListRecipientsArgs, RemoveRecipientArgs};
-use sshenv_vault::{Vault, recipient::fingerprint_from_line};
+use sshenv_vault::models::UnlockFactorKindV2;
+use sshenv_vault::{
+    Vault,
+    recipient::{fingerprint_from_recipient_descriptor, recipient_descriptor_kind},
+};
 
 use crate::commands::{
     Context as CmdContext, load_ciphertext_and_fps, save_vault, unlock_ciphertext,
@@ -13,12 +17,17 @@ use crate::picker::{PubkeyCandidate, select_pubkey_interactive};
 use crate::pubkey::load_public_key;
 
 pub fn add(ctx: &CmdContext, args: AddRecipientArgs) -> Result<()> {
-    if args.hardware {
+    if args.hardware && args.key.is_none() {
         add_hardware_recipient()?;
     }
     let (ciphertext, existing) = load_ciphertext_and_fps(&ctx.vault_path)?;
 
     let (pubkey_line, incoming_fp) = resolve_new_recipient(args.key.as_deref(), &existing)?;
+    if args.hardware
+        && recipient_descriptor_kind(&pubkey_line) != UnlockFactorKindV2::HardwareRecipient
+    {
+        bail!("--hardware requires an age-plugin/hardware recipient descriptor such as age1...");
+    }
 
     // Early exit on duplicate: the vault's add_recipient also rejects, but
     // we give a friendlier message here before loading identities.
@@ -39,7 +48,7 @@ pub fn add(ctx: &CmdContext, args: AddRecipientArgs) -> Result<()> {
 #[cfg(feature = "hardware-recipient")]
 fn add_hardware_recipient() -> Result<()> {
     bail!(
-        "hardware recipients are not implemented yet; this build only reserves the hardware-recipient feature gate"
+        "hardware recipient discovery is not implemented yet; pass --key <age-plugin-recipient> with --hardware"
     )
 }
 
@@ -48,8 +57,8 @@ fn add_hardware_recipient() -> Result<()> {
     bail!("this sshenv build was compiled without hardware-recipient support")
 }
 
-/// Resolve the SSH public key line for a new recipient, either from the
-/// explicit `--key` argument or interactively from autodiscovery.
+/// Resolve the public descriptor for a new recipient, either from the
+/// explicit `--key` argument or interactively from SSH pubkey autodiscovery.
 /// Already-registered fingerprints are filtered out of the picker.
 fn resolve_new_recipient(
     explicit: Option<&str>,
@@ -57,8 +66,8 @@ fn resolve_new_recipient(
 ) -> Result<(String, String)> {
     if let Some(s) = explicit {
         let line = load_public_key(s)?;
-        let fingerprint = fingerprint_from_line(&line)
-            .with_context(|| format!("failed to parse SSH public key from {s:?}"))?;
+        let fingerprint = fingerprint_from_recipient_descriptor(&line)
+            .with_context(|| format!("failed to parse recipient descriptor from {s:?}"))?;
         return Ok((line, fingerprint));
     }
 

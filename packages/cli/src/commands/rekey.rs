@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use anyhow::{Result, bail};
 use sshenv_cli_models::RotateKeyArgs;
-use sshenv_vault::recipient::fingerprint_from_line;
+use sshenv_vault::recipient::fingerprint_from_recipient_descriptor;
 use sshenv_vault::{DataKey, Vault};
 
 use crate::commands::Context as CmdContext;
@@ -62,7 +62,7 @@ pub fn resolve_current_recipient_public_key_lines(
 
     for key in explicit_keys {
         let line = load_public_key(key)?;
-        let fingerprint = fingerprint_from_line(&line)?;
+        let fingerprint = fingerprint_from_recipient_descriptor(&line)?;
         if !expected_fingerprints.contains(&fingerprint) {
             bail!(
                 "provided recipient key {fingerprint} is not a current vault recipient; \
@@ -78,7 +78,7 @@ pub fn resolve_current_recipient_public_key_lines(
         let Ok(line) = load_public_key(&path.display().to_string()) else {
             continue;
         };
-        let Ok(fingerprint) = fingerprint_from_line(&line) else {
+        let Ok(fingerprint) = fingerprint_from_recipient_descriptor(&line) else {
             continue;
         };
         if expected_fingerprints.contains(&fingerprint) {

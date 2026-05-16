@@ -468,9 +468,10 @@ pub struct InitArgs {
 
 #[derive(Debug, clap::Args)]
 pub struct AddRecipientArgs {
-    /// Path to an SSH public key file, or the public key line itself.
-    /// If omitted, sshenv will prompt interactively to pick a pubkey
-    /// from `~/.ssh/` (requires a TTY).
+    /// Path to a public recipient descriptor, or the descriptor line itself.
+    /// SSH public keys are always supported; age-plugin recipients require
+    /// the `age-plugin-recipient` feature. If omitted, sshenv will prompt
+    /// interactively to pick an SSH pubkey from `~/.ssh/` (requires a TTY).
     #[arg(long, value_name = "PATH_OR_LINE")]
     pub key: Option<String>,
     /// Add a hardware-backed recipient. This is currently reserved for future

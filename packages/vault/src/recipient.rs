@@ -14,12 +14,22 @@ use age::ssh::Recipient as SshRecipient;
 use age::{Decryptor, Encryptor};
 use anyhow::{Context, Result, bail};
 use sha2::{Digest, Sha256};
-use sshenv_vault_models::{DATA_KEY_LEN, RecipientEntry};
+use sshenv_vault_models::{DATA_KEY_LEN, RecipientEntry, UnlockFactorKindV2};
 use zeroize::Zeroizing;
 
 /// Supported SSH key types for recipients. Must match a subset of what
 /// `age`'s `ssh` feature supports.
 const SUPPORTED_KEY_TYPES: &[&str] = &["ssh-ed25519", "ssh-rsa"];
+
+/// Compute a stable fingerprint for an age-plugin recipient descriptor.
+#[must_use]
+pub fn fingerprint_for_age_plugin_recipient(descriptor: &str) -> String {
+    use base64::Engine;
+    let hash = Sha256::digest(descriptor.trim().as_bytes());
+    let no_pad = base64::engine::general_purpose::STANDARD_NO_PAD;
+    let encoded = no_pad.encode(hash);
+    format!("AGE-PLUGIN-SHA256:{encoded}")
+}
 
 /// Compute the `SHA256:<base64>` fingerprint of an SSH public key given
 /// its type and base64-encoded body, matching `ssh-keygen -lf`.
@@ -59,6 +69,61 @@ fn split_public_key_line(line: &str) -> Result<(&str, &str)> {
 pub fn fingerprint_from_line(public_key_line: &str) -> Result<String> {
     let (_, body) = split_public_key_line(public_key_line)?;
     Ok(fingerprint_for_public_key(body))
+}
+
+/// Determine the v2 factor kind for a persisted public recipient descriptor.
+#[must_use]
+pub fn recipient_descriptor_kind(descriptor: &str) -> UnlockFactorKindV2 {
+    if descriptor.trim().starts_with("age1") {
+        UnlockFactorKindV2::HardwareRecipient
+    } else {
+        UnlockFactorKindV2::SshRecipient
+    }
+}
+
+/// Compute the stable fingerprint for any supported public recipient descriptor.
+///
+/// # Errors
+///
+/// Returns an error if the descriptor is neither a supported SSH public key nor,
+/// with `age-plugin-recipient`, a valid age-plugin recipient.
+pub fn fingerprint_from_recipient_descriptor(descriptor: &str) -> Result<String> {
+    let trimmed = descriptor.trim();
+    if trimmed.starts_with("age1") {
+        return fingerprint_from_age_plugin_recipient_descriptor(trimmed);
+    }
+    fingerprint_from_line(trimmed)
+}
+
+#[cfg(feature = "age-plugin-recipient")]
+fn fingerprint_from_age_plugin_recipient_descriptor(descriptor: &str) -> Result<String> {
+    let _recipient: age::plugin::Recipient = descriptor
+        .parse()
+        .map_err(|err| anyhow::anyhow!("invalid age-plugin recipient: {err}"))?;
+    Ok(fingerprint_for_age_plugin_recipient(descriptor))
+}
+
+#[cfg(not(feature = "age-plugin-recipient"))]
+fn fingerprint_from_age_plugin_recipient_descriptor(_descriptor: &str) -> Result<String> {
+    bail!("this sshenv build was compiled without age-plugin-recipient support")
+}
+
+/// Build a new [`RecipientEntry`] by wrapping `data_key` to any supported
+/// public recipient descriptor.
+///
+/// # Errors
+///
+/// Returns an error if the descriptor is invalid, unsupported by this build,
+/// or wrapping fails.
+pub fn build_entry_for_recipient_descriptor(
+    descriptor: &str,
+    data_key: &[u8],
+) -> Result<RecipientEntry> {
+    let trimmed = descriptor.trim();
+    if trimmed.starts_with("age1") {
+        return build_entry_for_age_plugin_recipient(trimmed, data_key);
+    }
+    build_entry_for_public_key_line(trimmed, data_key)
 }
 
 /// Build a new [`RecipientEntry`] by wrapping `data_key` to the given SSH
@@ -110,6 +175,59 @@ pub fn build_entry_for_public_key_line(
         public_key_line: public_key_line.trim().to_string(),
         wrapped_key: wrapped,
     })
+}
+
+#[cfg(feature = "age-plugin-recipient")]
+fn build_entry_for_age_plugin_recipient(
+    descriptor: &str,
+    data_key: &[u8],
+) -> Result<RecipientEntry> {
+    if data_key.len() != DATA_KEY_LEN {
+        bail!(
+            "internal error: data key is {} bytes, expected {DATA_KEY_LEN}",
+            data_key.len()
+        );
+    }
+
+    let recipient: age::plugin::Recipient = descriptor
+        .parse()
+        .map_err(|err| anyhow::anyhow!("invalid age-plugin recipient: {err}"))?;
+    let fingerprint = fingerprint_for_age_plugin_recipient(descriptor);
+    let plugin_name = recipient.plugin().to_string();
+    let plugin_recipient =
+        age::plugin::RecipientPluginV1::new(&plugin_name, &[recipient], &[], age::NoCallbacks)
+            .with_context(|| format!("failed to initialize age plugin recipient {plugin_name}"))?;
+
+    let encryptor =
+        Encryptor::with_recipients(iter::once(&plugin_recipient as &dyn age::Recipient))
+            .context("failed to initialize age encryptor")?;
+
+    let mut wrapped = Vec::new();
+    {
+        let mut writer = encryptor
+            .wrap_output(&mut wrapped)
+            .context("failed to start age plugin wrapping")?;
+        writer
+            .write_all(data_key)
+            .context("failed to write data key to age plugin wrapper")?;
+        writer
+            .finish()
+            .context("failed to finish age plugin wrapping")?;
+    }
+
+    Ok(RecipientEntry {
+        fingerprint,
+        public_key_line: descriptor.to_string(),
+        wrapped_key: wrapped,
+    })
+}
+
+#[cfg(not(feature = "age-plugin-recipient"))]
+fn build_entry_for_age_plugin_recipient(
+    _descriptor: &str,
+    _data_key: &[u8],
+) -> Result<RecipientEntry> {
+    bail!("this sshenv build was compiled without age-plugin-recipient support")
 }
 
 /// Try to unwrap any of the recipient entries using any of the provided
@@ -180,6 +298,19 @@ mod tests {
         let fp2 = fingerprint_for_public_key(b64);
         assert_eq!(fp1, fp2);
         assert!(fp1.starts_with("SHA256:"));
+    }
+
+    #[test]
+    fn age_plugin_recipient_fingerprint_is_stable() {
+        let descriptor = "age1yubikey1q2w3e4r5t6y7u8i9o0p";
+        let fp1 = fingerprint_for_age_plugin_recipient(descriptor);
+        let fp2 = fingerprint_for_age_plugin_recipient(descriptor);
+        assert_eq!(fp1, fp2);
+        assert!(fp1.starts_with("AGE-PLUGIN-SHA256:"));
+        assert_eq!(
+            recipient_descriptor_kind(descriptor),
+            UnlockFactorKindV2::HardwareRecipient
+        );
     }
 
     #[test]
