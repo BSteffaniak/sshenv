@@ -210,7 +210,9 @@ struct RollbackStatusOutput {
     local_feature_enabled: bool,
     vault_generation: Option<u64>,
     local_baseline_generation: Option<u64>,
+    synced_baseline_generation: Option<u64>,
     rollback_state_path: String,
+    rollback_sync_path: Option<String>,
     baseline_status: String,
     stronger_backends_available: bool,
     notes: Vec<String>,
@@ -245,17 +247,21 @@ pub fn rollback_status(ctx: &CmdContext, args: RollbackStatusArgs) -> Result<()>
         None
     };
     let local_baseline = rollback_local_baseline(&ctx.vault_path)?;
+    let synced_baseline = rollback_synced_baseline(&ctx.vault_path)?;
     let output = RollbackStatusOutput {
         local_feature_enabled: cfg!(feature = "rollback-protection"),
         vault_generation: generation,
         local_baseline_generation: local_baseline,
+        synced_baseline_generation: synced_baseline,
         rollback_state_path: rollback_state_path_display(),
-        baseline_status: rollback_baseline_status(generation, local_baseline),
-        stronger_backends_available: false,
+        rollback_sync_path: rollback_sync_path_display(),
+        baseline_status: rollback_combined_baseline_status(generation, local_baseline, synced_baseline),
+        stronger_backends_available: synced_baseline.is_some(),
         notes: vec![
             "current rollback protection is local best-effort generation tracking".to_string(),
             "explicit restore updates the local baseline".to_string(),
-            "TPM/remote/multi-device backends are planned but not active".to_string(),
+            "set SSHENV_ROLLBACK_SYNC to a trusted synced state file for opt-in multi-device rollback observations".to_string(),
+            "signed remote checkpoints require SSHENV_ROLLBACK_CHECKPOINT for runtime enforcement".to_string(),
         ],
     };
     if args.json {
@@ -279,9 +285,22 @@ pub fn rollback_status(ctx: &CmdContext, args: RollbackStatusArgs) -> Result<()>
                 .local_baseline_generation
                 .map_or_else(|| "none".to_string(), |value| value.to_string())
         );
+        println!(
+            "synced baseline generation: {}",
+            output
+                .synced_baseline_generation
+                .map_or_else(|| "none".to_string(), |value| value.to_string())
+        );
         println!("baseline status: {}", output.baseline_status);
         println!("state path: {}", output.rollback_state_path);
-        println!("stronger backends: not configured");
+        println!(
+            "sync path: {}",
+            output
+                .rollback_sync_path
+                .as_deref()
+                .unwrap_or("not configured")
+        );
+        println!("stronger backends: opt-in sync/checkpoint only");
     }
     Ok(())
 }
@@ -308,6 +327,36 @@ fn rollback_state_path_display() -> String {
 fn rollback_state_path_display() -> String {
     std::env::var("SSHENV_ROLLBACK")
         .unwrap_or_else(|_| "rollback-protection feature disabled".to_string())
+}
+
+#[cfg(feature = "rollback-protection")]
+fn rollback_synced_baseline(vault_path: &Path) -> Result<Option<u64>> {
+    crate::rollback::synced_generation_for(vault_path)
+}
+
+#[cfg(not(feature = "rollback-protection"))]
+#[allow(clippy::missing_const_for_fn, clippy::unnecessary_wraps)]
+fn rollback_synced_baseline(_vault_path: &Path) -> Result<Option<u64>> {
+    Ok(None)
+}
+
+#[cfg(feature = "rollback-protection")]
+fn rollback_sync_path_display() -> Option<String> {
+    crate::rollback::rollback_sync_path().map(|path| path.display().to_string())
+}
+
+#[cfg(not(feature = "rollback-protection"))]
+fn rollback_sync_path_display() -> Option<String> {
+    std::env::var("SSHENV_ROLLBACK_SYNC").ok()
+}
+
+fn rollback_combined_baseline_status(
+    vault_generation: Option<u64>,
+    local_baseline_generation: Option<u64>,
+    synced_baseline_generation: Option<u64>,
+) -> String {
+    let effective = local_baseline_generation.max(synced_baseline_generation);
+    rollback_baseline_status(vault_generation, effective)
 }
 
 fn rollback_baseline_status(
