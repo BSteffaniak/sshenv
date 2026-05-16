@@ -25,11 +25,11 @@ use sshenv_cli_models::{
     ProfilePolicyRequirementArgs, ProfilePolicyRestoreBackupArgs, ProfilePolicyRotateKeyArgs,
     ProfilePolicySetArgs, ProfilePolicyStatusArgs, ProfilePolicyVerifyBackupArgs,
     RecoveryCombineArgs, RecoveryListArgs, RecoveryMetadataArgs, RecoveryPlanArgs,
-    RecoveryRemoveArgs, RecoveryShareFileArgs, RecoverySplitArgs, RemoteBackendArg, RemoteListArgs,
-    RemoteMetadataArgs, RemotePlanArgs, RemoteRemoveArgs, RemoteRequestArgs,
-    RemoteRequestTemplateArgs, RollbackBackendArg, RollbackCheckpointArgs,
-    RollbackCheckpointTemplateArgs, RollbackPlanArgs, RollbackStatusArgs, SecurityPresetArg,
-    SecurityPresetArgs,
+    RecoveryRecoverRecipientArgs, RecoveryRemoveArgs, RecoveryShareFileArgs, RecoverySplitArgs,
+    RecoveryVaultKeySplitArgs, RemoteBackendArg, RemoteListArgs, RemoteMetadataArgs,
+    RemotePlanArgs, RemoteRemoveArgs, RemoteRequestArgs, RemoteRequestTemplateArgs,
+    RollbackBackendArg, RollbackCheckpointArgs, RollbackCheckpointTemplateArgs, RollbackPlanArgs,
+    RollbackStatusArgs, SecurityPresetArg, SecurityPresetArgs,
 };
 use sshenv_vault::models::{
     ProfileFactorRequirement, ProfilePolicy, ProfilePolicyFinding, ProfilePolicyFindingCode,
@@ -1216,23 +1216,7 @@ pub fn recovery_split(args: RecoverySplitArgs) -> Result<()> {
     let secret = zeroize::Zeroizing::new(
         hex::decode(input.trim()).context("failed to decode hex secret from stdin")?,
     );
-    let shares = sshenv_vault::recovery::split_secret_shamir(
-        secret.as_slice(),
-        config.threshold,
-        config.share_count,
-    )?;
-    let envelopes = shares
-        .into_iter()
-        .map(|share| sshenv_vault::recovery::RecoveryShareEnvelope {
-            set_id: config.set_id.clone(),
-            threshold: config.threshold,
-            share,
-        })
-        .collect::<Vec<_>>();
-    let encoded = envelopes
-        .iter()
-        .map(sshenv_vault::recovery::encode_recovery_share_envelope)
-        .collect::<Vec<_>>();
+    let encoded = split_secret_to_recovery_envelopes(secret.as_slice(), &config)?;
     if args.json {
         println!(
             "{}",
@@ -1257,6 +1241,60 @@ pub fn recovery_split(args: RecoverySplitArgs) -> Result<()> {
 }
 
 #[cfg(feature = "shamir-sharing")]
+pub fn recovery_split_vault_key(ctx: &CmdContext, args: RecoveryVaultKeySplitArgs) -> Result<()> {
+    let config = recovery_split_config(&args)?;
+    let (_vault, data_key) = crate::commands::load_and_unlock(&ctx.vault_path)?;
+    let encoded = split_secret_to_recovery_envelopes(data_key.as_slice(), &config)?;
+    if args.json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "set_id": config.set_id,
+                "threshold": config.threshold,
+                "share_count": encoded.len(),
+                "metadata_verified": config.metadata_verified,
+                "shares": encoded,
+            })
+        );
+    } else {
+        eprintln!(
+            "warning: recovery share envelopes contain the vault data key; distribute them separately"
+        );
+        eprintln!("metadata verified: {}", yes_no(config.metadata_verified));
+        for share in encoded {
+            println!("{share}");
+        }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "shamir-sharing")]
+fn split_secret_to_recovery_envelopes(
+    secret: &[u8],
+    config: &RecoverySplitConfig,
+) -> Result<Vec<String>> {
+    let shares =
+        sshenv_vault::recovery::split_secret_shamir(secret, config.threshold, config.share_count)?;
+    let envelopes = shares
+        .into_iter()
+        .map(|share| sshenv_vault::recovery::RecoveryShareEnvelope {
+            set_id: config.set_id.clone(),
+            threshold: config.threshold,
+            share,
+        })
+        .collect::<Vec<_>>();
+    Ok(envelopes
+        .iter()
+        .map(sshenv_vault::recovery::encode_recovery_share_envelope)
+        .collect::<Vec<_>>())
+}
+
+#[cfg(not(feature = "shamir-sharing"))]
+pub fn recovery_split_vault_key(_ctx: &CmdContext, _args: RecoveryVaultKeySplitArgs) -> Result<()> {
+    anyhow::bail!("this sshenv build was compiled without shamir-sharing support")
+}
+
+#[cfg(feature = "shamir-sharing")]
 struct RecoverySplitConfig {
     set_id: String,
     threshold: u8,
@@ -1265,11 +1303,57 @@ struct RecoverySplitConfig {
 }
 
 #[cfg(feature = "shamir-sharing")]
-fn recovery_split_config(args: &RecoverySplitArgs) -> Result<RecoverySplitConfig> {
-    let mut set_id = args.set_id.clone();
-    let mut threshold = args.threshold;
-    let mut share_count = args.share_count;
-    let metadata_verified = if let Some(metadata_path) = args.metadata.as_ref() {
+trait RecoverySplitOptions {
+    fn metadata(&self) -> Option<&PathBuf>;
+    fn set_id(&self) -> Option<&String>;
+    fn threshold(&self) -> Option<u8>;
+    fn share_count(&self) -> Option<u8>;
+}
+
+#[cfg(feature = "shamir-sharing")]
+impl RecoverySplitOptions for RecoverySplitArgs {
+    fn metadata(&self) -> Option<&PathBuf> {
+        self.metadata.as_ref()
+    }
+
+    fn set_id(&self) -> Option<&String> {
+        self.set_id.as_ref()
+    }
+
+    fn threshold(&self) -> Option<u8> {
+        self.threshold
+    }
+
+    fn share_count(&self) -> Option<u8> {
+        self.share_count
+    }
+}
+
+#[cfg(feature = "shamir-sharing")]
+impl RecoverySplitOptions for RecoveryVaultKeySplitArgs {
+    fn metadata(&self) -> Option<&PathBuf> {
+        self.metadata.as_ref()
+    }
+
+    fn set_id(&self) -> Option<&String> {
+        self.set_id.as_ref()
+    }
+
+    fn threshold(&self) -> Option<u8> {
+        self.threshold
+    }
+
+    fn share_count(&self) -> Option<u8> {
+        self.share_count
+    }
+}
+
+#[cfg(feature = "shamir-sharing")]
+fn recovery_split_config(args: &impl RecoverySplitOptions) -> Result<RecoverySplitConfig> {
+    let mut set_id = args.set_id().cloned();
+    let mut threshold = args.threshold();
+    let mut share_count = args.share_count();
+    let metadata_verified = if let Some(metadata_path) = args.metadata() {
         let metadata = load_recovery_share_metadata(metadata_path)?;
         sshenv_vault::recovery::validate_recovery_share_set_metadata(&metadata)?;
         ensure_optional_match("set-id", set_id.as_deref(), metadata.id.as_str())?;
@@ -1369,25 +1453,8 @@ pub fn recovery_validate_share(_args: RecoveryShareFileArgs) -> Result<()> {
 
 #[cfg(feature = "shamir-sharing")]
 pub fn recovery_combine(args: RecoveryCombineArgs) -> Result<()> {
-    let envelopes = args
-        .share_files
-        .iter()
-        .map(|path| {
-            let encoded = fs::read_to_string(path)
-                .with_context(|| format!("failed to read recovery share {}", path.display()))?;
-            sshenv_vault::recovery::decode_recovery_share_envelope(encoded.trim())
-                .map_err(anyhow::Error::from)
-        })
-        .collect::<Result<Vec<_>>>()?;
-    let metadata_verified = if let Some(metadata_path) = args.metadata.as_ref() {
-        let metadata = load_recovery_share_metadata(metadata_path)?;
-        for envelope in &envelopes {
-            sshenv_vault::recovery::validate_recovery_share_envelope_metadata(&metadata, envelope)?;
-        }
-        true
-    } else {
-        false
-    };
+    let (envelopes, metadata_verified) =
+        load_recovery_share_envelopes(&args.share_files, args.metadata.as_ref())?;
     let recovered = zeroize::Zeroizing::new(
         sshenv_vault::recovery::combine_recovery_share_envelopes(&envelopes)?,
     );
@@ -1412,6 +1479,84 @@ pub fn recovery_combine(args: RecoveryCombineArgs) -> Result<()> {
 #[cfg(not(feature = "shamir-sharing"))]
 pub fn recovery_combine(_args: RecoveryCombineArgs) -> Result<()> {
     anyhow::bail!("this sshenv build was compiled without shamir-sharing support")
+}
+
+#[cfg(feature = "shamir-sharing")]
+pub fn recovery_recover_recipient(
+    ctx: &CmdContext,
+    args: RecoveryRecoverRecipientArgs,
+) -> Result<()> {
+    if args.output.exists() {
+        anyhow::bail!(
+            "recovery output vault already exists: {}; choose a new path",
+            args.output.display()
+        );
+    }
+    let (envelopes, metadata_verified) =
+        load_recovery_share_envelopes(&args.share_files, args.metadata.as_ref())?;
+    let recovered = zeroize::Zeroizing::new(
+        sshenv_vault::recovery::combine_recovery_share_envelopes(&envelopes)?,
+    );
+    if recovered.len() != sshenv_vault::models::DATA_KEY_LEN {
+        anyhow::bail!(
+            "recovered secret is {} bytes, expected vault data key length {}",
+            recovered.len(),
+            sshenv_vault::models::DATA_KEY_LEN
+        );
+    }
+    let mut raw_key = [0_u8; sshenv_vault::models::DATA_KEY_LEN];
+    raw_key.copy_from_slice(recovered.as_slice());
+    let data_key = zeroize::Zeroizing::new(raw_key);
+    let (ciphertext, _fps) = load_ciphertext_and_fps(&ctx.vault_path)?;
+    let (mut vault, data_key) = sshenv_vault::Vault::unlock_with_data_key_and_passphrase(
+        ciphertext,
+        data_key,
+        args.passphrase.as_deref(),
+    )?;
+    let entry = vault.add_recipient(&args.recipient_key, &data_key)?;
+    let fingerprint = entry.fingerprint.clone();
+    vault.save(&args.output, &data_key)?;
+    eprintln!(
+        "Recovered vault to {} with new recipient {}. Metadata verified: {}. Rotate the vault data key after confirming access.",
+        args.output.display(),
+        fingerprint,
+        yes_no(metadata_verified)
+    );
+    Ok(())
+}
+
+#[cfg(not(feature = "shamir-sharing"))]
+pub fn recovery_recover_recipient(
+    _ctx: &CmdContext,
+    _args: RecoveryRecoverRecipientArgs,
+) -> Result<()> {
+    anyhow::bail!("this sshenv build was compiled without shamir-sharing support")
+}
+
+#[cfg(feature = "shamir-sharing")]
+fn load_recovery_share_envelopes(
+    share_files: &[PathBuf],
+    metadata_path: Option<&PathBuf>,
+) -> Result<(Vec<sshenv_vault::recovery::RecoveryShareEnvelope>, bool)> {
+    let envelopes = share_files
+        .iter()
+        .map(|path| {
+            let encoded = fs::read_to_string(path)
+                .with_context(|| format!("failed to read recovery share {}", path.display()))?;
+            sshenv_vault::recovery::decode_recovery_share_envelope(encoded.trim())
+                .map_err(anyhow::Error::from)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let metadata_verified = if let Some(metadata_path) = metadata_path {
+        let metadata = load_recovery_share_metadata(metadata_path)?;
+        for envelope in &envelopes {
+            sshenv_vault::recovery::validate_recovery_share_envelope_metadata(&metadata, envelope)?;
+        }
+        true
+    } else {
+        false
+    };
+    Ok((envelopes, metadata_verified))
 }
 
 #[cfg(feature = "recovery-shares")]

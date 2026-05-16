@@ -320,6 +320,25 @@ impl Vault {
     ) -> Result<(Self, DataKey)> {
         let data_key = recipient::unwrap_data_key(&ciphertext.recipients, identities)
             .context("no configured SSH identity could unwrap the vault data key")?;
+        Self::unlock_with_data_key_and_passphrase(ciphertext, data_key, passphrase)
+    }
+
+    /// Decrypt a vault using a recovered raw data key instead of an SSH
+    /// recipient unwrap.
+    ///
+    /// This is intended for break-glass recovery flows after independently
+    /// verifying recovery shares. Any configured payload factors, such as a
+    /// vault passphrase factor, are still enforced via `passphrase`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a required payload factor is unavailable or if the
+    /// payload fails to decrypt with the recovered data key.
+    pub fn unlock_with_data_key_and_passphrase(
+        ciphertext: CiphertextVault,
+        data_key: DataKey,
+        passphrase: Option<&str>,
+    ) -> Result<(Self, DataKey)> {
         let payload_key_factors =
             payload_key_factors_for_metadata(ciphertext.policy_metadata.as_ref(), passphrase)?;
         let payload_key = payload_key_for_data_key(data_key.as_slice(), &payload_key_factors);
@@ -2017,6 +2036,25 @@ mod tests {
         assert_eq!(
             unlocked.profiles.get("p").unwrap().get("K").unwrap(),
             "value"
+        );
+    }
+
+    #[test]
+    fn unlock_with_recovered_data_key_roundtrips() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let vault_path = dir.path().join("vault");
+
+        let (pubkey, _identity) = generate_keypair();
+        let (mut v, key) = Vault::create(&pubkey).expect("create vault");
+        v.profiles.set("p", "K", "recovered".into());
+        v.save(&vault_path, &key).expect("save vault");
+
+        let ct = Vault::load_ciphertext(&vault_path).expect("load ciphertext");
+        let (unlocked, _key) = Vault::unlock_with_data_key_and_passphrase(ct, key, None)
+            .expect("unlock with data key");
+        assert_eq!(
+            unlocked.profiles.get("p").unwrap().get("K").unwrap(),
+            "recovered"
         );
     }
 

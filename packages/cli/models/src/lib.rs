@@ -314,10 +314,14 @@ pub enum RecoveryCommand {
     Remove(RecoveryRemoveArgs),
     /// Split a hex secret from stdin into encoded Shamir recovery-share envelopes.
     Split(RecoverySplitArgs),
+    /// Split the current vault data key into encoded Shamir recovery-share envelopes.
+    SplitVaultKey(RecoveryVaultKeySplitArgs),
     /// Validate one encoded Shamir recovery-share envelope file.
     ValidateShare(RecoveryShareFileArgs),
     /// Combine encoded Shamir recovery-share envelope files and print the recovered secret as hex.
     Combine(RecoveryCombineArgs),
+    /// Recover a vault with Shamir shares and add a new recipient to a new vault file.
+    RecoverRecipient(RecoveryRecoverRecipientArgs),
     /// Validate a recovery-share metadata JSON file.
     Validate(RecoveryMetadataArgs),
     /// Plan an M-of-N or break-glass recovery flow from metadata and provided share ids.
@@ -497,6 +501,25 @@ pub struct RecoverySplitArgs {
 }
 
 #[derive(Debug, clap::Args)]
+pub struct RecoveryVaultKeySplitArgs {
+    /// Recovery metadata JSON to derive set id, threshold, and share count.
+    #[arg(long)]
+    pub metadata: Option<PathBuf>,
+    /// Recovery-share set id to embed in the envelopes.
+    #[arg(long)]
+    pub set_id: Option<String>,
+    /// Number of shares required to recover.
+    #[arg(long)]
+    pub threshold: Option<u8>,
+    /// Total shares to generate.
+    #[arg(long)]
+    pub share_count: Option<u8>,
+    /// Print machine-readable JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, clap::Args)]
 pub struct RecoveryCombineArgs {
     /// File containing one encoded recovery-share envelope. Repeat for each collected share.
     #[arg(long = "share-file", required = true)]
@@ -507,6 +530,25 @@ pub struct RecoveryCombineArgs {
     /// Print machine-readable JSON.
     #[arg(long)]
     pub json: bool,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct RecoveryRecoverRecipientArgs {
+    /// File containing one encoded recovery-share envelope. Repeat for each collected share.
+    #[arg(long = "share-file", required = true)]
+    pub share_files: Vec<PathBuf>,
+    /// Optional recovery metadata JSON to verify set id, threshold, and share indices.
+    #[arg(long)]
+    pub metadata: Option<PathBuf>,
+    /// Public SSH key line or age-plugin recipient descriptor to add to the recovered vault.
+    #[arg(long)]
+    pub recipient_key: String,
+    /// Output vault path. Required so recovery never overwrites the current vault implicitly.
+    #[arg(long)]
+    pub output: PathBuf,
+    /// Optional vault passphrase factor if the recovered vault also requires it.
+    #[arg(long)]
+    pub passphrase: Option<String>,
 }
 
 #[derive(Debug, clap::Args)]

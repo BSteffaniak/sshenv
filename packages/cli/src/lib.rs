@@ -89,10 +89,16 @@ pub fn run(cli: Cli) -> Result<()> {
                 RecoveryCommand::Import(args) => commands::security::recovery_import(&ctx, args),
                 RecoveryCommand::Remove(args) => commands::security::recovery_remove(&ctx, args),
                 RecoveryCommand::Split(args) => commands::security::recovery_split(args),
+                RecoveryCommand::SplitVaultKey(args) => {
+                    commands::security::recovery_split_vault_key(&ctx, args)
+                }
                 RecoveryCommand::ValidateShare(args) => {
                     commands::security::recovery_validate_share(args)
                 }
                 RecoveryCommand::Combine(args) => commands::security::recovery_combine(args),
+                RecoveryCommand::RecoverRecipient(args) => {
+                    commands::security::recovery_recover_recipient(&ctx, args)
+                }
                 RecoveryCommand::Validate(args) => commands::security::recovery_validate(args),
                 RecoveryCommand::Plan(args) => commands::security::recovery_plan(args),
             },
