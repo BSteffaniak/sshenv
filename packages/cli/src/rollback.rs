@@ -58,6 +58,21 @@ pub fn check_generation(vault_path: &Path, generation: Option<u64>) -> Result<()
     Ok(())
 }
 
+/// Return the locally recorded rollback baseline for this vault, if any.
+///
+/// # Errors
+///
+/// Returns an error if local rollback state cannot be read.
+pub fn generation_for(vault_path: &Path) -> Result<Option<u64>> {
+    let state = load_state()?;
+    let id = vault_id(vault_path);
+    Ok(state
+        .vaults
+        .iter()
+        .find(|record| record.vault == id)
+        .map(|record| record.generation))
+}
+
 /// Record the highest generation seen for this vault.
 ///
 /// # Errors

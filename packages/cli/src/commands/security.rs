@@ -182,7 +182,9 @@ fn passphrase_cache_output() -> PassphraseCacheOutput {
 struct RollbackStatusOutput {
     local_feature_enabled: bool,
     vault_generation: Option<u64>,
+    local_baseline_generation: Option<u64>,
     rollback_state_path: String,
+    baseline_status: String,
     stronger_backends_available: bool,
     notes: Vec<String>,
 }
@@ -205,12 +207,13 @@ pub fn rollback_status(ctx: &CmdContext, args: RollbackStatusArgs) -> Result<()>
     } else {
         None
     };
+    let local_baseline = rollback_local_baseline(&ctx.vault_path)?;
     let output = RollbackStatusOutput {
         local_feature_enabled: cfg!(feature = "rollback-protection"),
         vault_generation: generation,
-        rollback_state_path: std::env::var("SSHENV_ROLLBACK").unwrap_or_else(|_| {
-            "~/.sshenv/rollback.toml (or platform config dir fallback)".to_string()
-        }),
+        local_baseline_generation: local_baseline,
+        rollback_state_path: rollback_state_path_display(),
+        baseline_status: rollback_baseline_status(generation, local_baseline),
         stronger_backends_available: false,
         notes: vec![
             "current rollback protection is local best-effort generation tracking".to_string(),
@@ -233,10 +236,61 @@ pub fn rollback_status(ctx: &CmdContext, args: RollbackStatusArgs) -> Result<()>
                 .vault_generation
                 .map_or_else(|| "unknown".to_string(), |value| value.to_string())
         );
+        println!(
+            "local baseline generation: {}",
+            output
+                .local_baseline_generation
+                .map_or_else(|| "none".to_string(), |value| value.to_string())
+        );
+        println!("baseline status: {}", output.baseline_status);
         println!("state path: {}", output.rollback_state_path);
         println!("stronger backends: not configured");
     }
     Ok(())
+}
+
+#[cfg(feature = "rollback-protection")]
+fn rollback_local_baseline(vault_path: &Path) -> Result<Option<u64>> {
+    crate::rollback::generation_for(vault_path)
+}
+
+#[cfg(not(feature = "rollback-protection"))]
+#[allow(clippy::missing_const_for_fn, clippy::unnecessary_wraps)]
+fn rollback_local_baseline(_vault_path: &Path) -> Result<Option<u64>> {
+    Ok(None)
+}
+
+#[cfg(feature = "rollback-protection")]
+fn rollback_state_path_display() -> String {
+    crate::rollback::default_rollback_path()
+        .display()
+        .to_string()
+}
+
+#[cfg(not(feature = "rollback-protection"))]
+fn rollback_state_path_display() -> String {
+    std::env::var("SSHENV_ROLLBACK")
+        .unwrap_or_else(|_| "rollback-protection feature disabled".to_string())
+}
+
+fn rollback_baseline_status(
+    vault_generation: Option<u64>,
+    local_baseline_generation: Option<u64>,
+) -> String {
+    match (vault_generation, local_baseline_generation) {
+        (Some(current), Some(baseline)) if current < baseline => {
+            format!(
+                "rollback suspected: current generation {current} is older than local baseline {baseline}"
+            )
+        }
+        (Some(current), Some(baseline)) if current == baseline => "current".to_string(),
+        (Some(current), Some(baseline)) => {
+            format!("current generation {current} is newer than local baseline {baseline}")
+        }
+        (Some(_), None) => "no local baseline recorded".to_string(),
+        (None, Some(baseline)) => format!("local baseline {baseline}; vault generation unknown"),
+        (None, None) => "unknown".to_string(),
+    }
 }
 
 pub fn rollback_plan(args: RollbackPlanArgs) -> Result<()> {

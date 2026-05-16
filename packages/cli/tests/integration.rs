@@ -1,8 +1,12 @@
 //! Integration tests that drive the CLI end-to-end against temp files.
 
 use std::io::Cursor;
+#[cfg(feature = "shamir-sharing")]
+use std::io::Write;
 use std::path::PathBuf;
 use std::process::Command;
+#[cfg(feature = "shamir-sharing")]
+use std::process::Stdio;
 
 use rand_core::OsRng;
 use ssh_key::{Algorithm, LineEnding, PrivateKey};
@@ -141,6 +145,225 @@ fn binary_help_runs() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("sshenv"));
+}
+
+#[test]
+fn binary_security_planning_commands_emit_json() {
+    let bin = cargo_bin();
+    if !bin.exists() {
+        eprintln!("skipping: {} does not exist", bin.display());
+        return;
+    }
+
+    let cases: &[(&[&str], &str, &str)] = &[
+        (
+            &["security", "passphrase-cache", "plan", "--json"],
+            "available",
+            "not implemented",
+        ),
+        (
+            &["security", "device", "plan", "--backend", "tpm", "--json"],
+            "backend",
+            "Tpm",
+        ),
+        (
+            &[
+                "security",
+                "rollback",
+                "plan",
+                "--backend",
+                "remote-checkpoint",
+                "--json",
+            ],
+            "backend",
+            "RemoteCheckpoint",
+        ),
+    ];
+
+    for (args, key, expected) in cases {
+        let output = Command::new(&bin)
+            .args(*args)
+            .output()
+            .expect("run planning command");
+        assert!(
+            output.status.success(),
+            "{:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert!(
+            json.get(*key).is_some(),
+            "missing {key} in {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains(expected),
+            "stdout did not contain {expected}: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+    }
+}
+
+#[cfg(feature = "shamir-sharing")]
+#[test]
+fn binary_recovery_split_validate_and_combine_roundtrip() {
+    let bin = cargo_bin();
+    if !bin.exists() {
+        eprintln!("skipping: {} does not exist", bin.display());
+        return;
+    }
+
+    let mut child = Command::new(&bin)
+        .args([
+            "security",
+            "recovery",
+            "split",
+            "--set-id",
+            "ops-break-glass",
+            "--threshold",
+            "2",
+            "--share-count",
+            "3",
+            "--secret-hex-stdin",
+            "--json",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn recovery split");
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(b"00112233445566778899aabbccddeeff")
+        .unwrap();
+    let split_out = child.wait_with_output().expect("wait recovery split");
+    assert!(
+        split_out.status.success(),
+        "split failed: {}",
+        String::from_utf8_lossy(&split_out.stderr)
+    );
+    let split_json: serde_json::Value = serde_json::from_slice(&split_out.stdout).unwrap();
+    let shares = split_json["shares"].as_array().unwrap();
+    assert_eq!(shares.len(), 3);
+
+    let dir = tempfile::tempdir().unwrap();
+    let share_a = dir.path().join("share-a.txt");
+    let share_b = dir.path().join("share-b.txt");
+    std::fs::write(&share_a, shares[0].as_str().unwrap()).unwrap();
+    std::fs::write(&share_b, shares[1].as_str().unwrap()).unwrap();
+
+    let validate_out = Command::new(&bin)
+        .args(["security", "recovery", "validate-share"])
+        .arg(&share_a)
+        .arg("--json")
+        .output()
+        .expect("run validate-share");
+    assert!(
+        validate_out.status.success(),
+        "validate-share failed: {}",
+        String::from_utf8_lossy(&validate_out.stderr)
+    );
+    let validate_json: serde_json::Value = serde_json::from_slice(&validate_out.stdout).unwrap();
+    assert_eq!(validate_json["valid"], true);
+    assert_eq!(validate_json["set_id"], "ops-break-glass");
+
+    let combine_out = Command::new(&bin)
+        .args(["security", "recovery", "combine", "--share-file"])
+        .arg(&share_a)
+        .arg("--share-file")
+        .arg(&share_b)
+        .arg("--json")
+        .output()
+        .expect("run recovery combine");
+    assert!(
+        combine_out.status.success(),
+        "combine failed: {}",
+        String::from_utf8_lossy(&combine_out.stderr)
+    );
+    let combine_json: serde_json::Value = serde_json::from_slice(&combine_out.stdout).unwrap();
+    assert_eq!(
+        combine_json["recovered_secret_hex"],
+        "00112233445566778899aabbccddeeff"
+    );
+}
+
+#[cfg(feature = "remote-factor")]
+#[test]
+fn binary_remote_request_template_validates_roundtrip() {
+    let bin = cargo_bin();
+    if !bin.exists() {
+        eprintln!("skipping: {} does not exist", bin.display());
+        return;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let metadata_path = dir.path().join("remote.json");
+    let request_path = dir.path().join("request.json");
+    std::fs::write(
+        &metadata_path,
+        r#"{
+  "id": "prod-kms",
+  "backend": "cloud-kms",
+  "label": "prod",
+  "params": { "key": "alias/sshenv-prod" }
+}"#,
+    )
+    .unwrap();
+
+    let validate_metadata_out = Command::new(&bin)
+        .args(["security", "remote", "validate"])
+        .arg(&metadata_path)
+        .arg("--json")
+        .output()
+        .expect("run remote validate");
+    assert!(
+        validate_metadata_out.status.success(),
+        "remote validate failed: {}",
+        String::from_utf8_lossy(&validate_metadata_out.stderr)
+    );
+
+    let template_out = Command::new(&bin)
+        .args(["security", "remote", "request-template"])
+        .arg(&metadata_path)
+        .args([
+            "--vault-id",
+            "vault-prod",
+            "--generation",
+            "7",
+            "--expires-unix",
+            "12345",
+            "--request-id",
+            "req-1",
+            "--encryption-context",
+            "sshenv:prod",
+        ])
+        .output()
+        .expect("run remote request-template");
+    assert!(
+        template_out.status.success(),
+        "request-template failed: {}",
+        String::from_utf8_lossy(&template_out.stderr)
+    );
+    std::fs::write(&request_path, &template_out.stdout).unwrap();
+
+    let validate_request_out = Command::new(&bin)
+        .args(["security", "remote", "validate-request"])
+        .arg(&metadata_path)
+        .arg(&request_path)
+        .arg("--json")
+        .output()
+        .expect("run remote validate-request");
+    assert!(
+        validate_request_out.status.success(),
+        "validate-request failed: {}",
+        String::from_utf8_lossy(&validate_request_out.stderr)
+    );
+    let request_json: serde_json::Value =
+        serde_json::from_slice(&validate_request_out.stdout).unwrap();
+    assert_eq!(request_json["valid"], true);
+    assert_eq!(request_json["factor_id"], "prod-kms");
 }
 
 /// When `sshenv init` is run non-interactively without --recipient-key,
@@ -1850,6 +2073,33 @@ fn binary_rollback_protection_rejects_older_v2_generation() {
     assert!(set_out.status.success());
 
     std::fs::copy(&old_vault, &vault_path).unwrap();
+
+    let status_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("security")
+        .arg("rollback")
+        .arg("status")
+        .arg("--json")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run rollback status after rollback");
+    assert!(
+        status_out.status.success(),
+        "rollback status failed: {}",
+        String::from_utf8_lossy(&status_out.stderr)
+    );
+    let status_json: serde_json::Value = serde_json::from_slice(&status_out.stdout).unwrap();
+    assert_eq!(status_json["vault_generation"], 1);
+    assert_eq!(status_json["local_baseline_generation"], 2);
+    assert!(
+        status_json["baseline_status"]
+            .as_str()
+            .unwrap()
+            .contains("rollback suspected"),
+        "{status_json}"
+    );
 
     let show_out = Command::new(&bin)
         .arg("--vault")
