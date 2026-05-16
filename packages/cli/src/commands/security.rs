@@ -1568,7 +1568,7 @@ fn rotate_recovered_vault_key_if_possible(
 }
 
 #[cfg(feature = "shamir-sharing")]
-fn load_recovery_share_envelopes(
+pub(crate) fn load_recovery_share_envelopes(
     share_files: &[PathBuf],
     metadata_path: Option<&PathBuf>,
 ) -> Result<(Vec<sshenv_vault::recovery::RecoveryShareEnvelope>, bool)> {

@@ -457,6 +457,31 @@ fn binary_recovery_split_vault_key_and_recover_recipient_roundtrip() {
     std::fs::write(&share_a, shares[0].as_str().unwrap()).unwrap();
     std::fs::write(&share_b, shares[1].as_str().unwrap()).unwrap();
 
+    let share_files = std::env::join_paths([share_a.as_path(), share_b.as_path()]).unwrap();
+    let no_key_home = dir.path().join("no-key-home");
+    std::fs::create_dir_all(no_key_home.join(".ssh")).unwrap();
+    let recovery_unlock_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("show")
+        .arg("myprofile")
+        .env("HOME", &no_key_home)
+        .env("SSHENV_RECOVERY_SHARE_FILES", &share_files)
+        .env("SSHENV_RECOVERY_METADATA", &metadata_path)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("show original vault with recovery shares");
+    assert!(
+        recovery_unlock_out.status.success(),
+        "show with recovery shares failed: {}",
+        String::from_utf8_lossy(&recovery_unlock_out.stderr)
+    );
+    let recovery_stdout = String::from_utf8_lossy(&recovery_unlock_out.stdout);
+    assert!(
+        recovery_stdout.contains("DUMMY=value"),
+        "show output: {recovery_stdout}"
+    );
+
     std::fs::create_dir_all(recovery_home.join(".ssh")).unwrap();
     let (_recovery_key, recovery_pubkey) =
         write_named_keypair(&recovery_home.join(".ssh"), "id_ed25519");
@@ -1009,7 +1034,7 @@ esac
   "context": {
     "vault-id": "vault",
     "request-id": "req-1",
-    "generation": "1",
+    "generation": "2",
     "expires-unix": "4102444800",
     "client-id": "client"
   }
@@ -1050,6 +1075,38 @@ esac
     );
     let stdout = String::from_utf8_lossy(&show_out.stdout);
     assert!(stdout.contains("DUMMY=value"), "show output: {stdout}");
+
+    let stale_request_path = dir.path().join("stale-request.json");
+    std::fs::write(
+        &stale_request_path,
+        r#"{
+  "factor_id": "command-remote",
+  "context": {
+    "vault-id": "vault",
+    "request-id": "req-stale",
+    "generation": "1",
+    "expires-unix": "4102444800",
+    "client-id": "client"
+  }
+}"#,
+    )
+    .unwrap();
+    let stale_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("show")
+        .arg("myprofile")
+        .env("HOME", &home)
+        .env("SSHENV_REMOTE_REQUEST", &stale_request_path)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("show remote-factor vault with stale request");
+    assert!(!stale_out.status.success());
+    assert!(
+        String::from_utf8_lossy(&stale_out.stderr).contains("does not match vault generation"),
+        "stderr: {}",
+        String::from_utf8_lossy(&stale_out.stderr)
+    );
 }
 
 #[cfg(feature = "remote-factor")]

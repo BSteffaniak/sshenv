@@ -345,8 +345,11 @@ impl Vault {
         data_key: DataKey,
         passphrase: Option<&str>,
     ) -> Result<(Self, DataKey)> {
-        let payload_key_factors =
-            payload_key_factors_for_metadata(ciphertext.policy_metadata.as_ref(), passphrase)?;
+        let payload_key_factors = payload_key_factors_for_metadata(
+            ciphertext.policy_metadata.as_ref(),
+            passphrase,
+            ciphertext.generation(),
+        )?;
         let payload_key = payload_key_for_data_key(data_key.as_slice(), &payload_key_factors);
 
         let aad = payload_aad_for_version(ciphertext.header.version)?;
@@ -396,8 +399,11 @@ impl Vault {
     ) -> Result<(Self, DataKey)> {
         let data_key = recipient::unwrap_data_key(&ciphertext.recipients, identities)
             .context("no configured SSH identity could unwrap the vault data key")?;
-        let payload_key_factors =
-            payload_key_factors_for_metadata(ciphertext.policy_metadata.as_ref(), passphrase)?;
+        let payload_key_factors = payload_key_factors_for_metadata(
+            ciphertext.policy_metadata.as_ref(),
+            passphrase,
+            ciphertext.generation(),
+        )?;
         let payload_key = payload_key_for_data_key(data_key.as_slice(), &payload_key_factors);
         let aad = payload_aad_for_version(ciphertext.header.version)?;
         let plaintext =
@@ -889,9 +895,12 @@ impl Vault {
         metadata
             .remote_factors
             .sort_by(|left, right| left.id.cmp(&right.id));
-        metadata
-            .policies
-            .retain(|policy| policy.id != format!("ssh+{factor_id}"));
+        metadata.policies.retain(|policy| {
+            !policy
+                .factors
+                .iter()
+                .any(|factor| factor.kind == UnlockFactorKindV2::RemoteKms)
+        });
         metadata.policies.push(sshenv_vault_models::UnlockPolicyV2 {
             id: format!("ssh+{factor_id}"),
             threshold: None,
@@ -1858,6 +1867,7 @@ fn add_profile_policy_factor_repair_action(
 fn payload_key_factors_for_metadata(
     metadata: Option<&VaultPolicyMetadataV2>,
     passphrase: Option<&str>,
+    vault_generation: Option<u64>,
 ) -> Result<Vec<PayloadKeyFactor>> {
     let mut factors = Vec::new();
     let Some(metadata) = metadata else {
@@ -1878,7 +1888,7 @@ fn payload_key_factors_for_metadata(
             }),
             UnlockFactorKindV2::RemoteKms => factors.push(PayloadKeyFactor {
                 kind: UnlockFactorKindV2::RemoteKms,
-                key: remote_factor_key(metadata, factor)?,
+                key: remote_factor_key(metadata, factor, vault_generation)?,
             }),
             _ => {}
         }
@@ -1927,6 +1937,7 @@ fn device_seal_factor_key(
 fn remote_factor_key(
     metadata: &VaultPolicyMetadataV2,
     factor: &sshenv_vault_models::UnlockFactorV2,
+    vault_generation: Option<u64>,
 ) -> Result<Zeroizing<[u8; DATA_KEY_LEN]>> {
     let metadata_id = factor
         .params
@@ -1947,6 +1958,19 @@ fn remote_factor_key(
         .with_context(|| format!("failed to read remote request {request_path}"))?;
     let request: remote::RemoteFactorRequest = serde_json::from_str(&request_content)
         .with_context(|| format!("failed to parse remote request {request_path}"))?;
+    if let Some(vault_generation) = vault_generation {
+        let request_generation = request
+            .context
+            .get("generation")
+            .context("remote factor request is missing generation context")?
+            .parse::<u64>()
+            .context("remote factor request generation context must be an unsigned integer")?;
+        if request_generation != vault_generation {
+            anyhow::bail!(
+                "remote factor request generation {request_generation} does not match vault generation {vault_generation}"
+            );
+        }
+    }
     let remote_metadata = metadata
         .remote_factors
         .iter()
@@ -1968,6 +1992,7 @@ fn remote_factor_key(
 fn remote_factor_key(
     _metadata: &VaultPolicyMetadataV2,
     _factor: &sshenv_vault_models::UnlockFactorV2,
+    _vault_generation: Option<u64>,
 ) -> Result<Zeroizing<[u8; DATA_KEY_LEN]>> {
     Err(anyhow!(
         "vault requires a remote/KMS factor, but this sshenv build was compiled without remote-factor support"
@@ -2672,6 +2697,7 @@ mod tests {
         let factor_keys = payload_key_factors_for_metadata(
             parsed.policy_metadata.as_ref(),
             Some("profile passphrase"),
+            parsed.generation(),
         )
         .expect("derive factors");
         let payload_key = payload_key_for_data_key(key.as_slice(), &factor_keys);

@@ -60,6 +60,17 @@ pub fn load_and_unlock(vault_path: &Path) -> Result<(Vault, DataKey)> {
         .iter()
         .map(|r| r.fingerprint.clone())
         .collect();
+    let requires_extra_factor = ciphertext_requires_extra_factor(&ciphertext);
+    let passphrase = passphrase_for_ciphertext(vault_path, &ciphertext, None)?;
+    if recovery_unlock_requested() {
+        let unlocked = unlock_ciphertext_with_recovery_env(
+            ciphertext,
+            passphrase.as_ref().map(|p| p.as_str()),
+        )?;
+        cache_vault_passphrase_if_present(vault_path, passphrase.as_ref());
+        record_rollback(vault_path, generation)?;
+        return Ok(unlocked);
+    }
     check_ssh_key_hardening(&fps)?;
     let identities = load_identities_for_vault(&fps)?;
     if identities.is_empty() {
@@ -68,8 +79,6 @@ pub fn load_and_unlock(vault_path: &Path) -> Result<(Vault, DataKey)> {
             &fps,
         ));
     }
-    let requires_extra_factor = ciphertext_requires_extra_factor(&ciphertext);
-    let passphrase = passphrase_for_ciphertext(vault_path, &ciphertext, None)?;
     let unlocked = Vault::unlock_with_passphrase(
         ciphertext,
         &identities,
@@ -102,6 +111,17 @@ pub fn load_and_unlock_metadata(vault_path: &Path) -> Result<(Vault, DataKey)> {
         .iter()
         .map(|r| r.fingerprint.clone())
         .collect();
+    let requires_extra_factor = ciphertext_requires_extra_factor(&ciphertext);
+    let passphrase = passphrase_for_ciphertext(vault_path, &ciphertext, None)?;
+    if recovery_unlock_requested() {
+        let unlocked = unlock_ciphertext_with_recovery_env(
+            ciphertext,
+            passphrase.as_ref().map(|p| p.as_str()),
+        )?;
+        cache_vault_passphrase_if_present(vault_path, passphrase.as_ref());
+        record_rollback(vault_path, generation)?;
+        return Ok(unlocked);
+    }
     check_ssh_key_hardening(&fps)?;
     let identities = load_identities_for_vault(&fps)?;
     if identities.is_empty() {
@@ -110,8 +130,6 @@ pub fn load_and_unlock_metadata(vault_path: &Path) -> Result<(Vault, DataKey)> {
             &fps,
         ));
     }
-    let requires_extra_factor = ciphertext_requires_extra_factor(&ciphertext);
-    let passphrase = passphrase_for_ciphertext(vault_path, &ciphertext, None)?;
     let unlocked = Vault::unlock_metadata_with_passphrase(
         ciphertext,
         &identities,
@@ -159,28 +177,32 @@ pub fn load_and_unlock_profile_with_passphrase(
         .iter()
         .map(|r| r.fingerprint.clone())
         .collect();
-    check_ssh_key_hardening(&fps)?;
-    let identities = load_identities_for_vault(&fps)?;
-    if identities.is_empty() {
-        return Err(error_no_identity_unlocked_detailed(
-            &discover_private_key_paths(),
-            &fps,
-        ));
-    }
     let requires_extra_factor = ciphertext_requires_extra_factor(&ciphertext);
     let passphrase = passphrase_for_ciphertext(vault_path, &ciphertext, None)?;
-    let (mut vault, data_key) = Vault::unlock_metadata_with_passphrase(
-        ciphertext,
-        &identities,
-        passphrase.as_ref().map(|p| p.as_str()),
-    )
-    .map_err(|err| {
-        if requires_extra_factor {
-            err
-        } else {
-            error_no_identity_unlocked_detailed(&discover_private_key_paths(), &fps)
+    let (mut vault, data_key) = if recovery_unlock_requested() {
+        unlock_ciphertext_with_recovery_env(ciphertext, passphrase.as_ref().map(|p| p.as_str()))?
+    } else {
+        check_ssh_key_hardening(&fps)?;
+        let identities = load_identities_for_vault(&fps)?;
+        if identities.is_empty() {
+            return Err(error_no_identity_unlocked_detailed(
+                &discover_private_key_paths(),
+                &fps,
+            ));
         }
-    })?;
+        Vault::unlock_metadata_with_passphrase(
+            ciphertext,
+            &identities,
+            passphrase.as_ref().map(|p| p.as_str()),
+        )
+        .map_err(|err| {
+            if requires_extra_factor {
+                err
+            } else {
+                error_no_identity_unlocked_detailed(&discover_private_key_paths(), &fps)
+            }
+        })?
+    };
     cache_vault_passphrase_if_present(vault_path, passphrase.as_ref());
     if vault.profiles.get(profile).is_none() && vault.profiles.profile_entries.contains_key(profile)
     {
@@ -241,6 +263,14 @@ pub fn unlock_ciphertext_with_passphrase(
     recipient_fingerprints: &HashSet<String>,
     explicit_passphrase: Option<&str>,
 ) -> Result<(Vault, DataKey)> {
+    let requires_extra_factor = ciphertext_requires_extra_factor(&ciphertext);
+    let passphrase = passphrase_for_ciphertext(Path::new(""), &ciphertext, explicit_passphrase)?;
+    if recovery_unlock_requested() {
+        return unlock_ciphertext_with_recovery_env(
+            ciphertext,
+            passphrase.as_ref().map(|p| p.as_str()),
+        );
+    }
     check_ssh_key_hardening(recipient_fingerprints)?;
     let identities = load_identities_for_vault(recipient_fingerprints)?;
     if identities.is_empty() {
@@ -249,8 +279,6 @@ pub fn unlock_ciphertext_with_passphrase(
             recipient_fingerprints,
         ));
     }
-    let requires_extra_factor = ciphertext_requires_extra_factor(&ciphertext);
-    let passphrase = passphrase_for_ciphertext(Path::new(""), &ciphertext, explicit_passphrase)?;
     Vault::unlock_with_passphrase(
         ciphertext,
         &identities,
@@ -279,6 +307,56 @@ pub fn save_vault(ctx: &Context, vault: &mut Vault, data_key: &DataKey) -> Resul
     vault.save(&ctx.vault_path, data_key)?;
     record_rollback(&ctx.vault_path, generation)?;
     Ok(())
+}
+
+fn recovery_unlock_requested() -> bool {
+    std::env::var_os("SSHENV_RECOVERY_SHARE_FILES").is_some_and(|value| !value.is_empty())
+}
+
+#[cfg(feature = "shamir-sharing")]
+fn unlock_ciphertext_with_recovery_env(
+    ciphertext: CiphertextVault,
+    passphrase: Option<&str>,
+) -> Result<(Vault, DataKey)> {
+    let Some(share_files_value) = std::env::var_os("SSHENV_RECOVERY_SHARE_FILES") else {
+        anyhow::bail!("SSHENV_RECOVERY_SHARE_FILES is required for recovery-share unlock");
+    };
+    let share_files = std::env::split_paths(&share_files_value)
+        .filter(|path| !path.as_os_str().is_empty())
+        .collect::<Vec<_>>();
+    if share_files.is_empty() {
+        anyhow::bail!("SSHENV_RECOVERY_SHARE_FILES did not contain any share file paths");
+    }
+    let metadata_path = std::env::var_os("SSHENV_RECOVERY_METADATA")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
+    let (envelopes, metadata_verified) =
+        security::load_recovery_share_envelopes(&share_files, metadata_path.as_ref())?;
+    let recovered = Zeroizing::new(sshenv_vault::recovery::combine_recovery_share_envelopes(
+        &envelopes,
+    )?);
+    if recovered.len() != sshenv_vault::models::DATA_KEY_LEN {
+        anyhow::bail!(
+            "recovered secret is {} bytes, expected vault data key length {}",
+            recovered.len(),
+            sshenv_vault::models::DATA_KEY_LEN
+        );
+    }
+    let mut raw_key = [0_u8; sshenv_vault::models::DATA_KEY_LEN];
+    raw_key.copy_from_slice(recovered.as_slice());
+    eprintln!(
+        "unlocked vault with recovery shares; metadata verified: {}",
+        if metadata_verified { "yes" } else { "no" }
+    );
+    Vault::unlock_with_data_key_and_passphrase(ciphertext, Zeroizing::new(raw_key), passphrase)
+}
+
+#[cfg(not(feature = "shamir-sharing"))]
+fn unlock_ciphertext_with_recovery_env(
+    _ciphertext: CiphertextVault,
+    _passphrase: Option<&str>,
+) -> Result<(Vault, DataKey)> {
+    anyhow::bail!("this sshenv build was compiled without shamir-sharing support")
 }
 
 #[cfg(feature = "ssh-hardening")]
@@ -490,7 +568,9 @@ fn ciphertext_requires_extra_factor(ciphertext: &CiphertextVault) -> bool {
         .any(|factor| {
             matches!(
                 factor.kind,
-                UnlockFactorKindV2::Passphrase | UnlockFactorKindV2::DeviceSeal
+                UnlockFactorKindV2::Passphrase
+                    | UnlockFactorKindV2::DeviceSeal
+                    | UnlockFactorKindV2::RemoteKms
             )
         })
 }
