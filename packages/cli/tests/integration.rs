@@ -316,12 +316,30 @@ fn binary_recovery_split_validate_and_combine_roundtrip() {
     let dir = tempfile::tempdir().unwrap();
     let share_a = dir.path().join("share-a.txt");
     let share_b = dir.path().join("share-b.txt");
+    let metadata_path = dir.path().join("recovery.json");
     std::fs::write(&share_a, shares[0].as_str().unwrap()).unwrap();
     std::fs::write(&share_b, shares[1].as_str().unwrap()).unwrap();
+    std::fs::write(
+        &metadata_path,
+        r#"{
+  "id": "ops-break-glass",
+  "label": "ops break glass",
+  "threshold": 2,
+  "shares": [
+    { "id": "share-a", "label": "A", "holder": "alice", "public_identifier": "alice-pub" },
+    { "id": "share-b", "label": "B", "holder": "bob", "public_identifier": "bob-pub" },
+    { "id": "share-c", "label": "C", "holder": "carol", "public_identifier": "carol-pub" }
+  ],
+  "shamir": { "threshold": 2, "share_count": 3 }
+}"#,
+    )
+    .unwrap();
 
     let validate_out = Command::new(&bin)
         .args(["security", "recovery", "validate-share"])
         .arg(&share_a)
+        .arg("--metadata")
+        .arg(&metadata_path)
         .arg("--json")
         .output()
         .expect("run validate-share");
@@ -332,6 +350,7 @@ fn binary_recovery_split_validate_and_combine_roundtrip() {
     );
     let validate_json: serde_json::Value = serde_json::from_slice(&validate_out.stdout).unwrap();
     assert_eq!(validate_json["valid"], true);
+    assert_eq!(validate_json["metadata_verified"], true);
     assert_eq!(validate_json["set_id"], "ops-break-glass");
 
     let combine_out = Command::new(&bin)

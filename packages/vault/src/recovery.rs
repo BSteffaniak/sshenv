@@ -60,6 +60,23 @@ pub enum RecoveryShareEnvelopeError {
 
 #[cfg(feature = "shamir-sharing")]
 #[derive(Debug, Error, PartialEq, Eq)]
+pub enum RecoveryShareEnvelopeMetadataError {
+    #[error("recovery share metadata is invalid: {0}")]
+    Metadata(RecoveryShareMetadataError),
+    #[error(
+        "recovery share envelope set id '{envelope}' does not match metadata set id '{metadata}'"
+    )]
+    SetIdMismatch { envelope: String, metadata: String },
+    #[error(
+        "recovery share envelope threshold {envelope} does not match metadata threshold {metadata}"
+    )]
+    ThresholdMismatch { envelope: u8, metadata: u8 },
+    #[error("recovery share envelope index {index} exceeds metadata share count {share_count}")]
+    ShareIndexOutOfRange { index: u8, share_count: usize },
+}
+
+#[cfg(feature = "shamir-sharing")]
+#[derive(Debug, Error, PartialEq, Eq)]
 pub enum ShamirError {
     #[error("Shamir threshold must be at least 1")]
     InvalidThreshold,
@@ -193,6 +210,34 @@ pub fn split_secret_shamir(
     }
 
     Ok(shares)
+}
+
+#[cfg(feature = "shamir-sharing")]
+pub fn validate_recovery_share_envelope_metadata(
+    set: &RecoveryShareSetMetadataV2,
+    envelope: &RecoveryShareEnvelope,
+) -> Result<(), RecoveryShareEnvelopeMetadataError> {
+    validate_recovery_share_set_metadata(set)
+        .map_err(RecoveryShareEnvelopeMetadataError::Metadata)?;
+    if envelope.set_id != set.id {
+        return Err(RecoveryShareEnvelopeMetadataError::SetIdMismatch {
+            envelope: envelope.set_id.clone(),
+            metadata: set.id.clone(),
+        });
+    }
+    if envelope.threshold != set.threshold {
+        return Err(RecoveryShareEnvelopeMetadataError::ThresholdMismatch {
+            envelope: envelope.threshold,
+            metadata: set.threshold,
+        });
+    }
+    if usize::from(envelope.share.index) > set.shares.len() {
+        return Err(RecoveryShareEnvelopeMetadataError::ShareIndexOutOfRange {
+            index: envelope.share.index,
+            share_count: set.shares.len(),
+        });
+    }
+    Ok(())
 }
 
 #[cfg(feature = "shamir-sharing")]
@@ -507,6 +552,39 @@ mod tests {
                 .iter()
                 .any(|warning| warning.contains("emergency"))
         );
+    }
+
+    #[cfg(feature = "shamir-sharing")]
+    #[test]
+    fn recovery_share_envelope_validates_against_metadata() {
+        let share = super::ShamirShare {
+            index: 2,
+            value: vec![1, 2, 3],
+        };
+        let envelope = super::RecoveryShareEnvelope {
+            set_id: "team-recovery".to_string(),
+            threshold: 2,
+            share,
+        };
+        super::validate_recovery_share_envelope_metadata(&sample_set(), &envelope).unwrap();
+    }
+
+    #[cfg(feature = "shamir-sharing")]
+    #[test]
+    fn recovery_share_envelope_rejects_metadata_mismatch() {
+        let share = super::ShamirShare {
+            index: 4,
+            value: vec![1, 2, 3],
+        };
+        let envelope = super::RecoveryShareEnvelope {
+            set_id: "team-recovery".to_string(),
+            threshold: 2,
+            share,
+        };
+        assert!(matches!(
+            super::validate_recovery_share_envelope_metadata(&sample_set(), &envelope),
+            Err(super::RecoveryShareEnvelopeMetadataError::ShareIndexOutOfRange { .. })
+        ));
     }
 
     #[cfg(feature = "shamir-sharing")]

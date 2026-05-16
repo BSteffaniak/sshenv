@@ -423,6 +423,9 @@ pub struct RecoveryRemoveArgs {
 pub struct RecoveryShareFileArgs {
     /// File containing one encoded recovery-share envelope.
     pub share_file: PathBuf,
+    /// Optional recovery metadata JSON to verify set id, threshold, and share index.
+    #[arg(long)]
+    pub metadata: Option<PathBuf>,
     /// Print machine-readable JSON.
     #[arg(long)]
     pub json: bool,

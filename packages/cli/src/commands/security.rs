@@ -1007,11 +1007,19 @@ pub fn recovery_validate_share(args: RecoveryShareFileArgs) -> Result<()> {
         )
     })?;
     let envelope = sshenv_vault::recovery::decode_recovery_share_envelope(encoded.trim())?;
+    let metadata_verified = if let Some(metadata_path) = args.metadata.as_ref() {
+        let metadata = load_recovery_share_metadata(metadata_path)?;
+        sshenv_vault::recovery::validate_recovery_share_envelope_metadata(&metadata, &envelope)?;
+        true
+    } else {
+        false
+    };
     if args.json {
         println!(
             "{}",
             serde_json::json!({
                 "valid": true,
+                "metadata_verified": metadata_verified,
                 "set_id": envelope.set_id,
                 "threshold": envelope.threshold,
                 "share_index": envelope.share.index,
@@ -1020,6 +1028,7 @@ pub fn recovery_validate_share(args: RecoveryShareFileArgs) -> Result<()> {
         );
     } else {
         println!("recovery share envelope: valid");
+        println!("metadata verified: {}", yes_no(metadata_verified));
         println!("set id: {}", envelope.set_id);
         println!("threshold: {}", envelope.threshold);
         println!("share index: {}", envelope.share.index);
