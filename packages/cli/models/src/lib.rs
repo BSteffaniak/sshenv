@@ -147,6 +147,8 @@ pub enum ProfilePolicyCommand {
     ClearRequirements(ProfilePolicyRequirementArgs),
     /// Apply a preset as concrete profile-specific enforcement.
     Apply(ProfilePolicyApplyArgs),
+    /// Preview applying a preset to all profiles.
+    ApplyAll(ProfilePolicyApplyAllArgs),
     /// Repair/reconcile a profile's policy metadata with concrete enforcement.
     Repair(ProfilePolicyRepairArgs),
     /// Set advisory policy metadata for a profile.
@@ -230,6 +232,19 @@ pub struct ProfilePolicyApplyArgs {
     /// Fail before mutation when planned repair needs recipient-key input.
     #[arg(long)]
     pub strict_inputs: bool,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct ProfilePolicyApplyAllArgs {
+    /// Preset to apply as concrete profile-specific enforcement.
+    #[arg(long, value_enum)]
+    pub preset: SecurityPresetArg,
+    /// Show the bulk apply plan without changing the vault. Currently required.
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Print the bulk apply plan as machine-readable JSON.
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Debug, clap::Args)]

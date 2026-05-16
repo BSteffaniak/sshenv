@@ -78,6 +78,9 @@ pub fn run(cli: Cli) -> Result<()> {
                 ProfilePolicyCommand::Apply(args) => {
                     commands::security::profile_policy_apply(&ctx, args)
                 }
+                ProfilePolicyCommand::ApplyAll(args) => {
+                    commands::security::profile_policy_apply_all(&ctx, args)
+                }
                 ProfilePolicyCommand::Repair(args) => {
                     commands::security::profile_policy_repair(&ctx, args)
                 }

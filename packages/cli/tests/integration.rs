@@ -677,6 +677,71 @@ fn binary_profile_policy_apply_migrates_v1_to_enforced_v2() {
     let home = dir.path().join("home");
     let vault_path = dir.path().join("vault");
     init_vault_with_profile(&bin, &home, &vault_path, "myprofile");
+    let set_second_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("set")
+        .arg("otherprofile")
+        .arg("DUMMY")
+        .arg("--value")
+        .arg("value2")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("set second profile");
+    assert!(set_second_out.status.success());
+
+    let apply_all_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("security")
+        .arg("profile-policy")
+        .arg("apply-all")
+        .arg("--preset")
+        .arg("portable")
+        .arg("--dry-run")
+        .arg("--json")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run profile-policy apply-all dry-run json");
+    assert!(apply_all_out.status.success());
+    let apply_all_json = String::from_utf8_lossy(&apply_all_out.stdout);
+    assert!(
+        apply_all_json.contains("\"profiles_total\": 2"),
+        "{apply_all_json}"
+    );
+    assert!(
+        apply_all_json.contains("\"profile\": \"myprofile\"")
+            && apply_all_json.contains("\"profile\": \"otherprofile\""),
+        "{apply_all_json}"
+    );
+    assert!(
+        apply_all_json.contains("\"requires_passphrase_count\": 2"),
+        "{apply_all_json}"
+    );
+    assert!(
+        apply_all_json.contains("\"requires_recipient_key_count\": 2"),
+        "{apply_all_json}"
+    );
+
+    let apply_all_status_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("security")
+        .arg("profile-policy")
+        .arg("status")
+        .arg("otherprofile")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run status after apply-all dry-run");
+    assert!(apply_all_status_out.status.success());
+    let apply_all_status_stdout = String::from_utf8_lossy(&apply_all_status_out.stdout);
+    assert!(
+        apply_all_status_stdout.contains("policy metadata: absent"),
+        "{apply_all_status_stdout}"
+    );
 
     let dry_run_out = Command::new(&bin)
         .arg("--vault")
