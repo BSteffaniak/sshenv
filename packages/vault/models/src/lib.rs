@@ -441,10 +441,17 @@ impl ProfilePolicyRepairAction {
 
 /// Repair plan for a profile policy.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "repair-plan JSON intentionally exposes independent boolean facts"
+)]
 pub struct ProfilePolicyRepairPlan {
     pub profile: String,
     pub repairable: bool,
     pub already_consistent: bool,
+    pub requires_passphrase: bool,
+    pub requires_device_seal: bool,
+    pub requires_recipient_key: bool,
     pub actions: Vec<ProfilePolicyRepairAction>,
     pub action_labels: Vec<String>,
     pub unrepairable: Vec<String>,

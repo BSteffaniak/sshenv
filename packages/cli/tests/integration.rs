@@ -906,6 +906,10 @@ fn binary_profile_policy_repair_enforces_advisory_portable() {
         check_json.contains("\"bound profile payload to passphrase\""),
         "{check_json}"
     );
+    assert!(
+        check_json.contains("\"requires_passphrase\": true"),
+        "{check_json}"
+    );
 
     let dry_run_out = Command::new(&bin)
         .arg("--vault")
@@ -927,6 +931,10 @@ fn binary_profile_policy_repair_enforces_advisory_portable() {
     );
     assert!(
         dry_run_stdout.contains("bound profile payload to passphrase"),
+        "{dry_run_stdout}"
+    );
+    assert!(
+        dry_run_stdout.contains("requires passphrase: yes"),
         "{dry_run_stdout}"
     );
 
@@ -952,6 +960,28 @@ fn binary_profile_policy_repair_enforces_advisory_portable() {
     assert!(
         dry_run_json.contains("\"bind-passphrase\""),
         "{dry_run_json}"
+    );
+    assert!(
+        dry_run_json.contains("\"requires_passphrase\": true"),
+        "{dry_run_json}"
+    );
+
+    let missing_passphrase_repair_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("security")
+        .arg("profile-policy")
+        .arg("repair")
+        .arg("myprofile")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run profile-policy repair without passphrase");
+    assert!(!missing_passphrase_repair_out.status.success());
+    assert!(
+        String::from_utf8_lossy(&missing_passphrase_repair_out.stderr).contains(
+            "profile policy repair requires --passphrase <value> in non-interactive mode"
+        )
     );
 
     let repair_out = Command::new(&bin)

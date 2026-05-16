@@ -1077,6 +1077,9 @@ impl Vault {
                 ProfilePolicyRepairAction::RotateProfileKey,
             );
         }
+        let requires_passphrase = actions.contains(&ProfilePolicyRepairAction::BindPassphrase);
+        let requires_device_seal = actions.contains(&ProfilePolicyRepairAction::BindDeviceSeal);
+        let requires_recipient_key = actions.contains(&ProfilePolicyRepairAction::MigrateToV2);
         let action_labels = actions
             .iter()
             .map(|action| action.label().to_string())
@@ -1085,6 +1088,9 @@ impl Vault {
             profile: profile.to_string(),
             repairable: unrepairable.is_empty(),
             already_consistent: actions.is_empty() && unrepairable.is_empty(),
+            requires_passphrase,
+            requires_device_seal,
+            requires_recipient_key,
             actions,
             action_labels,
             unrepairable,

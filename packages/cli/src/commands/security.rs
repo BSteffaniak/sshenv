@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::io::IsTerminal;
 use std::path::Path;
 
 #[cfg(feature = "passphrase-factor")]
@@ -242,6 +243,9 @@ struct ProfilePolicyStatusOutput {
     findings: Vec<ProfilePolicyFinding>,
     repair_recommended: bool,
     repairable: bool,
+    requires_passphrase: bool,
+    requires_device_seal: bool,
+    requires_recipient_key: bool,
     repair_actions: Vec<String>,
     unrepairable: Vec<String>,
     repair_hint: Option<String>,
@@ -386,6 +390,9 @@ fn build_profile_policy_status(vault: &Vault, profile: &str) -> Result<ProfilePo
         findings: validation.findings,
         repair_recommended: repair_hint.is_some(),
         repairable,
+        requires_passphrase: repair_plan.requires_passphrase,
+        requires_device_seal: repair_plan.requires_device_seal,
+        requires_recipient_key: repair_plan.requires_recipient_key,
         repair_actions,
         unrepairable: repair_plan.unrepairable,
         repair_hint,
@@ -581,6 +588,18 @@ fn print_profile_policy_repair_plan(output: &ProfilePolicyRepairPlan) {
     println!("profile: {}", output.profile);
     println!("repairable: {}", yes_no(output.repairable));
     println!("already consistent: {}", yes_no(output.already_consistent));
+    println!(
+        "requires passphrase: {}",
+        yes_no(output.requires_passphrase)
+    );
+    println!(
+        "requires device seal: {}",
+        yes_no(output.requires_device_seal)
+    );
+    println!(
+        "requires recipient key: {}",
+        yes_no(output.requires_recipient_key)
+    );
     if output.actions.is_empty() {
         println!("actions: none");
     } else {
@@ -1015,6 +1034,7 @@ pub fn profile_policy_repair(ctx: &CmdContext, args: ProfilePolicyRepairArgs) ->
             plan.unrepairable.join(", ")
         );
     }
+    ensure_repair_inputs_available(&plan, &args)?;
 
     let mut changed =
         prepare_profile_policy_enforcement(&mut vault, &args.profile, &args.recipient_keys)?;
@@ -1079,6 +1099,23 @@ pub fn profile_policy_repair(ctx: &CmdContext, args: ProfilePolicyRepairArgs) ->
         eprintln!(
             "Profile policy for {} was already consistent.",
             args.profile
+        );
+    }
+    Ok(())
+}
+
+fn ensure_repair_inputs_available(
+    plan: &ProfilePolicyRepairPlan,
+    args: &ProfilePolicyRepairArgs,
+) -> Result<()> {
+    if plan.requires_passphrase && args.passphrase.is_none() && !std::io::stdin().is_terminal() {
+        anyhow::bail!(
+            "profile policy repair requires --passphrase <value> in non-interactive mode"
+        );
+    }
+    if plan.requires_recipient_key && args.recipient_keys.is_empty() {
+        eprintln!(
+            "note: repair may need --recipient-key <path-or-public-key-line> to migrate this v1 vault"
         );
     }
     Ok(())
