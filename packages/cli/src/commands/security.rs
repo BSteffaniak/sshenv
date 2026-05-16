@@ -2746,10 +2746,11 @@ pub fn profile_policy_apply_all(ctx: &CmdContext, args: ProfilePolicyApplyAllArg
         ProfilePolicyPreset::Standard
             | ProfilePolicyPreset::Portable
             | ProfilePolicyPreset::Recommended
+            | ProfilePolicyPreset::Team
             | ProfilePolicyPreset::Paranoid
     ) {
         anyhow::bail!(
-            "profile-policy apply-all without --dry-run currently supports --preset standard, portable, recommended, or paranoid only"
+            "profile-policy apply-all without --dry-run currently supports --preset standard, portable, recommended, team, or paranoid only"
         );
     }
     ensure_profile_policy_apply_all_preset_supported(preset)?;
