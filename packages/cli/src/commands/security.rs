@@ -3535,10 +3535,6 @@ fn profile_policy_findings(vault: &Vault, preset: ProfilePolicyPreset) -> Vec<St
             {
                 findings.push("no recovery-share metadata configured".to_string());
             }
-            findings.push(
-                "team preset remains advisory until recovery-share unlock is implemented"
-                    .to_string(),
-            );
         }
         ProfilePolicyPreset::Recommended => {
             if !has_v2 {
@@ -4525,7 +4521,7 @@ fn apply_team_preset(ctx: &CmdContext) -> Result<()> {
     }
     save_all_profile_policy_vaults(ctx, &mut vault, &data_key)?;
     eprintln!(
-        "Applied Team profile-policy metadata to {} profile(s). Team unlock enforcement remains recovery-plan based.",
+        "Applied Team profile-policy metadata to {} profile(s). Break-glass recovery is available through `sshenv security recovery` commands.",
         profiles.len()
     );
     Ok(())
