@@ -4099,11 +4099,7 @@ pub fn harden(ctx: &CmdContext, args: HardenArgs) -> Result<()> {
 
 pub fn preset(ctx: &CmdContext, args: SecurityPresetArgs) -> Result<()> {
     match args.preset {
-        SecurityPresetArg::Team => {
-            anyhow::bail!(
-                "team preset is not enforceable yet; use `sshenv security profile-policy set <profile> --preset team` for advisory metadata"
-            )
-        }
+        SecurityPresetArg::Team => apply_team_preset(ctx),
         SecurityPresetArg::Standard => {
             eprintln!(
                 "Standard preset leaves the vault on SSH-recipient unlock. No changes applied."
@@ -4114,6 +4110,38 @@ pub fn preset(ctx: &CmdContext, args: SecurityPresetArgs) -> Result<()> {
         SecurityPresetArg::Portable => apply_preset(ctx, args, true, false),
         SecurityPresetArg::Paranoid => apply_preset(ctx, args, true, true),
     }
+}
+
+fn apply_team_preset(ctx: &CmdContext) -> Result<()> {
+    let (mut vault, data_key) = crate::commands::load_and_unlock(&ctx.vault_path)?;
+    if vault.header.version != VERSION_V2 {
+        anyhow::bail!(
+            "team preset requires recovery-share metadata in v2; run `sshenv migrate-vault --to v2` first"
+        );
+    }
+    if vault
+        .policy_metadata
+        .as_ref()
+        .is_none_or(|metadata| metadata.recovery_share_sets.is_empty())
+    {
+        anyhow::bail!(
+            "team preset requires at least one recovery-share metadata set; use `sshenv security recovery import <metadata.json>` first"
+        );
+    }
+    let profiles = profile_policy_names(&vault);
+    if profiles.is_empty() {
+        anyhow::bail!("team preset found no profiles to update");
+    }
+    create_bulk_profile_policy_backup_if_requested(ctx, true)?;
+    for profile in &profiles {
+        apply_profile_policy_preset_metadata(&mut vault, profile, ProfilePolicyPreset::Team)?;
+    }
+    save_all_profile_policy_vaults(ctx, &mut vault, &data_key)?;
+    eprintln!(
+        "Applied Team profile-policy metadata to {} profile(s). Team unlock enforcement remains recovery-plan based.",
+        profiles.len()
+    );
+    Ok(())
 }
 
 const fn profile_policy_preset(preset: SecurityPresetArg) -> ProfilePolicyPreset {

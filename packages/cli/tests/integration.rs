@@ -550,6 +550,20 @@ fn binary_recovery_metadata_import_list_remove_roundtrip() {
         "{team_status_json}"
     );
 
+    let global_team_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .args(["security", "preset", "team"])
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run security preset team");
+    assert!(
+        global_team_out.status.success(),
+        "security preset team failed: {}",
+        String::from_utf8_lossy(&global_team_out.stderr)
+    );
+
     let remove_out = Command::new(&bin)
         .arg("--vault")
         .arg(&vault_path)
