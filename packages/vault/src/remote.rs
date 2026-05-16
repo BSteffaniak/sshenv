@@ -19,6 +19,8 @@ pub struct RemoteFactorResponse {
 pub enum RemoteFactorError {
     #[error("remote factor backend is unavailable: {0}")]
     Unavailable(String),
+    #[error("remote factor request is invalid: {0}")]
+    InvalidRequest(String),
     #[error("remote factor request was denied: {0}")]
     Denied(String),
     #[error("remote factor response was invalid: {0}")]
@@ -41,6 +43,50 @@ pub trait RemoteFactorBackend {
         request: &RemoteFactorRequest,
         wrapped_key: &[u8],
     ) -> Result<Vec<u8>, RemoteFactorError>;
+}
+
+pub fn validate_remote_factor_request(
+    metadata: &RemoteFactorMetadataV2,
+    request: &RemoteFactorRequest,
+) -> Result<(), RemoteFactorError> {
+    if request.factor_id != metadata.id {
+        return Err(RemoteFactorError::InvalidRequest(format!(
+            "request factor id '{}' does not match metadata id '{}'",
+            request.factor_id, metadata.id
+        )));
+    }
+    require_context(&request.context, "vault-id")?;
+    require_context(&request.context, "request-id")?;
+    require_context(&request.context, "generation")?;
+    require_context(&request.context, "expires-unix")?;
+
+    match metadata.backend {
+        RemoteFactorBackendKindV2::SelfHosted => {
+            require_context(&request.context, "client-id")?;
+        }
+        RemoteFactorBackendKindV2::CloudKms => {
+            require_context(&request.context, "encryption-context")?;
+        }
+        RemoteFactorBackendKindV2::OidcApproval => {
+            require_context(&request.context, "subject")?;
+            require_context(&request.context, "audience")?;
+        }
+    }
+
+    Ok(())
+}
+
+fn require_context(context: &BTreeMap<String, String>, key: &str) -> Result<(), RemoteFactorError> {
+    if context
+        .get(key)
+        .is_some_and(|value| !value.trim().is_empty())
+    {
+        Ok(())
+    } else {
+        Err(RemoteFactorError::InvalidRequest(format!(
+            "missing request context `{key}`"
+        )))
+    }
 }
 
 pub fn validate_remote_factor_metadata(metadata: &RemoteFactorMetadataV2) -> Result<(), String> {
@@ -70,7 +116,10 @@ mod tests {
 
     use sshenv_vault_models::{RemoteFactorBackendKindV2, RemoteFactorMetadataV2};
 
-    use super::validate_remote_factor_metadata;
+    use super::{
+        RemoteFactorError, RemoteFactorRequest, validate_remote_factor_metadata,
+        validate_remote_factor_request,
+    };
 
     #[test]
     fn validates_self_hosted_url_param() {
@@ -83,6 +132,50 @@ mod tests {
             params,
         };
         validate_remote_factor_metadata(&metadata).unwrap();
+    }
+
+    #[test]
+    fn validates_oidc_request_context() {
+        let mut params = BTreeMap::new();
+        params.insert("url".to_string(), "https://approval.example".to_string());
+        let metadata = RemoteFactorMetadataV2 {
+            id: "oidc".to_string(),
+            backend: RemoteFactorBackendKindV2::OidcApproval,
+            label: None,
+            params,
+        };
+        let request = RemoteFactorRequest {
+            factor_id: "oidc".to_string(),
+            context: BTreeMap::from([
+                ("vault-id".to_string(), "vault".to_string()),
+                ("request-id".to_string(), "req".to_string()),
+                ("generation".to_string(), "7".to_string()),
+                ("expires-unix".to_string(), "123".to_string()),
+                ("subject".to_string(), "user@example".to_string()),
+                ("audience".to_string(), "sshenv".to_string()),
+            ]),
+        };
+        validate_remote_factor_request(&metadata, &request).unwrap();
+    }
+
+    #[test]
+    fn rejects_request_for_wrong_factor() {
+        let mut params = BTreeMap::new();
+        params.insert("key".to_string(), "alias/sshenv".to_string());
+        let metadata = RemoteFactorMetadataV2 {
+            id: "kms".to_string(),
+            backend: RemoteFactorBackendKindV2::CloudKms,
+            label: None,
+            params,
+        };
+        let request = RemoteFactorRequest {
+            factor_id: "other".to_string(),
+            context: BTreeMap::new(),
+        };
+        assert!(matches!(
+            validate_remote_factor_request(&metadata, &request),
+            Err(RemoteFactorError::InvalidRequest(message)) if message.contains("does not match")
+        ));
     }
 
     #[test]

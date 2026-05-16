@@ -25,10 +25,36 @@ use thiserror::Error;
 use zeroize::ZeroizeOnDrop;
 
 #[cfg(feature = "shamir-sharing")]
+const RECOVERY_SHARE_ENVELOPE_PREFIX: &str = "sshenv-shamir-v1";
+
+#[cfg(feature = "shamir-sharing")]
 #[derive(Debug, Clone, PartialEq, Eq, ZeroizeOnDrop)]
 pub struct ShamirShare {
     pub index: u8,
     pub value: Vec<u8>,
+}
+
+#[cfg(feature = "shamir-sharing")]
+#[derive(Debug, Clone, PartialEq, Eq, ZeroizeOnDrop)]
+pub struct RecoveryShareEnvelope {
+    pub set_id: String,
+    pub threshold: u8,
+    pub share: ShamirShare,
+}
+
+#[cfg(feature = "shamir-sharing")]
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum RecoveryShareEnvelopeError {
+    #[error("recovery share envelope has invalid format")]
+    InvalidFormat,
+    #[error("recovery share envelope version is unsupported")]
+    UnsupportedVersion,
+    #[error("recovery share envelope threshold is invalid")]
+    InvalidThreshold,
+    #[error("recovery share envelope share index is invalid")]
+    InvalidShareIndex,
+    #[error("recovery share envelope payload is invalid hex")]
+    InvalidHex,
 }
 
 #[cfg(feature = "shamir-sharing")]
@@ -162,6 +188,81 @@ pub fn split_secret_shamir(
     }
 
     Ok(shares)
+}
+
+#[cfg(feature = "shamir-sharing")]
+pub fn combine_recovery_share_envelopes(
+    envelopes: &[RecoveryShareEnvelope],
+) -> Result<Vec<u8>, ShamirError> {
+    let Some(first) = envelopes.first() else {
+        return Err(ShamirError::NotEnoughShares {
+            threshold: 1,
+            provided: 0,
+        });
+    };
+    let threshold = first.threshold;
+    let shares = envelopes
+        .iter()
+        .filter(|envelope| envelope.set_id == first.set_id && envelope.threshold == threshold)
+        .map(|envelope| envelope.share.clone())
+        .collect::<Vec<_>>();
+    combine_shamir_shares(&shares, threshold)
+}
+
+#[cfg(feature = "shamir-sharing")]
+pub fn encode_recovery_share_envelope(envelope: &RecoveryShareEnvelope) -> String {
+    format!(
+        "{RECOVERY_SHARE_ENVELOPE_PREFIX}:{}:{}:{}:{}",
+        envelope.set_id,
+        envelope.threshold,
+        envelope.share.index,
+        hex::encode(&envelope.share.value)
+    )
+}
+
+#[cfg(feature = "shamir-sharing")]
+pub fn decode_recovery_share_envelope(
+    encoded: &str,
+) -> Result<RecoveryShareEnvelope, RecoveryShareEnvelopeError> {
+    let mut parts = encoded.trim().split(':');
+    if parts.next() != Some(RECOVERY_SHARE_ENVELOPE_PREFIX) {
+        return Err(RecoveryShareEnvelopeError::UnsupportedVersion);
+    }
+    let set_id = parts
+        .next()
+        .filter(|value| !value.is_empty())
+        .ok_or(RecoveryShareEnvelopeError::InvalidFormat)?
+        .to_string();
+    let threshold = parts
+        .next()
+        .ok_or(RecoveryShareEnvelopeError::InvalidFormat)?
+        .parse::<u8>()
+        .map_err(|_| RecoveryShareEnvelopeError::InvalidThreshold)?;
+    if threshold == 0 {
+        return Err(RecoveryShareEnvelopeError::InvalidThreshold);
+    }
+    let index = parts
+        .next()
+        .ok_or(RecoveryShareEnvelopeError::InvalidFormat)?
+        .parse::<u8>()
+        .map_err(|_| RecoveryShareEnvelopeError::InvalidShareIndex)?;
+    if index == 0 {
+        return Err(RecoveryShareEnvelopeError::InvalidShareIndex);
+    }
+    let value = parts
+        .next()
+        .ok_or(RecoveryShareEnvelopeError::InvalidFormat)
+        .and_then(|hex_value| {
+            hex::decode(hex_value).map_err(|_| RecoveryShareEnvelopeError::InvalidHex)
+        })?;
+    if parts.next().is_some() {
+        return Err(RecoveryShareEnvelopeError::InvalidFormat);
+    }
+    Ok(RecoveryShareEnvelope {
+        set_id,
+        threshold,
+        share: ShamirShare { index, value },
+    })
 }
 
 #[cfg(feature = "shamir-sharing")]
@@ -403,6 +504,41 @@ mod tests {
 
         let recovered = super::combine_shamir_shares(&shares[1..4], 3).unwrap();
         assert_eq!(recovered, secret);
+    }
+
+    #[cfg(feature = "shamir-sharing")]
+    #[test]
+    fn recovery_share_envelopes_roundtrip_and_combine() {
+        let secret = b"vault-data-key-material";
+        let shares = super::split_secret_shamir(secret, 2, 3).unwrap();
+        let envelopes = shares
+            .into_iter()
+            .map(|share| super::RecoveryShareEnvelope {
+                set_id: "team-recovery".to_string(),
+                threshold: 2,
+                share,
+            })
+            .collect::<Vec<_>>();
+        let encoded = envelopes
+            .iter()
+            .map(super::encode_recovery_share_envelope)
+            .collect::<Vec<_>>();
+        let decoded = encoded
+            .iter()
+            .map(|value| super::decode_recovery_share_envelope(value).unwrap())
+            .collect::<Vec<_>>();
+
+        let recovered = super::combine_recovery_share_envelopes(&decoded[..2]).unwrap();
+        assert_eq!(recovered, secret);
+    }
+
+    #[cfg(feature = "shamir-sharing")]
+    #[test]
+    fn recovery_share_envelope_rejects_bad_prefix() {
+        assert_eq!(
+            super::decode_recovery_share_envelope("wrong:set:2:1:abcd"),
+            Err(super::RecoveryShareEnvelopeError::UnsupportedVersion)
+        );
     }
 
     #[cfg(feature = "shamir-sharing")]
