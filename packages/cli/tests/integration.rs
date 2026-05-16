@@ -901,6 +901,11 @@ fn binary_profile_policy_repair_enforces_advisory_portable() {
         check_json.contains("\"repairable_profiles\": [\n    \"myprofile\"\n  ]"),
         "{check_json}"
     );
+    assert!(check_json.contains("\"repairable\": true"), "{check_json}");
+    assert!(
+        check_json.contains("\"bound profile payload to passphrase\""),
+        "{check_json}"
+    );
 
     let repair_out = Command::new(&bin)
         .arg("--vault")
@@ -919,6 +924,15 @@ fn binary_profile_policy_repair_enforces_advisory_portable() {
         repair_out.status.success(),
         "profile-policy repair failed: {}",
         String::from_utf8_lossy(&repair_out.stderr)
+    );
+    let repair_stderr = String::from_utf8_lossy(&repair_out.stderr);
+    assert!(
+        repair_stderr.contains("bound profile payload to passphrase"),
+        "{repair_stderr}"
+    );
+    assert!(
+        repair_stderr.contains("rotated profile data key"),
+        "{repair_stderr}"
     );
 
     let status_out = Command::new(&bin)
