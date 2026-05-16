@@ -11,6 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::Context as AnyhowContext;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use ssh_key::{PublicKey, SshSig};
 use sshenv_cli_models::{
     ChangePassphraseArgs, DeviceBackendArg, DevicePlanArgs, DisablePassphraseArgs,
     EnablePassphraseArgs, HardenArgs, HardwareKindArg, HardwarePlanArgs, HardwareStatusArgs,
@@ -239,6 +240,7 @@ struct RollbackCheckpointValidationOutput {
     checkpoint_generation: u64,
     vault_generation: Option<u64>,
     would_reject_current_vault: bool,
+    signature_verified: bool,
     notes: Vec<String>,
 }
 
@@ -391,10 +393,13 @@ pub fn rollback_validate_checkpoint(ctx: &CmdContext, args: RollbackCheckpointAr
     let current_generation = vault_generation(&ctx.vault_path);
     let would_reject_current_vault =
         current_generation.is_some_and(|generation| generation < checkpoint.generation);
-    let mut notes = vec![
-        "checkpoint metadata is non-secret".to_string(),
-        "signature verification is scaffold-only and not enforced yet".to_string(),
-    ];
+    let signature_verified = verify_rollback_checkpoint_signature(&checkpoint)?;
+    let mut notes = vec!["checkpoint metadata is non-secret".to_string()];
+    if signature_verified {
+        notes.push("checkpoint SSH signature verified".to_string());
+    } else {
+        notes.push("unsigned checkpoint accepted; configure signer/signature to authenticate remote checkpoints".to_string());
+    }
     if would_reject_current_vault {
         notes.push("current vault generation is older than checkpoint generation".to_string());
     }
@@ -403,6 +408,7 @@ pub fn rollback_validate_checkpoint(ctx: &CmdContext, args: RollbackCheckpointAr
         checkpoint_generation: checkpoint.generation,
         vault_generation: current_generation,
         would_reject_current_vault,
+        signature_verified,
         notes,
     };
     if args.json {
@@ -420,8 +426,46 @@ pub fn rollback_validate_checkpoint(ctx: &CmdContext, args: RollbackCheckpointAr
             "would reject current vault: {}",
             yes_no(output.would_reject_current_vault)
         );
+        println!("signature verified: {}", yes_no(output.signature_verified));
     }
     Ok(())
+}
+
+const ROLLBACK_CHECKPOINT_SSHSIG_NAMESPACE: &str = "sshenv-rollback-checkpoint-v1";
+
+fn verify_rollback_checkpoint_signature(checkpoint: &RollbackCheckpointDocument) -> Result<bool> {
+    match (&checkpoint.signer, &checkpoint.signature) {
+        (None, None) => Ok(false),
+        (Some(_), None) => {
+            anyhow::bail!("rollback checkpoint signer is set but signature is missing")
+        }
+        (None, Some(_)) => {
+            anyhow::bail!("rollback checkpoint signature is set but signer is missing")
+        }
+        (Some(signer), Some(signature)) => {
+            let public_key = signer
+                .parse::<PublicKey>()
+                .context("failed to parse rollback checkpoint signer public key")?;
+            let signature = signature
+                .parse::<SshSig>()
+                .context("failed to parse rollback checkpoint SSH signature")?;
+            public_key
+                .verify(
+                    ROLLBACK_CHECKPOINT_SSHSIG_NAMESPACE,
+                    rollback_checkpoint_signed_payload(checkpoint).as_bytes(),
+                    &signature,
+                )
+                .context("rollback checkpoint SSH signature verification failed")?;
+            Ok(true)
+        }
+    }
+}
+
+fn rollback_checkpoint_signed_payload(checkpoint: &RollbackCheckpointDocument) -> String {
+    format!(
+        "sshenv rollback checkpoint v1\nbackend:{}\nvault-id:{}\ngeneration:{}\ncreated-unix:{}\n",
+        checkpoint.backend, checkpoint.vault_id, checkpoint.generation, checkpoint.created_unix
+    )
 }
 
 fn vault_generation(vault_path: &Path) -> Option<u64> {
@@ -4533,4 +4577,47 @@ fn print_recommendations(vault_recipients: Option<&HashSet<String>>) {
         );
     }
     println!("- Migrate to the future v2 policy format before enabling multi-factor policies.");
+}
+
+#[cfg(test)]
+mod tests {
+    use ssh_key::{HashAlg, LineEnding, PrivateKey};
+
+    use super::*;
+
+    const TEST_PRIVATE_KEY: &str = r"
+-----BEGIN OPENSSH PRIVATE KEY-----
+b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
+QyNTUxOQAAACCzPq7zfqLffKoBDe/eo04kH2XxtSmk9D7RQyf1xUqrYgAAAJgAIAxdACAM
+XQAAAAtzc2gtZWQyNTUxOQAAACCzPq7zfqLffKoBDe/eo04kH2XxtSmk9D7RQyf1xUqrYg
+AAAEC2BsIi0QwW2uFscKTUUXNHLsYX4FxlaSDSblbAj7WR7bM+rvN+ot98qgEN796jTiQf
+ZfG1KaT0PtFDJ/XFSqtiAAAAEHVzZXJAZXhhbXBsZS5jb20BAgMEBQ==
+-----END OPENSSH PRIVATE KEY-----
+";
+
+    #[test]
+    fn rollback_checkpoint_signature_verifies_and_detects_tampering() {
+        let private_key = TEST_PRIVATE_KEY.parse::<PrivateKey>().unwrap();
+        let mut checkpoint = RollbackCheckpointDocument {
+            backend: "remote-checkpoint".to_string(),
+            vault_id: "vault-1".to_string(),
+            generation: 7,
+            created_unix: 4_102_444_800,
+            signer: Some(private_key.public_key().to_openssh().unwrap()),
+            signature: None,
+        };
+        let signature = private_key
+            .sign(
+                ROLLBACK_CHECKPOINT_SSHSIG_NAMESPACE,
+                HashAlg::default(),
+                rollback_checkpoint_signed_payload(&checkpoint).as_bytes(),
+            )
+            .unwrap();
+        checkpoint.signature = Some(signature.to_pem(LineEnding::LF).unwrap());
+
+        assert!(verify_rollback_checkpoint_signature(&checkpoint).unwrap());
+
+        checkpoint.generation += 1;
+        assert!(verify_rollback_checkpoint_signature(&checkpoint).is_err());
+    }
 }

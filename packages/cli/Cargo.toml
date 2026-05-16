@@ -57,6 +57,7 @@ libc       = { workspace = true }
 rpassword  = { workspace = true }
 serde      = { workspace = true }
 serde_json = { workspace = true }
+ssh-key    = { workspace = true, features = ["ed25519"] }
 tempfile   = { workspace = true }
 toml       = { workspace = true }
 zeroize    = { workspace = true }
