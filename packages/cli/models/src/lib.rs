@@ -136,6 +136,9 @@ pub enum SecurityCommand {
     /// Manage local device-seal authorization.
     #[command(subcommand)]
     Device(DeviceCommand),
+    /// Inspect and plan hardware-backed recipient setup.
+    #[command(subcommand)]
+    Hardware(HardwareCommand),
     /// Plan threshold/break-glass recovery from non-secret metadata.
     #[command(subcommand)]
     Recovery(RecoveryCommand),
@@ -155,6 +158,41 @@ pub enum DeviceCommand {
     Authorize,
     /// Remove the vault-level device-seal factor.
     Remove,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum HardwareCommand {
+    /// Show hardware-recipient feature and plugin discovery status.
+    Status(HardwareStatusArgs),
+    /// Print an actionable setup plan for a hardware recipient family.
+    Plan(HardwarePlanArgs),
+}
+
+#[derive(Debug, clap::Args)]
+pub struct HardwareStatusArgs {
+    /// Print machine-readable JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct HardwarePlanArgs {
+    /// Hardware recipient family to plan for.
+    #[arg(long, value_enum)]
+    pub kind: HardwareKindArg,
+    /// age plugin name, without `age-plugin-` prefix.
+    #[arg(long)]
+    pub plugin: Option<String>,
+    /// Print machine-readable JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum HardwareKindArg {
+    AgePlugin,
+    YubiKeyPiv,
+    FidoSecurityKey,
 }
 
 #[derive(Debug, Subcommand)]
@@ -179,6 +217,8 @@ pub enum RemoteCommand {
     Import(RemoteMetadataArgs),
     /// Remove remote/KMS factor metadata from the current v2 vault.
     Remove(RemoteRemoveArgs),
+    /// Print a metadata template and setup plan for a remote/KMS backend.
+    Plan(RemotePlanArgs),
     /// Validate a remote/KMS factor metadata JSON file.
     Validate(RemoteMetadataArgs),
 }
@@ -203,6 +243,32 @@ pub struct RemoteListArgs {
 pub struct RemoteRemoveArgs {
     /// Remote/KMS factor id to remove.
     pub id: String,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct RemotePlanArgs {
+    /// Remote/KMS backend family to plan for.
+    #[arg(long, value_enum)]
+    pub backend: RemoteBackendArg,
+    /// Stable metadata id to include in the template.
+    #[arg(long, default_value = "remote-default")]
+    pub id: String,
+    /// Service URL for self-hosted or OIDC approval backends.
+    #[arg(long)]
+    pub url: Option<String>,
+    /// Cloud KMS key id/alias/resource name.
+    #[arg(long)]
+    pub key: Option<String>,
+    /// Print machine-readable JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum RemoteBackendArg {
+    SelfHosted,
+    CloudKms,
+    OidcApproval,
 }
 
 #[derive(Debug, clap::Args)]

@@ -18,8 +18,8 @@ pub mod session_registry;
 
 use anyhow::Result;
 use sshenv_cli_models::{
-    Cli, Command, DeviceCommand, ProfilePolicyCommand, RecoveryCommand, RemoteCommand,
-    SecurityCommand, SessionsCommand, ShimsCommand,
+    Cli, Command, DeviceCommand, HardwareCommand, ProfilePolicyCommand, RecoveryCommand,
+    RemoteCommand, SecurityCommand, SessionsCommand, ShimsCommand,
 };
 
 /// Dispatch a parsed [`Cli`] to the appropriate command handler.
@@ -54,6 +54,10 @@ pub fn run(cli: Cli) -> Result<()> {
                 DeviceCommand::Authorize => commands::security::device_authorize(&ctx),
                 DeviceCommand::Remove => commands::security::device_remove(&ctx),
             },
+            SecurityCommand::Hardware(sub) => match sub {
+                HardwareCommand::Status(args) => commands::security::hardware_status(args),
+                HardwareCommand::Plan(args) => commands::security::hardware_plan(args),
+            },
             SecurityCommand::Recovery(sub) => match sub {
                 RecoveryCommand::List(args) => commands::security::recovery_list(&ctx, args),
                 RecoveryCommand::Import(args) => commands::security::recovery_import(&ctx, args),
@@ -65,6 +69,7 @@ pub fn run(cli: Cli) -> Result<()> {
                 RemoteCommand::List(args) => commands::security::remote_list(&ctx, args),
                 RemoteCommand::Import(args) => commands::security::remote_import(&ctx, args),
                 RemoteCommand::Remove(args) => commands::security::remote_remove(&ctx, args),
+                RemoteCommand::Plan(args) => commands::security::remote_plan(args),
                 RemoteCommand::Validate(args) => commands::security::remote_validate(args),
             },
             SecurityCommand::ProfilePolicy(sub) => match sub {

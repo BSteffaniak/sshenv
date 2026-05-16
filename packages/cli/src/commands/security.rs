@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
@@ -13,20 +13,20 @@ use anyhow::Context as AnyhowContext;
 use anyhow::Result;
 use serde::Serialize;
 use sshenv_cli_models::{
-    ChangePassphraseArgs, DisablePassphraseArgs, EnablePassphraseArgs, HardenArgs,
-    ProfilePolicyApplyAllArgs, ProfilePolicyApplyArgs, ProfilePolicyBackupsArgs,
-    ProfilePolicyChangePassphraseArgs, ProfilePolicyCheckArgs, ProfilePolicyDisablePassphraseArgs,
-    ProfilePolicyPruneBackupsArgs, ProfilePolicyRepairAllArgs, ProfilePolicyRepairArgs,
-    ProfilePolicyRequirePassphraseArgs, ProfilePolicyRequirementArgs,
+    ChangePassphraseArgs, DisablePassphraseArgs, EnablePassphraseArgs, HardenArgs, HardwareKindArg,
+    HardwarePlanArgs, HardwareStatusArgs, ProfilePolicyApplyAllArgs, ProfilePolicyApplyArgs,
+    ProfilePolicyBackupsArgs, ProfilePolicyChangePassphraseArgs, ProfilePolicyCheckArgs,
+    ProfilePolicyDisablePassphraseArgs, ProfilePolicyPruneBackupsArgs, ProfilePolicyRepairAllArgs,
+    ProfilePolicyRepairArgs, ProfilePolicyRequirePassphraseArgs, ProfilePolicyRequirementArgs,
     ProfilePolicyRestoreBackupArgs, ProfilePolicyRotateKeyArgs, ProfilePolicySetArgs,
     ProfilePolicyStatusArgs, ProfilePolicyVerifyBackupArgs, RecoveryListArgs, RecoveryMetadataArgs,
-    RecoveryPlanArgs, RecoveryRemoveArgs, RemoteListArgs, RemoteMetadataArgs, RemoteRemoveArgs,
-    SecurityPresetArg, SecurityPresetArgs,
+    RecoveryPlanArgs, RecoveryRemoveArgs, RemoteBackendArg, RemoteListArgs, RemoteMetadataArgs,
+    RemotePlanArgs, RemoteRemoveArgs, SecurityPresetArg, SecurityPresetArgs,
 };
 use sshenv_vault::models::{
     ProfileFactorRequirement, ProfilePolicy, ProfilePolicyFinding, ProfilePolicyFindingCode,
-    ProfilePolicyPreset, ProfilePolicyRepairAction, ProfilePolicyRepairPlan, UnlockFactorKindV2,
-    VERSION, VERSION_V2,
+    ProfilePolicyPreset, ProfilePolicyRepairAction, ProfilePolicyRepairPlan,
+    RemoteFactorBackendKindV2, RemoteFactorMetadataV2, UnlockFactorKindV2, VERSION, VERSION_V2,
 };
 use sshenv_vault::{DataKey, Vault, atomic_write};
 
@@ -176,6 +176,157 @@ pub fn device_remove(ctx: &CmdContext) -> Result<()> {
 #[cfg(not(feature = "device-seal"))]
 pub fn device_remove(_ctx: &CmdContext) -> Result<()> {
     anyhow::bail!("this sshenv build was compiled without device-seal support")
+}
+
+#[derive(Debug, Serialize)]
+struct HardwareStatusOutput {
+    hardware_recipient_feature: bool,
+    age_plugin_recipient_feature: bool,
+    age_plugin_identity_sources: Vec<String>,
+    known_plans: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct HardwarePlanOutput {
+    kind: String,
+    plugin: String,
+    plugin_binary: String,
+    plugin_binary_found: bool,
+    recipient_feature_enabled: bool,
+    age_plugin_feature_enabled: bool,
+    add_recipient_example: String,
+    identity_hint: String,
+    notes: Vec<String>,
+}
+
+pub fn hardware_status(args: HardwareStatusArgs) -> Result<()> {
+    let output = HardwareStatusOutput {
+        hardware_recipient_feature: cfg!(feature = "hardware-recipient"),
+        age_plugin_recipient_feature: cfg!(feature = "age-plugin-recipient"),
+        age_plugin_identity_sources: vec![
+            "$SSHENV_AGE_PLUGIN_IDENTITIES".to_string(),
+            "~/.sshenv/age-plugin-identities".to_string(),
+            "~/.sshenv/age-plugin-identities.d/*".to_string(),
+        ],
+        known_plans: vec![
+            "age-plugin".to_string(),
+            "yubi-key-piv".to_string(),
+            "fido-security-key".to_string(),
+        ],
+    };
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        println!("hardware recipient status");
+        println!("=========================");
+        println!(
+            "hardware-recipient feature: {}",
+            enabled_label(output.hardware_recipient_feature)
+        );
+        println!(
+            "age-plugin-recipient feature: {}",
+            enabled_label(output.age_plugin_recipient_feature)
+        );
+        println!("age-plugin identity sources:");
+        for source in &output.age_plugin_identity_sources {
+            println!("- {source}");
+        }
+    }
+    Ok(())
+}
+
+pub fn hardware_plan(args: HardwarePlanArgs) -> Result<()> {
+    let plugin = hardware_plan_plugin(args.kind, args.plugin.as_deref());
+    let plugin_binary = format!("age-plugin-{plugin}");
+    let plugin_binary_found = command_in_path(&plugin_binary);
+    let add_recipient_example = format!("sshenv add-recipient --hardware --key <age1{plugin}...>");
+    let mut notes = vec![
+        "hardware recipients are added as public age-plugin recipient descriptors".to_string(),
+        "store plugin identities outside the vault and point SSHENV_AGE_PLUGIN_IDENTITIES at them"
+            .to_string(),
+    ];
+    match args.kind {
+        HardwareKindArg::AgePlugin => {
+            notes.push("use the plugin's own tooling to generate an age1... recipient".to_string());
+        }
+        HardwareKindArg::YubiKeyPiv => {
+            notes.push(
+                "recommended plugin family: age-plugin-yubikey-compatible tooling".to_string(),
+            );
+            notes.push(
+                "PIV/slot policy and touch/PIN behavior are managed by the plugin/device tooling"
+                    .to_string(),
+            );
+        }
+        HardwareKindArg::FidoSecurityKey => {
+            notes.push(
+                "use an age plugin that exposes a FIDO/security-key-backed age recipient"
+                    .to_string(),
+            );
+            notes.push(
+                "resident credential, PIN, and user-presence policy are plugin-specific"
+                    .to_string(),
+            );
+        }
+    }
+    if !cfg!(feature = "age-plugin-recipient") {
+        notes.push(
+            "this build needs the age-plugin-recipient feature to wrap to age1... recipients"
+                .to_string(),
+        );
+    }
+    if !plugin_binary_found {
+        notes.push(format!("{plugin_binary} was not found on PATH"));
+    }
+
+    let output = HardwarePlanOutput {
+        kind: format!("{:?}", args.kind),
+        plugin,
+        plugin_binary,
+        plugin_binary_found,
+        recipient_feature_enabled: cfg!(feature = "hardware-recipient"),
+        age_plugin_feature_enabled: cfg!(feature = "age-plugin-recipient"),
+        add_recipient_example,
+        identity_hint: "put age-plugin identity lines in ~/.sshenv/age-plugin-identities or set SSHENV_AGE_PLUGIN_IDENTITIES".to_string(),
+        notes,
+    };
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        println!("hardware recipient plan");
+        println!("=======================");
+        println!("kind: {}", output.kind);
+        println!("plugin: {}", output.plugin);
+        println!("plugin binary: {}", output.plugin_binary);
+        println!(
+            "plugin binary found: {}",
+            yes_no(output.plugin_binary_found)
+        );
+        println!("add recipient: {}", output.add_recipient_example);
+        println!("identity: {}", output.identity_hint);
+        println!("notes:");
+        for note in &output.notes {
+            println!("- {note}");
+        }
+    }
+    Ok(())
+}
+
+fn hardware_plan_plugin(kind: HardwareKindArg, explicit: Option<&str>) -> String {
+    explicit.map_or_else(
+        || match kind {
+            HardwareKindArg::AgePlugin => "example".to_string(),
+            HardwareKindArg::YubiKeyPiv => "yubikey".to_string(),
+            HardwareKindArg::FidoSecurityKey => "fido2".to_string(),
+        },
+        ToString::to_string,
+    )
+}
+
+fn command_in_path(command: &str) -> bool {
+    std::env::var_os("PATH")
+        .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(command).is_file()))
 }
 
 #[cfg(feature = "recovery-shares")]
@@ -460,6 +611,113 @@ pub fn remote_remove(ctx: &CmdContext, args: RemoteRemoveArgs) -> Result<()> {
 #[cfg(not(feature = "remote-factor"))]
 pub fn remote_remove(_ctx: &CmdContext, _args: RemoteRemoveArgs) -> Result<()> {
     anyhow::bail!("this sshenv build was compiled without remote-factor support")
+}
+
+#[derive(Debug, Serialize)]
+struct RemotePlanOutput {
+    remote_factor_feature_enabled: bool,
+    kms_factor_feature_enabled: bool,
+    metadata: RemoteFactorMetadataV2,
+    import_example: String,
+    notes: Vec<String>,
+}
+
+pub fn remote_plan(args: RemotePlanArgs) -> Result<()> {
+    let backend = remote_backend_kind(args.backend);
+    let mut params = BTreeMap::new();
+    match args.backend {
+        RemoteBackendArg::SelfHosted => {
+            params.insert(
+                "url".to_string(),
+                args.url
+                    .unwrap_or_else(|| "https://unlock.example.internal".to_string()),
+            );
+        }
+        RemoteBackendArg::CloudKms => {
+            params.insert(
+                "key".to_string(),
+                args.key
+                    .unwrap_or_else(|| "alias/sshenv-vault-unlock".to_string()),
+            );
+        }
+        RemoteBackendArg::OidcApproval => {
+            params.insert(
+                "url".to_string(),
+                args.url
+                    .unwrap_or_else(|| "https://approvals.example.internal".to_string()),
+            );
+        }
+    }
+    let metadata = RemoteFactorMetadataV2 {
+        id: args.id,
+        backend,
+        label: None,
+        params,
+    };
+    let notes = remote_plan_notes(args.backend);
+    let output = RemotePlanOutput {
+        remote_factor_feature_enabled: cfg!(feature = "remote-factor"),
+        kms_factor_feature_enabled: cfg!(feature = "kms-factor"),
+        import_example: "sshenv security remote import <metadata.json>".to_string(),
+        metadata,
+        notes,
+    };
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        println!("remote/KMS factor plan");
+        println!("======================");
+        println!(
+            "remote-factor feature: {}",
+            enabled_label(output.remote_factor_feature_enabled)
+        );
+        println!(
+            "kms-factor feature: {}",
+            enabled_label(output.kms_factor_feature_enabled)
+        );
+        println!("metadata template:");
+        println!("{}", serde_json::to_string_pretty(&output.metadata)?);
+        println!("import: {}", output.import_example);
+        println!("notes:");
+        for note in &output.notes {
+            println!("- {note}");
+        }
+    }
+    Ok(())
+}
+
+const fn remote_backend_kind(backend: RemoteBackendArg) -> RemoteFactorBackendKindV2 {
+    match backend {
+        RemoteBackendArg::SelfHosted => RemoteFactorBackendKindV2::SelfHosted,
+        RemoteBackendArg::CloudKms => RemoteFactorBackendKindV2::CloudKms,
+        RemoteBackendArg::OidcApproval => RemoteFactorBackendKindV2::OidcApproval,
+    }
+}
+
+fn remote_plan_notes(backend: RemoteBackendArg) -> Vec<String> {
+    let mut notes = vec![
+        "remote/KMS metadata is non-secret and does not enable unlock by itself".to_string(),
+        "backend wrapping/unwrapping must provide audit logging and replay protection".to_string(),
+    ];
+    match backend {
+        RemoteBackendArg::SelfHosted => {
+            notes.push(
+                "self-hosted service should authenticate clients and enforce approval/TTL policy"
+                    .to_string(),
+            );
+        }
+        RemoteBackendArg::CloudKms => {
+            notes.push(
+                "cloud KMS deployments should bind requests to vault identity and operator IAM"
+                    .to_string(),
+            );
+        }
+        RemoteBackendArg::OidcApproval => {
+            notes.push("OIDC approval flows should bind approval subject, device, vault generation, and expiry".to_string());
+        }
+    }
+    notes
 }
 
 #[cfg(feature = "remote-factor")]
