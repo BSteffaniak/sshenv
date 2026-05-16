@@ -1058,6 +1058,7 @@ pub fn profile_policy_apply(ctx: &CmdContext, args: ProfilePolicyApplyArgs) -> R
         args.passphrase.as_ref(),
         &args.recipient_keys,
         "profile policy apply",
+        args.strict_inputs,
     )?;
     apply_profile_policy_preset_metadata(&mut vault, &args.profile, preset)?;
     let (plan_changed, applied_actions) = apply_profile_policy_plan_actions(
@@ -1142,6 +1143,7 @@ fn ensure_repair_inputs_available(
         args.passphrase.as_ref(),
         &args.recipient_keys,
         "profile policy repair",
+        false,
     )
 }
 
@@ -1150,11 +1152,17 @@ fn ensure_profile_policy_plan_inputs_available(
     passphrase: Option<&String>,
     recipient_keys: &[String],
     context: &str,
+    strict_inputs: bool,
 ) -> Result<()> {
     if plan.requires_passphrase && passphrase.is_none() && !std::io::stdin().is_terminal() {
         anyhow::bail!("{context} requires --passphrase <value> in non-interactive mode");
     }
     if plan.requires_recipient_key && recipient_keys.is_empty() {
+        if strict_inputs {
+            anyhow::bail!(
+                "{context} requires --recipient-key <path-or-public-key-line> in strict-inputs mode"
+            );
+        }
         eprintln!(
             "note: {context} may need --recipient-key <path-or-public-key-line> to migrate this v1 vault"
         );

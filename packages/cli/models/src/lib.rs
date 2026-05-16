@@ -227,6 +227,9 @@ pub struct ProfilePolicyApplyArgs {
     /// Print the apply plan as machine-readable JSON without changing the vault.
     #[arg(long)]
     pub json: bool,
+    /// Fail before mutation when planned repair needs recipient-key input.
+    #[arg(long)]
+    pub strict_inputs: bool,
 }
 
 #[derive(Debug, clap::Args)]

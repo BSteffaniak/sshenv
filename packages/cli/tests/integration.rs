@@ -727,6 +727,66 @@ fn binary_profile_policy_apply_migrates_v1_to_enforced_v2() {
         "{dry_run_status_stdout}"
     );
 
+    let missing_passphrase_apply_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("security")
+        .arg("profile-policy")
+        .arg("apply")
+        .arg("myprofile")
+        .arg("--preset")
+        .arg("portable")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run profile-policy apply without passphrase");
+    assert!(!missing_passphrase_apply_out.status.success());
+    assert!(
+        String::from_utf8_lossy(&missing_passphrase_apply_out.stderr)
+            .contains("profile policy apply requires --passphrase <value> in non-interactive mode")
+    );
+
+    let strict_inputs_apply_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("security")
+        .arg("profile-policy")
+        .arg("apply")
+        .arg("myprofile")
+        .arg("--preset")
+        .arg("portable")
+        .arg("--passphrase")
+        .arg("profile-passphrase")
+        .arg("--strict-inputs")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run profile-policy apply strict-inputs without recipient key");
+    assert!(!strict_inputs_apply_out.status.success());
+    assert!(
+        String::from_utf8_lossy(&strict_inputs_apply_out.stderr).contains(
+            "profile policy apply requires --recipient-key <path-or-public-key-line> in strict-inputs mode"
+        )
+    );
+
+    let failed_apply_status_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("security")
+        .arg("profile-policy")
+        .arg("status")
+        .arg("myprofile")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run profile-policy status after failed apply");
+    assert!(failed_apply_status_out.status.success());
+    let failed_apply_status_stdout = String::from_utf8_lossy(&failed_apply_status_out.stdout);
+    assert!(
+        failed_apply_status_stdout.contains("policy metadata: absent"),
+        "{failed_apply_status_stdout}"
+    );
+
     let apply_out = Command::new(&bin)
         .arg("--vault")
         .arg(&vault_path)
