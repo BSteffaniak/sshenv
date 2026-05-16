@@ -117,13 +117,24 @@ pub fn remove(ctx: &CmdContext, args: RemoveRecipientArgs) -> Result<()> {
         let new_key =
             crate::commands::rekey::rotate_unlocked_vault(&mut vault, &args.recipient_keys)?;
         save_vault(ctx, &mut vault, &new_key)?;
+        crate::security_state::clear_rotation_recommended(&ctx.vault_path)?;
         eprintln!(
             "Removed recipient {} and rotated vault data key.",
             args.fingerprint
         );
     } else {
         save_vault(ctx, &mut vault, &key)?;
+        crate::security_state::mark_rotation_recommended(
+            &ctx.vault_path,
+            format!(
+                "recipient {} was removed without rotating the vault data key",
+                args.fingerprint
+            ),
+        )?;
         eprintln!("Removed recipient {}.", args.fingerprint);
+        eprintln!(
+            "warning: rotate the vault data key with `sshenv rotate-key` to reduce exposure from the removed recipient"
+        );
     }
     Ok(())
 }

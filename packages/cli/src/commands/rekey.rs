@@ -17,6 +17,7 @@ pub fn rotate_key(ctx: &CmdContext, args: RotateKeyArgs) -> Result<()> {
     let (mut vault, _old_key) = unlock_ciphertext(ciphertext, &recipients)?;
     let new_key = rotate_unlocked_vault(&mut vault, &args.recipient_keys)?;
     save_vault(ctx, &mut vault, &new_key)?;
+    crate::security_state::clear_rotation_recommended(&ctx.vault_path)?;
     eprintln!(
         "Rotated vault data key for {} recipient(s).",
         vault.recipients.len()

@@ -13,11 +13,13 @@ pub mod pubkey;
 pub mod rollback;
 #[cfg(feature = "runtime-hardening")]
 pub mod runtime_hardening;
+pub mod security_state;
 pub mod session_registry;
 
 use anyhow::Result;
 use sshenv_cli_models::{
-    Cli, Command, ProfilePolicyCommand, SecurityCommand, SessionsCommand, ShimsCommand,
+    Cli, Command, DeviceCommand, ProfilePolicyCommand, SecurityCommand, SessionsCommand,
+    ShimsCommand,
 };
 
 /// Dispatch a parsed [`Cli`] to the appropriate command handler.
@@ -33,6 +35,7 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::Doctor => commands::doctor::run(&ctx),
         Command::RotateKey(args) => commands::rekey::rotate_key(&ctx, args),
         Command::MigrateVault(args) => commands::migrate::run(&ctx, args),
+        Command::Harden(args) => commands::security::harden(&ctx, args),
         Command::Security(sub) => match sub {
             SecurityCommand::Status => commands::security::status(&ctx),
             SecurityCommand::EnablePassphrase(args) => {
@@ -46,6 +49,11 @@ pub fn run(cli: Cli) -> Result<()> {
             }
             SecurityCommand::EnableDeviceSeal => commands::security::enable_device_seal(&ctx),
             SecurityCommand::Preset(args) => commands::security::preset(&ctx, args),
+            SecurityCommand::Device(sub) => match sub {
+                DeviceCommand::List => commands::security::device_list(&ctx),
+                DeviceCommand::Authorize => commands::security::device_authorize(&ctx),
+                DeviceCommand::Remove => commands::security::device_remove(&ctx),
+            },
             SecurityCommand::ProfilePolicy(sub) => match sub {
                 ProfilePolicyCommand::List => commands::security::profile_policy_list(&ctx),
                 ProfilePolicyCommand::Backups(args) => {

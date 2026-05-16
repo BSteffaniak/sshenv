@@ -11,6 +11,11 @@ pub fn run(ctx: &CmdContext, args: ExportArgs) -> Result<()> {
     };
     crate::commands::security::ensure_profile_factor_requirements_met(&vault, &args.profile)?;
     crate::commands::security::warn_if_profile_policy_unmet(&vault, &args.profile);
+    crate::commands::security::warn_if_high_security_profile_stdout(
+        &vault,
+        &args.profile,
+        "export",
+    );
 
     for (k, v) in vars {
         // Single-quote the value and escape embedded quotes for sh compat.

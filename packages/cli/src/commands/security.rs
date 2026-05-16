@@ -9,13 +9,13 @@ use anyhow::Context as AnyhowContext;
 use anyhow::Result;
 use serde::Serialize;
 use sshenv_cli_models::{
-    ChangePassphraseArgs, DisablePassphraseArgs, EnablePassphraseArgs, ProfilePolicyApplyAllArgs,
-    ProfilePolicyApplyArgs, ProfilePolicyBackupsArgs, ProfilePolicyChangePassphraseArgs,
-    ProfilePolicyCheckArgs, ProfilePolicyDisablePassphraseArgs, ProfilePolicyPruneBackupsArgs,
-    ProfilePolicyRepairAllArgs, ProfilePolicyRepairArgs, ProfilePolicyRequirePassphraseArgs,
-    ProfilePolicyRequirementArgs, ProfilePolicyRestoreBackupArgs, ProfilePolicyRotateKeyArgs,
-    ProfilePolicySetArgs, ProfilePolicyStatusArgs, ProfilePolicyVerifyBackupArgs,
-    SecurityPresetArg, SecurityPresetArgs,
+    ChangePassphraseArgs, DisablePassphraseArgs, EnablePassphraseArgs, HardenArgs,
+    ProfilePolicyApplyAllArgs, ProfilePolicyApplyArgs, ProfilePolicyBackupsArgs,
+    ProfilePolicyChangePassphraseArgs, ProfilePolicyCheckArgs, ProfilePolicyDisablePassphraseArgs,
+    ProfilePolicyPruneBackupsArgs, ProfilePolicyRepairAllArgs, ProfilePolicyRepairArgs,
+    ProfilePolicyRequirePassphraseArgs, ProfilePolicyRequirementArgs,
+    ProfilePolicyRestoreBackupArgs, ProfilePolicyRotateKeyArgs, ProfilePolicySetArgs,
+    ProfilePolicyStatusArgs, ProfilePolicyVerifyBackupArgs, SecurityPresetArg, SecurityPresetArgs,
 };
 use sshenv_vault::models::{
     ProfileFactorRequirement, ProfilePolicy, ProfilePolicyFinding, ProfilePolicyFindingCode,
@@ -110,6 +110,65 @@ pub fn enable_device_seal(ctx: &CmdContext) -> Result<()> {
 
 #[cfg(not(feature = "device-seal"))]
 pub fn enable_device_seal(_ctx: &CmdContext) -> Result<()> {
+    anyhow::bail!("this sshenv build was compiled without device-seal support")
+}
+
+pub fn device_list(ctx: &CmdContext) -> Result<()> {
+    println!("sshenv device seals");
+    println!("===================");
+    println!("backend: {}", device_seal_backend_status());
+    let (vault, _key) = load_and_unlock_metadata(&ctx.vault_path)?;
+    let mut found = false;
+    for policy in vault
+        .policy_metadata
+        .as_ref()
+        .into_iter()
+        .flat_map(|metadata| &metadata.policies)
+    {
+        for factor in &policy.factors {
+            if factor.kind == UnlockFactorKindV2::DeviceSeal {
+                found = true;
+                println!("vault: {} ({:?})", factor.id, factor.params);
+            }
+        }
+    }
+    for (profile, policy) in &vault.profiles.profile_policies {
+        for factor in &policy.factor_metadata {
+            if factor.kind == UnlockFactorKindV2::DeviceSeal {
+                found = true;
+                println!("profile {profile}: {} ({:?})", factor.id, factor.params);
+            }
+        }
+    }
+    if !found {
+        println!("(no device-seal factors configured)");
+    }
+    Ok(())
+}
+
+#[cfg(feature = "device-seal")]
+pub fn device_authorize(ctx: &CmdContext) -> Result<()> {
+    enable_device_seal(ctx)
+}
+
+#[cfg(not(feature = "device-seal"))]
+pub fn device_authorize(_ctx: &CmdContext) -> Result<()> {
+    anyhow::bail!("this sshenv build was compiled without device-seal support")
+}
+
+#[cfg(feature = "device-seal")]
+pub fn device_remove(ctx: &CmdContext) -> Result<()> {
+    let (mut vault, data_key) = crate::commands::load_and_unlock(&ctx.vault_path)?;
+    if !vault.disable_device_seal_factor() {
+        anyhow::bail!("vault device-seal factor is not enabled");
+    }
+    save_vault(ctx, &mut vault, &data_key)?;
+    eprintln!("Removed vault device-seal factor.");
+    Ok(())
+}
+
+#[cfg(not(feature = "device-seal"))]
+pub fn device_remove(_ctx: &CmdContext) -> Result<()> {
     anyhow::bail!("this sshenv build was compiled without device-seal support")
 }
 
@@ -889,6 +948,17 @@ fn build_profile_policy_status(vault: &Vault, profile: &str) -> Result<ProfilePo
 
 /// Print a warning when a profile's advisory policy is stronger than the
 /// current vault posture.
+pub fn warn_if_high_security_profile_stdout(vault: &Vault, profile: &str, command: &str) {
+    let Some(policy) = vault.profiles.profile_policy(profile) else {
+        return;
+    };
+    if policy.preset == ProfilePolicyPreset::Paranoid {
+        eprintln!(
+            "warning: `{command}` exposes secrets for paranoid profile '{profile}' via stdout; prefer `sshenv run` when possible."
+        );
+    }
+}
+
 pub fn warn_if_profile_policy_unmet(vault: &Vault, profile: &str) {
     let Some(policy) = vault.profiles.profile_policy(profile) else {
         return;
@@ -2310,6 +2380,18 @@ pub fn profile_policy_set(ctx: &CmdContext, args: ProfilePolicySetArgs) -> Resul
     Ok(())
 }
 
+pub fn harden(ctx: &CmdContext, args: HardenArgs) -> Result<()> {
+    eprintln!("Applying {:?} hardening preset.", args.preset);
+    preset(
+        ctx,
+        SecurityPresetArgs {
+            preset: args.preset,
+            recipient_keys: args.recipient_keys,
+            passphrase: args.passphrase,
+        },
+    )
+}
+
 pub fn preset(ctx: &CmdContext, args: SecurityPresetArgs) -> Result<()> {
     match args.preset {
         SecurityPresetArg::Standard => {
@@ -2470,6 +2552,11 @@ fn print_vault_status(ctx: &CmdContext) -> Result<Option<HashSet<String>>> {
         println!("generation: {generation}");
     }
     println!("recipients: {}", ciphertext.recipients.len());
+    match crate::security_state::rotation_recommendation(&ctx.vault_path) {
+        Ok(Some(reason)) => println!("data-key rotation: recommended ({reason})"),
+        Ok(None) => println!("data-key rotation: no local reminder"),
+        Err(error) => println!("data-key rotation: unknown ({error})"),
+    }
     println!(
         "passphrase factor: {}",
         if ciphertext_requires_passphrase(&ciphertext) {

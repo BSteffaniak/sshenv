@@ -31,6 +31,17 @@ pub fn run(ctx: &CmdContext) -> Result<()> {
                     fps.insert(r.fingerprint.clone());
                 }
                 vault_recipient_fps = Some(fps);
+                match crate::security_state::rotation_recommendation(&ctx.vault_path) {
+                    Ok(Some(reason)) => {
+                        println!("  - data-key rotation: recommended ({reason})");
+                        ok = false;
+                    }
+                    Ok(None) => println!("  - data-key rotation: no local reminder"),
+                    Err(error) => {
+                        println!("  - data-key rotation: unknown ({error})");
+                        ok = false;
+                    }
+                }
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::PermissionsExt;

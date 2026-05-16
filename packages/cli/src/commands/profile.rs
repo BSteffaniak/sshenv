@@ -79,6 +79,7 @@ pub fn show(ctx: &CmdContext, args: ShowArgs) -> Result<()> {
     };
     crate::commands::security::ensure_profile_factor_requirements_met(&vault, &args.profile)?;
     crate::commands::security::warn_if_profile_policy_unmet(&vault, &args.profile);
+    crate::commands::security::warn_if_high_security_profile_stdout(&vault, &args.profile, "show");
 
     eprintln!(
         "warning: printing secret values for profile '{}' to stdout.",

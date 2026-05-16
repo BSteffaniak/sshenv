@@ -6,6 +6,7 @@ use std::process::Command;
 
 use rand_core::OsRng;
 use ssh_key::{Algorithm, LineEnding, PrivateKey};
+use sshenv_vault::recipient::fingerprint_from_line;
 
 fn cargo_bin() -> PathBuf {
     if let Some(path) = option_env!("CARGO_BIN_EXE_sshenv") {
@@ -408,6 +409,101 @@ fn binary_profile_policy_apply_all_paranoid_requires_device_seal_backend() {
     assert!(
         stderr.contains("requires an available device-seal backend"),
         "{stderr}"
+    );
+}
+
+#[cfg(all(feature = "device-seal-file", not(feature = "macos-keychain")))]
+#[test]
+fn binary_security_device_authorize_list_remove_roundtrips() {
+    let bin = cargo_bin();
+    if !bin.exists() {
+        eprintln!("skipping: {} does not exist", bin.display());
+        return;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let vault_path = dir.path().join("vault");
+    init_vault_with_profile(&bin, &home, &vault_path, "myprofile");
+
+    let migrate_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("migrate-vault")
+        .arg("--to")
+        .arg("v2")
+        .arg("--recipient-key")
+        .arg(home.join(".ssh").join("id_ed25519.pub"))
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run migrate-vault");
+    assert!(migrate_out.status.success());
+
+    let authorize_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("security")
+        .arg("device")
+        .arg("authorize")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run security device authorize");
+    assert!(
+        authorize_out.status.success(),
+        "device authorize failed: {}",
+        String::from_utf8_lossy(&authorize_out.stderr)
+    );
+
+    let list_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("security")
+        .arg("device")
+        .arg("list")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run security device list");
+    assert!(list_out.status.success());
+    let list_stdout = String::from_utf8_lossy(&list_out.stdout);
+    assert!(
+        list_stdout.contains("vault: device-seal:default"),
+        "{list_stdout}"
+    );
+
+    let remove_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("security")
+        .arg("device")
+        .arg("remove")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run security device remove");
+    assert!(
+        remove_out.status.success(),
+        "device remove failed: {}",
+        String::from_utf8_lossy(&remove_out.stderr)
+    );
+
+    let list_after_remove_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("security")
+        .arg("device")
+        .arg("list")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run security device list after remove");
+    assert!(list_after_remove_out.status.success());
+    let list_after_remove_stdout = String::from_utf8_lossy(&list_after_remove_out.stdout);
+    assert!(
+        list_after_remove_stdout.contains("(no device-seal factors configured)"),
+        "{list_after_remove_stdout}"
     );
 }
 
@@ -1816,6 +1912,132 @@ fn binary_security_preset_recommended_migrates_to_v2() {
         .expect("run list-recipients");
     assert!(recipients_out.status.success());
     assert!(String::from_utf8_lossy(&recipients_out.stdout).contains("ssh-ed25519"));
+}
+
+#[test]
+fn binary_remove_recipient_without_rotate_sets_rotation_reminder() {
+    let bin = cargo_bin();
+    if !bin.exists() {
+        eprintln!("skipping: {} does not exist", bin.display());
+        return;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let vault_path = dir.path().join("vault");
+    std::fs::create_dir_all(home.join(".ssh")).unwrap();
+    let (_first_priv, first_pub) = write_named_keypair(&home.join(".ssh"), "id_ed25519");
+    let (_second_priv, _second_pub) = write_named_keypair(&home.join(".ssh"), "id_other");
+    let first_fingerprint = fingerprint_from_line(&first_pub).expect("first fingerprint");
+
+    let init_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("init")
+        .arg("--recipient-key")
+        .arg(home.join(".ssh").join("id_ed25519.pub"))
+        .env("HOME", &home)
+        .env("SSHENV_CONFIG", home.join(".sshenv").join("config.toml"))
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run init");
+    assert!(init_out.status.success());
+
+    let add_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("add-recipient")
+        .arg("--key")
+        .arg(home.join(".ssh").join("id_other.pub"))
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run add-recipient");
+    assert!(add_out.status.success());
+
+    let remove_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("remove-recipient")
+        .arg("--fingerprint")
+        .arg(&first_fingerprint)
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run remove-recipient");
+    assert!(
+        remove_out.status.success(),
+        "remove-recipient failed: {}",
+        String::from_utf8_lossy(&remove_out.stderr)
+    );
+    let remove_stderr = String::from_utf8_lossy(&remove_out.stderr);
+    assert!(
+        remove_stderr.contains("rotate the vault data key"),
+        "{remove_stderr}"
+    );
+
+    let status_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("security")
+        .arg("status")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run security status");
+    assert!(status_out.status.success());
+    let status_stdout = String::from_utf8_lossy(&status_out.stdout);
+    assert!(
+        status_stdout.contains("data-key rotation: recommended"),
+        "{status_stdout}"
+    );
+
+    let doctor_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("doctor")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run doctor");
+    assert!(!doctor_out.status.success());
+    let doctor_stdout = String::from_utf8_lossy(&doctor_out.stdout);
+    assert!(
+        doctor_stdout.contains("data-key rotation: recommended"),
+        "{doctor_stdout}"
+    );
+
+    let rotate_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("rotate-key")
+        .arg("--recipient-key")
+        .arg(home.join(".ssh").join("id_other.pub"))
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run rotate-key");
+    assert!(
+        rotate_out.status.success(),
+        "rotate-key failed: {}",
+        String::from_utf8_lossy(&rotate_out.stderr)
+    );
+
+    let status_after_rotate_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("security")
+        .arg("status")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run security status after rotate");
+    assert!(status_after_rotate_out.status.success());
+    let status_after_rotate_stdout = String::from_utf8_lossy(&status_after_rotate_out.stdout);
+    assert!(
+        status_after_rotate_stdout.contains("data-key rotation: no local reminder"),
+        "{status_after_rotate_stdout}"
+    );
 }
 
 #[test]

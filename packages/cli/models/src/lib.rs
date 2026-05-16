@@ -39,6 +39,8 @@ pub enum Command {
     RotateKey(RotateKeyArgs),
     /// Explicitly migrate a vault to a newer format.
     MigrateVault(MigrateVaultArgs),
+    /// Guided security hardening flow (defaults to the recommended preset).
+    Harden(HardenArgs),
     /// Inspect and configure security posture.
     #[command(subcommand)]
     Security(SecurityCommand),
@@ -102,6 +104,21 @@ pub struct RotateKeyArgs {
     pub recipient_keys: Vec<String>,
 }
 
+#[derive(Debug, clap::Args)]
+pub struct HardenArgs {
+    /// Preset to apply. Defaults to recommended.
+    #[arg(long, value_enum, default_value = "recommended")]
+    pub preset: SecurityPresetArg,
+    /// Public key for a current recipient when migration cannot discover it.
+    /// Repeat as needed.
+    #[arg(long = "recipient-key", value_name = "PATH_OR_LINE")]
+    pub recipient_keys: Vec<String>,
+    /// New passphrase for presets that enable the passphrase factor. If
+    /// omitted and needed, read from a hidden prompt.
+    #[arg(long)]
+    pub passphrase: Option<String>,
+}
+
 #[derive(Debug, Subcommand)]
 pub enum SecurityCommand {
     /// Show vault version, enabled hardening features, and key-strength hints.
@@ -116,9 +133,22 @@ pub enum SecurityCommand {
     EnableDeviceSeal,
     /// Apply a named security preset.
     Preset(SecurityPresetArgs),
+    /// Manage local device-seal authorization.
+    #[command(subcommand)]
+    Device(DeviceCommand),
     /// Manage advisory per-profile security policy metadata.
     #[command(subcommand)]
     ProfilePolicy(ProfilePolicyCommand),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum DeviceCommand {
+    /// List configured device-seal factors.
+    List,
+    /// Authorize this device by enabling the vault device-seal factor.
+    Authorize,
+    /// Remove the vault-level device-seal factor.
+    Remove,
 }
 
 #[derive(Debug, Subcommand)]

@@ -782,6 +782,31 @@ impl Vault {
         Ok(())
     }
 
+    /// Remove the vault-level device-seal factor.
+    ///
+    /// Returns true when metadata changed. The caller must save the vault with
+    /// the original data key so the payload is re-encrypted without the factor.
+    #[cfg(feature = "device-seal")]
+    pub fn disable_device_seal_factor(&mut self) -> bool {
+        let Some(metadata) = &mut self.policy_metadata else {
+            return false;
+        };
+        let mut removed = false;
+        for policy in &mut metadata.policies {
+            let before = policy.factors.len();
+            policy
+                .factors
+                .retain(|factor| !device::is_device_seal_factor(factor));
+            removed |= policy.factors.len() != before;
+        }
+        metadata
+            .policies
+            .retain(|policy| !policy.factors.is_empty());
+        self.payload_key_factors
+            .retain(|factor| factor.kind != UnlockFactorKindV2::DeviceSeal);
+        removed
+    }
+
     /// True when this vault metadata requires a device-seal factor.
     #[cfg(feature = "device-seal")]
     #[must_use]
