@@ -1996,6 +1996,77 @@ fn binary_profile_policy_repair_all_enforces_advisory_portable() {
             String::from_utf8_lossy(&show_out.stderr)
         );
     }
+
+    let restore_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("security")
+        .arg("profile-policy")
+        .arg("restore-backup")
+        .arg(&backup_path)
+        .env("HOME", &home)
+        .env_remove("SSHENV_PROFILE_PASSPHRASE")
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run profile-policy restore-backup");
+    assert!(
+        restore_out.status.success(),
+        "profile-policy restore-backup failed: {}",
+        String::from_utf8_lossy(&restore_out.stderr)
+    );
+    let restore_stderr = String::from_utf8_lossy(&restore_out.stderr);
+    let pre_restore_backup_path = restore_stderr
+        .lines()
+        .find_map(|line| line.strip_prefix("Pre-restore backup written to "))
+        .map(PathBuf::from)
+        .expect("pre-restore backup path in stderr");
+    assert!(
+        pre_restore_backup_path.exists(),
+        "missing pre-restore backup at {pre_restore_backup_path:?}"
+    );
+    assert!(
+        restore_stderr.contains("Restored vault from ")
+            && restore_stderr.contains(
+                backup_path
+                    .file_name()
+                    .expect("backup file name")
+                    .to_string_lossy()
+                    .as_ref()
+            ),
+        "{restore_stderr}"
+    );
+
+    let restored_show_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("show")
+        .arg("myprofile")
+        .env("HOME", &home)
+        .env_remove("SSHENV_PROFILE_PASSPHRASE")
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run show after restore-backup");
+    assert!(
+        restored_show_out.status.success(),
+        "show after restore-backup failed: {}",
+        String::from_utf8_lossy(&restored_show_out.stderr)
+    );
+
+    let pre_restore_show_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&pre_restore_backup_path)
+        .arg("show")
+        .arg("myprofile")
+        .env("HOME", &home)
+        .env("SSHENV_PROFILE_PASSPHRASE", "bulk-passphrase")
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run show against pre-restore backup");
+    assert!(
+        pre_restore_show_out.status.success(),
+        "show against pre-restore backup failed: {}",
+        String::from_utf8_lossy(&pre_restore_show_out.stderr)
+    );
 }
 
 #[test]

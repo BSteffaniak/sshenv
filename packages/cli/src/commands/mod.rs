@@ -292,7 +292,7 @@ fn check_rollback(_vault_path: &Path, _ciphertext: &CiphertextVault) -> Result<(
 }
 
 #[cfg(feature = "rollback-protection")]
-fn record_rollback(vault_path: &Path, generation: Option<u64>) -> Result<()> {
+pub(crate) fn record_rollback(vault_path: &Path, generation: Option<u64>) -> Result<()> {
     crate::rollback::record_generation(vault_path, generation)
 }
 
@@ -302,7 +302,22 @@ fn record_rollback(vault_path: &Path, generation: Option<u64>) -> Result<()> {
     clippy::unnecessary_wraps,
     reason = "feature-gated no-op preserves fallible call sites when rollback protection is disabled"
 )]
-fn record_rollback(_vault_path: &Path, _generation: Option<u64>) -> Result<()> {
+pub(crate) fn record_rollback(_vault_path: &Path, _generation: Option<u64>) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(feature = "rollback-protection")]
+pub(crate) fn set_rollback(vault_path: &Path, generation: Option<u64>) -> Result<()> {
+    crate::rollback::set_generation(vault_path, generation)
+}
+
+#[cfg(not(feature = "rollback-protection"))]
+#[allow(
+    clippy::missing_const_for_fn,
+    clippy::unnecessary_wraps,
+    reason = "feature-gated no-op preserves fallible call sites when rollback protection is disabled"
+)]
+pub(crate) fn set_rollback(_vault_path: &Path, _generation: Option<u64>) -> Result<()> {
     Ok(())
 }
 

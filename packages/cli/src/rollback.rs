@@ -67,16 +67,32 @@ pub fn record_generation(vault_path: &Path, generation: Option<u64>) -> Result<(
     let Some(generation) = generation else {
         return Ok(());
     };
+    let current = load_state()?
+        .vaults
+        .iter()
+        .find(|record| record.vault == vault_id(vault_path))
+        .map_or(generation, |record| record.generation.max(generation));
+    set_generation(vault_path, Some(current))
+}
+
+/// Set the local generation for this vault exactly.
+///
+/// This is used after an explicit user-requested restore, where an older
+/// generation is intentional and should become the new local baseline.
+///
+/// # Errors
+///
+/// Returns an error if local rollback state cannot be written.
+pub fn set_generation(vault_path: &Path, generation: Option<u64>) -> Result<()> {
+    let Some(generation) = generation else {
+        return Ok(());
+    };
     let path = default_rollback_path();
     let id = vault_id(vault_path);
     let mut state = load_state()?;
 
     match state.vaults.iter_mut().find(|record| record.vault == id) {
-        Some(record) => {
-            if generation > record.generation {
-                record.generation = generation;
-            }
-        }
+        Some(record) => record.generation = generation,
         None => state.vaults.push(RollbackRecord {
             vault: id,
             generation,

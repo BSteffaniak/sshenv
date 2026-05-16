@@ -87,6 +87,9 @@ pub fn run(cli: Cli) -> Result<()> {
                 ProfilePolicyCommand::RepairAll(args) => {
                     commands::security::profile_policy_repair_all(&ctx, args)
                 }
+                ProfilePolicyCommand::RestoreBackup(args) => {
+                    commands::security::profile_policy_restore_backup(&ctx, args)
+                }
                 ProfilePolicyCommand::Set(args) => {
                     commands::security::profile_policy_set(&ctx, args)
                 }

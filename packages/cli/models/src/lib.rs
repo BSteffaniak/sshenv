@@ -153,6 +153,8 @@ pub enum ProfilePolicyCommand {
     Repair(ProfilePolicyRepairArgs),
     /// Repair/reconcile all existing profile policy metadata.
     RepairAll(ProfilePolicyRepairAllArgs),
+    /// Restore the current vault from a profile-policy backup file.
+    RestoreBackup(ProfilePolicyRestoreBackupArgs),
     /// Set advisory policy metadata for a profile.
     Set(ProfilePolicySetArgs),
 }
@@ -264,6 +266,12 @@ pub struct ProfilePolicyApplyAllArgs {
     /// Fail before mutation when planned repair needs recipient-key input.
     #[arg(long)]
     pub strict_inputs: bool,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct ProfilePolicyRestoreBackupArgs {
+    /// Backup vault file to restore over the current vault.
+    pub backup_path: PathBuf,
 }
 
 #[derive(Debug, clap::Args)]

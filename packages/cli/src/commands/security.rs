@@ -12,22 +12,23 @@ use sshenv_cli_models::{
     ChangePassphraseArgs, DisablePassphraseArgs, EnablePassphraseArgs, ProfilePolicyApplyAllArgs,
     ProfilePolicyApplyArgs, ProfilePolicyChangePassphraseArgs, ProfilePolicyCheckArgs,
     ProfilePolicyDisablePassphraseArgs, ProfilePolicyRepairAllArgs, ProfilePolicyRepairArgs,
-    ProfilePolicyRequirePassphraseArgs, ProfilePolicyRequirementArgs, ProfilePolicyRotateKeyArgs,
-    ProfilePolicySetArgs, ProfilePolicyStatusArgs, SecurityPresetArg, SecurityPresetArgs,
+    ProfilePolicyRequirePassphraseArgs, ProfilePolicyRequirementArgs,
+    ProfilePolicyRestoreBackupArgs, ProfilePolicyRotateKeyArgs, ProfilePolicySetArgs,
+    ProfilePolicyStatusArgs, SecurityPresetArg, SecurityPresetArgs,
 };
 use sshenv_vault::models::{
     ProfileFactorRequirement, ProfilePolicy, ProfilePolicyFinding, ProfilePolicyFindingCode,
     ProfilePolicyPreset, ProfilePolicyRepairAction, ProfilePolicyRepairPlan, UnlockFactorKindV2,
     VERSION, VERSION_V2,
 };
-use sshenv_vault::{DataKey, Vault};
+use sshenv_vault::{DataKey, Vault, atomic_write};
 
 use crate::commands::Context as CmdContext;
 #[cfg(feature = "passphrase-factor")]
 use crate::commands::unlock_ciphertext_with_passphrase;
 use crate::commands::{
     load_and_unlock_metadata, load_and_unlock_profile, load_ciphertext_and_fps, save_vault,
-    unlock_ciphertext,
+    set_rollback, unlock_ciphertext,
 };
 use crate::identity::{discover_private_key_paths, public_fingerprint_for_private_key};
 
@@ -1434,6 +1435,40 @@ pub fn profile_policy_repair_all(ctx: &CmdContext, args: ProfilePolicyRepairAllA
     Ok(())
 }
 
+pub fn profile_policy_restore_backup(
+    ctx: &CmdContext,
+    args: ProfilePolicyRestoreBackupArgs,
+) -> Result<()> {
+    let current = fs::canonicalize(&ctx.vault_path)?;
+    let backup = fs::canonicalize(&args.backup_path)?;
+    if current == backup {
+        anyhow::bail!("backup path must be different from the current vault path");
+    }
+
+    let backup_ciphertext = Vault::load_ciphertext(&backup)?;
+    let restored_generation = backup_ciphertext.generation();
+    let recipient_fingerprints = backup_ciphertext
+        .recipients
+        .iter()
+        .map(|recipient| recipient.fingerprint.clone())
+        .collect::<HashSet<_>>();
+    unlock_ciphertext(backup_ciphertext, &recipient_fingerprints)?;
+
+    let pre_restore_backup = timestamped_vault_backup_path(&ctx.vault_path, "pre-restore.bak")?;
+    copy_vault_file(&ctx.vault_path, &pre_restore_backup)?;
+
+    let backup_bytes = fs::read(&backup)?;
+    atomic_write(&ctx.vault_path, &backup_bytes, 0o600)?;
+    set_rollback(&ctx.vault_path, restored_generation)?;
+
+    eprintln!(
+        "Pre-restore backup written to {}",
+        pre_restore_backup.display()
+    );
+    eprintln!("Restored vault from {}", backup.display());
+    Ok(())
+}
+
 pub fn profile_policy_repair(ctx: &CmdContext, args: ProfilePolicyRepairArgs) -> Result<()> {
     let (mut vault, data_key) = load_and_unlock_profile(&ctx.vault_path, &args.profile)?;
     let initial_validation = vault.validate_profile_policy(&args.profile);
@@ -1493,22 +1528,32 @@ fn create_bulk_profile_policy_backup_if_requested(
     if !enabled {
         return Ok(None);
     }
-    let backup_path = timestamped_vault_backup_path(&ctx.vault_path)?;
-    if let Some(parent) = backup_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::copy(&ctx.vault_path, &backup_path)?;
+    let backup_path = timestamped_vault_backup_path(&ctx.vault_path, "bak")?;
+    copy_vault_file(&ctx.vault_path, &backup_path)?;
     eprintln!("Backup written to {}", backup_path.display());
     Ok(Some(backup_path))
 }
 
-fn timestamped_vault_backup_path(vault_path: &Path) -> Result<PathBuf> {
+fn copy_vault_file(from: &Path, to: &Path) -> Result<()> {
+    if let Some(parent) = to.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::copy(from, to)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(to, fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
+}
+
+fn timestamped_vault_backup_path(vault_path: &Path, label: &str) -> Result<PathBuf> {
     let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?;
     let file_name = vault_path
         .file_name()
         .map_or_else(|| "vault".into(), |name| name.to_string_lossy());
     Ok(vault_path.with_file_name(format!(
-        "{file_name}.bak.{}.{:09}",
+        "{file_name}.{label}.{}.{:09}",
         timestamp.as_secs(),
         timestamp.subsec_nanos()
     )))
