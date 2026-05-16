@@ -481,6 +481,7 @@ pub enum ProfilePolicyPreset {
     Standard,
     Recommended,
     Portable,
+    Team,
     Paranoid,
 }
 

@@ -414,6 +414,7 @@ pub enum SecurityPresetArg {
     Standard,
     Recommended,
     Portable,
+    Team,
     Paranoid,
 }
 

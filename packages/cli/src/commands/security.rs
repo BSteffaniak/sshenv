@@ -1412,7 +1412,7 @@ fn profile_preset_expected_requirements(
     preset: ProfilePolicyPreset,
 ) -> Vec<ProfileFactorRequirement> {
     match preset {
-        ProfilePolicyPreset::Standard => Vec::new(),
+        ProfilePolicyPreset::Standard | ProfilePolicyPreset::Team => Vec::new(),
         ProfilePolicyPreset::Portable => vec![ProfileFactorRequirement::Passphrase],
         ProfilePolicyPreset::Recommended => {
             if device_seal_backend_status() == "none" {
@@ -1468,6 +1468,12 @@ fn profile_policy_findings(vault: &Vault, preset: ProfilePolicyPreset) -> Vec<St
 
     match preset {
         ProfilePolicyPreset::Standard => {}
+        ProfilePolicyPreset::Team => {
+            findings.push(
+                "team preset is advisory until threshold/recovery-share support is implemented"
+                    .to_string(),
+            );
+        }
         ProfilePolicyPreset::Recommended => {
             if !has_v2 {
                 findings.push("vault is not v2".to_string());
@@ -2394,6 +2400,11 @@ pub fn harden(ctx: &CmdContext, args: HardenArgs) -> Result<()> {
 
 pub fn preset(ctx: &CmdContext, args: SecurityPresetArgs) -> Result<()> {
     match args.preset {
+        SecurityPresetArg::Team => {
+            anyhow::bail!(
+                "team preset is not enforceable yet; use `sshenv security profile-policy set <profile> --preset team` for advisory metadata"
+            )
+        }
         SecurityPresetArg::Standard => {
             eprintln!(
                 "Standard preset leaves the vault on SSH-recipient unlock. No changes applied."
@@ -2411,6 +2422,7 @@ const fn profile_policy_preset(preset: SecurityPresetArg) -> ProfilePolicyPreset
         SecurityPresetArg::Standard => ProfilePolicyPreset::Standard,
         SecurityPresetArg::Recommended => ProfilePolicyPreset::Recommended,
         SecurityPresetArg::Portable => ProfilePolicyPreset::Portable,
+        SecurityPresetArg::Team => ProfilePolicyPreset::Team,
         SecurityPresetArg::Paranoid => ProfilePolicyPreset::Paranoid,
     }
 }
@@ -2621,7 +2633,14 @@ fn print_feature_status() {
         enabled_label(cfg!(feature = "device-seal")),
         device_seal_backend_status(),
     );
-    println!("hardware keys:  planned");
+    println!(
+        "hardware keys: {}",
+        enabled_label(cfg!(feature = "hardware-recipient"))
+    );
+    println!(
+        "age plugins:   {}",
+        enabled_label(cfg!(feature = "age-plugin-recipient"))
+    );
     println!(
         "runtime:       {}",
         enabled_label(cfg!(feature = "runtime-hardening"))
@@ -2630,7 +2649,18 @@ fn print_feature_status() {
         "profile-keys:  {}",
         enabled_label(cfg!(feature = "profile-keys"))
     );
-    println!("threshold:      planned");
+    println!(
+        "threshold:     {}",
+        enabled_label(cfg!(feature = "threshold-policies"))
+    );
+    println!(
+        "recovery:      {}",
+        enabled_label(cfg!(feature = "recovery-shares"))
+    );
+    println!(
+        "remote/KMS:    {}",
+        enabled_label(cfg!(feature = "remote-factor") || cfg!(feature = "kms-factor"))
+    );
     println!(
         "rollback:       {}",
         enabled_label(cfg!(feature = "rollback-protection"))

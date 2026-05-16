@@ -8,6 +8,10 @@ repository.workspace = true
 version.workspace    = true
 
 [features]
+age-plugin-recipient = [
+    "hardware-recipient",
+    "sshenv_vault/age-plugin-recipient",
+]
 default = [
     "ssh-hardening",
     "rekey",
@@ -18,13 +22,19 @@ default = [
 ]
 device-seal = ["sshenv_vault/device-seal"]
 device-seal-file = ["device-seal", "sshenv_vault/device-seal-file"]
+hardware-recipient = ["sshenv_vault/hardware-recipient"]
+kms-factor = ["remote-factor", "sshenv_vault/kms-factor"]
 macos-keychain = ["device-seal", "sshenv_vault/macos-keychain"]
 passphrase-factor = ["sshenv_vault/passphrase-factor"]
 profile-keys = ["sshenv_vault/profile-keys"]
+recovery-shares = ["threshold-policies", "sshenv_vault/recovery-shares"]
 rekey = ["sshenv_vault/rekey"]
+remote-factor = ["sshenv_vault/remote-factor"]
 rollback-protection = []
 runtime-hardening = []
+shamir-sharing = ["recovery-shares", "sshenv_vault/shamir-sharing"]
 ssh-hardening = ["sshenv_vault/ssh-hardening"]
+threshold-policies = ["sshenv_vault/threshold-policies"]
 
 [[bin]]
 name = "sshenv"

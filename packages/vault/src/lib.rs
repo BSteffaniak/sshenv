@@ -1658,7 +1658,7 @@ fn profile_preset_expected_requirements(
     preset: ProfilePolicyPreset,
 ) -> Vec<ProfileFactorRequirement> {
     match preset {
-        ProfilePolicyPreset::Standard => Vec::new(),
+        ProfilePolicyPreset::Standard | ProfilePolicyPreset::Team => Vec::new(),
         ProfilePolicyPreset::Portable => vec![ProfileFactorRequirement::Passphrase],
         ProfilePolicyPreset::Recommended => {
             if device_seal_backend_status() == "none" {
