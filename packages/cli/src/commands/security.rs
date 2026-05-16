@@ -758,7 +758,15 @@ struct HardwareStatusOutput {
     age_plugin_identity_sources: Vec<String>,
     age_plugin_identity_files: Vec<AgePluginIdentityFileOutput>,
     age_plugin_plugins: BTreeMap<String, usize>,
+    age_plugin_binaries: Vec<AgePluginBinaryOutput>,
     known_plans: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct AgePluginBinaryOutput {
+    plugin: String,
+    path: String,
+    inferred_kind: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -802,6 +810,7 @@ pub fn hardware_status(args: HardwareStatusArgs) -> Result<()> {
         ],
         age_plugin_plugins: age_plugin_plugins_from_files(&age_plugin_identity_files),
         age_plugin_identity_files,
+        age_plugin_binaries: discover_age_plugin_binaries(),
         known_plans: vec![
             "age-plugin".to_string(),
             "yubi-key-piv".to_string(),
@@ -841,6 +850,15 @@ pub fn hardware_status(args: HardwareStatusArgs) -> Result<()> {
                 println!("- {plugin}: {count}");
             }
         }
+        if !output.age_plugin_binaries.is_empty() {
+            println!("age-plugin binaries on PATH:");
+            for binary in &output.age_plugin_binaries {
+                println!(
+                    "- {} ({}) at {}",
+                    binary.plugin, binary.inferred_kind, binary.path
+                );
+            }
+        }
     }
     Ok(())
 }
@@ -853,6 +871,49 @@ fn age_plugin_plugins_from_files(files: &[AgePluginIdentityFileOutput]) -> BTree
         }
     }
     plugins
+}
+
+fn discover_age_plugin_binaries() -> Vec<AgePluginBinaryOutput> {
+    let mut binaries = BTreeMap::new();
+    let Some(path) = std::env::var_os("PATH") else {
+        return Vec::new();
+    };
+    for dir in std::env::split_paths(&path) {
+        let Ok(entries) = fs::read_dir(dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            let Some(plugin) = file_name.strip_prefix("age-plugin-") else {
+                continue;
+            };
+            binaries
+                .entry(plugin.to_string())
+                .or_insert_with(|| AgePluginBinaryOutput {
+                    plugin: plugin.to_string(),
+                    path: path.display().to_string(),
+                    inferred_kind: infer_age_plugin_hardware_kind(plugin).to_string(),
+                });
+        }
+    }
+    binaries.into_values().collect()
+}
+
+fn infer_age_plugin_hardware_kind(plugin: &str) -> &'static str {
+    let lower = plugin.to_ascii_lowercase();
+    if lower.contains("yubi") || lower.contains("piv") {
+        "yubi-key-piv"
+    } else if lower.contains("fido") || lower.contains("sk") || lower.contains("security-key") {
+        "fido-security-key"
+    } else {
+        "age-plugin"
+    }
 }
 
 #[cfg(feature = "age-plugin-recipient")]
