@@ -13,8 +13,8 @@ use sshenv_cli_models::{
     SecurityPresetArgs,
 };
 use sshenv_vault::models::{
-    PROFILE_ENTRY_MISSING_WARNING, ProfileFactorRequirement, ProfilePolicy, ProfilePolicyPreset,
-    UnlockFactorKindV2, VERSION, VERSION_V2,
+    ProfileFactorRequirement, ProfilePolicy, ProfilePolicyFinding, ProfilePolicyFindingCode,
+    ProfilePolicyPreset, UnlockFactorKindV2, VERSION, VERSION_V2,
 };
 use sshenv_vault::{DataKey, Vault};
 
@@ -238,6 +238,7 @@ struct ProfilePolicyStatusOutput {
     requirements: Vec<ProfileRequirementStatus>,
     warnings: Vec<String>,
     errors: Vec<String>,
+    findings: Vec<ProfilePolicyFinding>,
     repair_recommended: bool,
     repair_hint: Option<String>,
 }
@@ -325,15 +326,10 @@ fn build_profile_policy_status(vault: &Vault, profile: &str) -> Result<ProfilePo
     let profile_exists = validation.profile_exists;
     let policy = vault.profiles.profile_policy(profile);
     let independently_encrypted = vault.profiles.profile_entries.contains_key(profile);
-    let repair_hint = policy.and_then(|policy| {
-        profile_repair_hint(
-            vault,
-            profile,
-            policy,
-            &validation.warnings,
-            &validation.errors,
-        )
-    });
+    let warnings = validation.warning_messages();
+    let errors = validation.error_messages();
+    let repair_hint =
+        policy.and_then(|policy| profile_repair_hint(vault, profile, policy, &validation.findings));
 
     Ok(ProfilePolicyStatusOutput {
         profile: profile.to_string(),
@@ -379,10 +375,11 @@ fn build_profile_policy_status(vault: &Vault, profile: &str) -> Result<ProfilePo
                 })
                 .collect()
         }),
-        errors: validation.errors,
+        errors,
+        findings: validation.findings,
         repair_recommended: repair_hint.is_some(),
         repair_hint,
-        warnings: validation.warnings,
+        warnings,
     })
 }
 
@@ -488,10 +485,22 @@ fn profile_repair_hint(
     vault: &Vault,
     profile: &str,
     policy: &ProfilePolicy,
-    warnings: &[String],
-    errors: &[String],
+    findings: &[ProfilePolicyFinding],
 ) -> Option<String> {
-    if warnings.is_empty() || !errors.is_empty() {
+    let has_warning = findings.iter().any(|finding| {
+        matches!(
+            finding.code,
+            ProfilePolicyFindingCode::PolicyForMissingProfile
+                | ProfilePolicyFindingCode::ProfileFactorsWithoutProfileKeyMode
+                | ProfilePolicyFindingCode::MissingProfileEntry
+                | ProfilePolicyFindingCode::UnsatisfiedRequirement
+                | ProfilePolicyFindingCode::MissingPresetBinding
+        )
+    });
+    let has_error = findings
+        .iter()
+        .any(|finding| finding.code == ProfilePolicyFindingCode::UnsupportedFactorMetadata);
+    if !has_warning || has_error {
         return None;
     }
     let mut hint = format!("sshenv security profile-policy repair {profile}");
@@ -529,31 +538,27 @@ fn validate_profile_policy_for_save(vault: &Vault, profile: &str) -> Result<()> 
     let mut validation = vault.validate_profile_policy(profile);
     if vault.profiles.profiles.contains_key(profile) {
         validation
-            .warnings
-            .retain(|warning| warning != PROFILE_ENTRY_MISSING_WARNING);
+            .findings
+            .retain(|finding| finding.code != ProfilePolicyFindingCode::MissingProfileEntry);
     }
-    if !validation.errors.is_empty() {
+    let errors = validation.error_messages();
+    if !errors.is_empty() {
         anyhow::bail!(
             "profile policy has unrecoverable validation error(s): {}",
-            validation.errors.join(", ")
+            errors.join(", ")
         );
     }
-    if validation.warnings.is_empty() {
+    let warnings = validation.warning_messages();
+    if warnings.is_empty() {
         return Ok(());
     }
 
     eprintln!("warning: profile policy for {profile} is not fully consistent:");
-    for warning in &validation.warnings {
+    for warning in &warnings {
         eprintln!("- {warning}");
     }
     if let Some(policy) = vault.profiles.profile_policy(profile)
-        && let Some(hint) = profile_repair_hint(
-            vault,
-            profile,
-            policy,
-            &validation.warnings,
-            &validation.errors,
-        )
+        && let Some(hint) = profile_repair_hint(vault, profile, policy, &validation.findings)
     {
         eprintln!("repair: {hint}");
     }
@@ -953,10 +958,11 @@ pub fn profile_policy_repair(ctx: &CmdContext, args: ProfilePolicyRepairArgs) ->
     let (mut vault, data_key) = load_and_unlock_profile(&ctx.vault_path, &args.profile)?;
     prepare_profile_policy_enforcement(&mut vault, &args.profile, &args.recipient_keys)?;
     let validation = vault.validate_profile_policy(&args.profile);
-    if !validation.errors.is_empty() {
+    let errors = validation.error_messages();
+    if !errors.is_empty() {
         anyhow::bail!(
             "profile policy has unrecoverable validation error(s): {}",
-            validation.errors.join(", ")
+            errors.join(", ")
         );
     }
     let policy = existing_or_default_profile_policy(&vault, &args.profile);

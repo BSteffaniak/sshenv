@@ -829,6 +829,14 @@ fn binary_profile_policy_repair_enforces_advisory_portable() {
         advisory_json.contains("\"repair_recommended\": true"),
         "{advisory_json}"
     );
+    assert!(
+        advisory_json.contains("\"severity\": \"warning\""),
+        "{advisory_json}"
+    );
+    assert!(
+        advisory_json.contains("\"code\": \"missing-preset-binding\""),
+        "{advisory_json}"
+    );
 
     let check_out = Command::new(&bin)
         .arg("--vault")

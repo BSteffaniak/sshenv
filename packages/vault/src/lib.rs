@@ -26,10 +26,11 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, anyhow};
 use sshenv_vault_models::{
     DATA_KEY_LEN, PAYLOAD_AAD, PROFILE_ENTRY_MISSING_WARNING, ProfileEntry,
-    ProfileFactorRequirement, ProfileMap, ProfilePolicy, ProfilePolicyCheck, ProfilePolicyPreset,
-    ProfilePolicyValidation, RecipientEntry, RecipientMetadataV2, UnlockFactorKindV2,
-    V2_PAYLOAD_AAD, V2_PROFILE_KEY_AAD, V2_PROFILE_PAYLOAD_AAD, VERSION, VERSION_V2, VaultHeader,
-    VaultModelsError, VaultPolicyMetadataV2,
+    ProfileFactorRequirement, ProfileMap, ProfilePolicy, ProfilePolicyCheck, ProfilePolicyFinding,
+    ProfilePolicyFindingCode, ProfilePolicyPreset, ProfilePolicyValidation, RecipientEntry,
+    RecipientMetadataV2, UnlockFactorKindV2, V2_PAYLOAD_AAD, V2_PROFILE_KEY_AAD,
+    V2_PROFILE_PAYLOAD_AAD, VERSION, VERSION_V2, VaultHeader, VaultModelsError,
+    VaultPolicyMetadataV2,
 };
 use zeroize::Zeroizing;
 
@@ -893,65 +894,86 @@ impl Vault {
             return ProfilePolicyValidation {
                 profile_exists,
                 policy_present: false,
-                warnings: Vec::new(),
-                errors: Vec::new(),
+                findings: Vec::new(),
             };
         };
 
         let mut validation = ProfilePolicyValidation {
             profile_exists,
             policy_present: true,
-            warnings: Vec::new(),
-            errors: Vec::new(),
+            findings: Vec::new(),
         };
 
         if !profile_exists {
-            validation
-                .warnings
-                .push("policy metadata exists for a missing profile".to_string());
+            validation.findings.push(ProfilePolicyFinding::warning(
+                ProfilePolicyFindingCode::PolicyForMissingProfile,
+                "policy metadata exists for a missing profile",
+                None,
+                None,
+            ));
         }
         if !self.profile_keys_enabled()
             && (!policy.required_factors.is_empty() || !policy.factor_metadata.is_empty())
         {
-            validation.warnings.push(
-                "profile factor requirements or metadata exist but profile-key mode is disabled"
-                    .to_string(),
-            );
+            validation.findings.push(ProfilePolicyFinding::warning(
+                ProfilePolicyFindingCode::ProfileFactorsWithoutProfileKeyMode,
+                "profile factor requirements or metadata exist but profile-key mode is disabled",
+                None,
+                None,
+            ));
         }
         if self.profile_keys_enabled()
             && profile_exists
             && !self.profiles.profile_entries.contains_key(profile)
         {
-            validation
-                .warnings
-                .push(PROFILE_ENTRY_MISSING_WARNING.to_string());
+            validation.findings.push(ProfilePolicyFinding::warning(
+                ProfilePolicyFindingCode::MissingProfileEntry,
+                PROFILE_ENTRY_MISSING_WARNING,
+                None,
+                None,
+            ));
         }
         for factor in &policy.factor_metadata {
             if !matches!(
                 factor.kind,
                 UnlockFactorKindV2::Passphrase | UnlockFactorKindV2::DeviceSeal
             ) {
-                validation.errors.push(format!(
-                    "unsupported profile factor metadata kind: {:?}",
-                    factor.kind
+                validation.findings.push(ProfilePolicyFinding::error(
+                    ProfilePolicyFindingCode::UnsupportedFactorMetadata,
+                    format!(
+                        "unsupported profile factor metadata kind: {:?}",
+                        factor.kind
+                    ),
+                    Some(factor.kind),
+                    None,
                 ));
             }
         }
         for requirement in &policy.required_factors {
             if !profile_requirement_satisfied(self, policy, *requirement) {
-                validation.warnings.push(format!(
-                    "requirement {} is not satisfied by profile-specific metadata or a vault-level factor",
-                    profile_factor_requirement_label(*requirement)
+                validation.findings.push(ProfilePolicyFinding::warning(
+                    ProfilePolicyFindingCode::UnsatisfiedRequirement,
+                    format!(
+                        "requirement {} is not satisfied by profile-specific metadata or a vault-level factor",
+                        profile_factor_requirement_label(*requirement)
+                    ),
+                    Some(unlock_factor_kind_for_profile_requirement(*requirement)),
+                    Some(*requirement),
                 ));
             }
         }
         for requirement in profile_preset_expected_requirements(policy.preset) {
             let kind = unlock_factor_kind_for_profile_requirement(requirement);
             if !profile_has_factor_metadata(policy, kind) {
-                validation.warnings.push(format!(
-                    "preset {:?} expects profile-specific {} binding",
-                    policy.preset,
-                    profile_factor_requirement_label(requirement)
+                validation.findings.push(ProfilePolicyFinding::warning(
+                    ProfilePolicyFindingCode::MissingPresetBinding,
+                    format!(
+                        "preset {:?} expects profile-specific {} binding",
+                        policy.preset,
+                        profile_factor_requirement_label(requirement)
+                    ),
+                    Some(kind),
+                    Some(requirement),
                 ));
             }
         }
@@ -971,11 +993,11 @@ impl Vault {
             .collect::<BTreeMap<_, _>>();
         let warnings = profiles
             .values()
-            .map(|validation| validation.warnings.len())
+            .map(ProfilePolicyValidation::warning_count)
             .sum();
         let errors = profiles
             .values()
-            .map(|validation| validation.errors.len())
+            .map(ProfilePolicyValidation::error_count)
             .sum();
 
         ProfilePolicyCheck {
@@ -1778,9 +1800,10 @@ mod tests {
 
         let validation = vault.validate_profile_policy("p");
 
-        assert!(validation.errors.is_empty());
-        assert!(validation.warnings.iter().any(|warning| {
-            warning.contains("preset Portable expects profile-specific passphrase binding")
+        assert_eq!(validation.error_count(), 0);
+        assert!(validation.findings.iter().any(|finding| {
+            finding.code == ProfilePolicyFindingCode::MissingPresetBinding
+                && finding.requirement == Some(ProfileFactorRequirement::Passphrase)
         }));
     }
 
@@ -1801,13 +1824,11 @@ mod tests {
 
         let validation = vault.validate_profile_policy("p");
 
-        assert!(validation.errors.is_empty());
-        assert!(
-            validation
-                .warnings
-                .iter()
-                .any(|warning| warning.contains("requirement device-seal is not satisfied"))
-        );
+        assert_eq!(validation.error_count(), 0);
+        assert!(validation.findings.iter().any(|finding| {
+            finding.code == ProfilePolicyFindingCode::UnsatisfiedRequirement
+                && finding.requirement == Some(ProfileFactorRequirement::DeviceSeal)
+        }));
     }
 
     #[cfg(feature = "passphrase-factor")]
@@ -1826,8 +1847,8 @@ mod tests {
 
         let validation = vault.validate_profile_policy("p");
 
-        assert!(validation.errors.is_empty(), "{:?}", validation.errors);
-        assert!(validation.warnings.is_empty(), "{:?}", validation.warnings);
+        assert_eq!(validation.error_count(), 0, "{:?}", validation.findings);
+        assert_eq!(validation.warning_count(), 0, "{:?}", validation.findings);
     }
 
     #[test]
@@ -1852,12 +1873,10 @@ mod tests {
 
         let validation = vault.validate_profile_policy("p");
 
-        assert!(
-            validation
-                .errors
-                .iter()
-                .any(|error| error.contains("unsupported profile factor metadata kind"))
-        );
+        assert!(validation.findings.iter().any(|finding| {
+            finding.code == ProfilePolicyFindingCode::UnsupportedFactorMetadata
+                && finding.factor == Some(UnlockFactorKindV2::HardwareRecipient)
+        }));
     }
 
     #[test]

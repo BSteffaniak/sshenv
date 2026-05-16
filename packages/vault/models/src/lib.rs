@@ -255,6 +255,77 @@ pub struct ProfilePolicy {
 pub const PROFILE_ENTRY_MISSING_WARNING: &str =
     "profile-key mode is enabled but this profile has no encrypted profile entry";
 
+/// Severity for a profile policy validation finding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProfilePolicyFindingSeverity {
+    Warning,
+    Error,
+}
+
+/// Stable code for a profile policy validation finding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProfilePolicyFindingCode {
+    PolicyForMissingProfile,
+    ProfileFactorsWithoutProfileKeyMode,
+    MissingProfileEntry,
+    UnsatisfiedRequirement,
+    MissingPresetBinding,
+    UnsupportedFactorMetadata,
+}
+
+/// One structured profile policy validation finding.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProfilePolicyFinding {
+    /// Warning/error classification.
+    pub severity: ProfilePolicyFindingSeverity,
+    /// Stable machine-readable finding code.
+    pub code: ProfilePolicyFindingCode,
+    /// Human-readable explanation.
+    pub message: String,
+    /// Related factor kind, when applicable.
+    pub factor: Option<UnlockFactorKindV2>,
+    /// Related profile requirement, when applicable.
+    pub requirement: Option<ProfileFactorRequirement>,
+}
+
+impl ProfilePolicyFinding {
+    /// Create a warning finding.
+    #[must_use]
+    pub fn warning(
+        code: ProfilePolicyFindingCode,
+        message: impl Into<String>,
+        factor: Option<UnlockFactorKindV2>,
+        requirement: Option<ProfileFactorRequirement>,
+    ) -> Self {
+        Self {
+            severity: ProfilePolicyFindingSeverity::Warning,
+            code,
+            message: message.into(),
+            factor,
+            requirement,
+        }
+    }
+
+    /// Create an error finding.
+    #[must_use]
+    pub fn error(
+        code: ProfilePolicyFindingCode,
+        message: impl Into<String>,
+        factor: Option<UnlockFactorKindV2>,
+        requirement: Option<ProfileFactorRequirement>,
+    ) -> Self {
+        Self {
+            severity: ProfilePolicyFindingSeverity::Error,
+            code,
+            message: message.into(),
+            factor,
+            requirement,
+        }
+    }
+}
+
 /// Consistency validation for one profile policy.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProfilePolicyValidation {
@@ -262,10 +333,8 @@ pub struct ProfilePolicyValidation {
     pub profile_exists: bool,
     /// True when policy metadata exists for this profile.
     pub policy_present: bool,
-    /// Recoverable or actionable drift findings.
-    pub warnings: Vec<String>,
-    /// Unrecoverable policy/schema errors.
-    pub errors: Vec<String>,
+    /// Structured validation findings.
+    pub findings: Vec<ProfilePolicyFinding>,
 }
 
 impl ProfilePolicyValidation {
@@ -273,6 +342,60 @@ impl ProfilePolicyValidation {
     #[must_use]
     pub const fn profile_policy_missing(&self) -> bool {
         !self.profile_exists && !self.policy_present
+    }
+
+    /// Warning findings.
+    #[must_use]
+    pub fn warnings(&self) -> Vec<&ProfilePolicyFinding> {
+        self.findings
+            .iter()
+            .filter(|finding| finding.severity == ProfilePolicyFindingSeverity::Warning)
+            .collect()
+    }
+
+    /// Error findings.
+    #[must_use]
+    pub fn errors(&self) -> Vec<&ProfilePolicyFinding> {
+        self.findings
+            .iter()
+            .filter(|finding| finding.severity == ProfilePolicyFindingSeverity::Error)
+            .collect()
+    }
+
+    /// Number of warning findings.
+    #[must_use]
+    pub fn warning_count(&self) -> usize {
+        self.findings
+            .iter()
+            .filter(|finding| finding.severity == ProfilePolicyFindingSeverity::Warning)
+            .count()
+    }
+
+    /// Number of error findings.
+    #[must_use]
+    pub fn error_count(&self) -> usize {
+        self.findings
+            .iter()
+            .filter(|finding| finding.severity == ProfilePolicyFindingSeverity::Error)
+            .count()
+    }
+
+    /// Warning messages for human-oriented CLI output.
+    #[must_use]
+    pub fn warning_messages(&self) -> Vec<String> {
+        self.warnings()
+            .into_iter()
+            .map(|finding| finding.message.clone())
+            .collect()
+    }
+
+    /// Error messages for human-oriented CLI output.
+    #[must_use]
+    pub fn error_messages(&self) -> Vec<String> {
+        self.errors()
+            .into_iter()
+            .map(|finding| finding.message.clone())
+            .collect()
     }
 }
 
