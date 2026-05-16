@@ -153,6 +153,13 @@ pub struct VaultPolicyMetadataV2 {
     /// data keys without asking users to re-provide public keys.
     #[serde(default)]
     pub recipients: Vec<RecipientMetadataV2>,
+    /// Non-secret metadata for planned break-glass recovery-share sets.
+    /// This never stores raw share material.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recovery_share_sets: Vec<RecoveryShareSetMetadataV2>,
+    /// Non-secret metadata for planned remote/KMS-assisted unlock factors.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub remote_factors: Vec<RemoteFactorMetadataV2>,
 }
 
 /// One alternative way to unlock a v2 vault.
@@ -207,6 +214,70 @@ pub struct RecipientMetadataV2 {
     pub public_descriptor: String,
     /// Factor kind this recipient belongs to.
     pub kind: UnlockFactorKindV2,
+}
+
+/// Non-secret metadata describing one planned recovery-share set.
+///
+/// The actual share strings are secret material and must not be stored here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecoveryShareSetMetadataV2 {
+    /// Stable recovery set identifier.
+    pub id: String,
+    /// Human-friendly label shown in CLI output.
+    pub label: Option<String>,
+    /// Number of shares required to recover.
+    pub threshold: u8,
+    /// Share holder descriptors. These are public labels/commitments only.
+    pub shares: Vec<RecoveryShareMetadataV2>,
+    /// Shamir split parameters, when this set uses Shamir-style recovery.
+    pub shamir: Option<ShamirSplitMetadataV2>,
+}
+
+/// Public descriptor for one recovery share holder.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecoveryShareMetadataV2 {
+    /// Stable share identifier.
+    pub id: String,
+    /// Optional human-friendly share label.
+    pub label: Option<String>,
+    /// Optional holder name, email, or team role.
+    pub holder: Option<String>,
+    /// Optional public commitment/fingerprint for verifying the share later.
+    pub public_identifier: Option<String>,
+}
+
+/// Non-secret parameters for a Shamir/key-splitting recovery set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShamirSplitMetadataV2 {
+    /// Required shares.
+    pub threshold: u8,
+    /// Total generated shares.
+    pub share_count: u8,
+}
+
+/// Planned remote/KMS factor backend kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RemoteFactorBackendKindV2 {
+    /// A self-hosted sshenv unlock service.
+    SelfHosted,
+    /// Cloud KMS such as AWS KMS, Google Cloud KMS, or Azure Key Vault.
+    CloudKms,
+    /// Approval-gated OIDC/device-flow service.
+    OidcApproval,
+}
+
+/// Non-secret metadata for a planned remote/KMS-assisted factor.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteFactorMetadataV2 {
+    /// Stable factor identifier matching an [`UnlockFactorV2`] id when active.
+    pub id: String,
+    /// Backend family.
+    pub backend: RemoteFactorBackendKindV2,
+    /// Human-friendly label shown in CLI output.
+    pub label: Option<String>,
+    /// Non-secret backend parameters such as region, key id alias, or URL.
+    pub params: BTreeMap<String, String>,
 }
 
 /// The plaintext payload of a vault: the full profile → var map.

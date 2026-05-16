@@ -1408,6 +1408,66 @@ fn profile_repair_needs_passphrase(policy: &ProfilePolicy) -> bool {
         && !profile_has_factor_metadata(policy, UnlockFactorKindV2::Passphrase)
 }
 
+const fn profile_policy_preset_rank(preset: ProfilePolicyPreset) -> u8 {
+    match preset {
+        ProfilePolicyPreset::Standard => 0,
+        ProfilePolicyPreset::Recommended => 1,
+        ProfilePolicyPreset::Portable => 2,
+        ProfilePolicyPreset::Team => 3,
+        ProfilePolicyPreset::Paranoid => 4,
+    }
+}
+
+fn profile_policy_downgrade_notice(
+    vault: &Vault,
+    profile: &str,
+    target: ProfilePolicyPreset,
+) -> Option<String> {
+    let current = vault.profiles.profile_policy(profile)?;
+    let lowers_preset =
+        profile_policy_preset_rank(current.preset) > profile_policy_preset_rank(target);
+    let clears_factors = target == ProfilePolicyPreset::Standard
+        && (!current.required_factors.is_empty() || !current.factor_metadata.is_empty());
+    if !(lowers_preset || clears_factors) {
+        return None;
+    }
+
+    Some(format!(
+        "profile '{profile}' is moving from {:?} to {:?}; this may remove profile-specific factor requirements and rotate/regenerate profile key material",
+        current.preset, target
+    ))
+}
+
+fn print_profile_policy_downgrade_walkthrough(notice: &str) {
+    eprintln!("warning: {notice}");
+    eprintln!("downgrade/opt-out walkthrough:");
+    eprintln!("1. Preview first with `--dry-run` and inspect `profile-policy status`.");
+    eprintln!("2. Keep the automatic backup, or create one manually before using `--no-backup`.");
+    eprintln!("3. Apply the weaker preset intentionally, then run `profile-policy check`.");
+}
+
+fn print_bulk_profile_policy_downgrade_walkthrough(vault: &Vault, target: ProfilePolicyPreset) {
+    let downgraded = profile_policy_names(vault)
+        .into_iter()
+        .filter_map(|profile| profile_policy_downgrade_notice(vault, &profile, target))
+        .collect::<Vec<_>>();
+    if downgraded.is_empty() {
+        return;
+    }
+
+    eprintln!(
+        "warning: {} profile(s) will use a weaker/opt-out policy:",
+        downgraded.len()
+    );
+    for notice in &downgraded {
+        eprintln!("- {notice}");
+    }
+    eprintln!("downgrade/opt-out walkthrough:");
+    eprintln!("1. Preview first with `--dry-run` and inspect `profile-policy check`.");
+    eprintln!("2. Keep the automatic backup, or create one manually before using `--no-backup`.");
+    eprintln!("3. Apply the weaker preset intentionally, then run `profile-policy check`.");
+}
+
 fn profile_preset_expected_requirements(
     preset: ProfilePolicyPreset,
 ) -> Vec<ProfileFactorRequirement> {
@@ -1713,6 +1773,12 @@ pub fn profile_policy_clear_requirements(
     let (mut vault, data_key) = load_and_unlock_profile(&ctx.vault_path, &args.profile)?;
     ensure_profile_policy_editable(&vault, &args.profile)?;
     let mut policy = existing_or_default_profile_policy(&vault, &args.profile);
+    if !policy.required_factors.is_empty() || !policy.factor_metadata.is_empty() {
+        print_profile_policy_downgrade_walkthrough(&format!(
+            "profile '{}' is clearing all explicit factor requirements",
+            args.profile
+        ));
+    }
     policy.required_factors.clear();
     policy.factor_metadata.clear();
     vault.profiles.set_profile_policy(&args.profile, policy)?;
@@ -1762,7 +1828,13 @@ pub fn profile_policy_apply(ctx: &CmdContext, args: ProfilePolicyApplyArgs) -> R
         add_profile_policy_plan_action(&mut plan, ProfilePolicyRepairAction::RotateProfileKey);
     }
 
+    let downgrade_notice = profile_policy_downgrade_notice(&vault, &args.profile, preset);
     if args.dry_run || args.json {
+        if !args.json
+            && let Some(notice) = &downgrade_notice
+        {
+            print_profile_policy_downgrade_walkthrough(notice);
+        }
         let output = ProfilePolicyApplyPlanOutput {
             profile: args.profile,
             target_preset: format!("{preset:?}"),
@@ -1789,6 +1861,9 @@ pub fn profile_policy_apply(ctx: &CmdContext, args: ProfilePolicyApplyArgs) -> R
         "profile policy apply",
         args.strict_inputs,
     )?;
+    if let Some(notice) = &downgrade_notice {
+        print_profile_policy_downgrade_walkthrough(notice);
+    }
     apply_profile_policy_preset_metadata(&mut vault, &args.profile, preset)?;
     let (plan_changed, applied_actions) = apply_profile_policy_plan_actions(
         &mut vault,
@@ -1817,6 +1892,9 @@ pub fn profile_policy_apply_all(ctx: &CmdContext, args: ProfilePolicyApplyAllArg
         let (vault, _key) = load_and_unlock_metadata(&ctx.vault_path)?;
         let output = build_profile_policy_apply_all_plan(&vault, preset)?;
 
+        if !args.json {
+            print_bulk_profile_policy_downgrade_walkthrough(&vault, preset);
+        }
         if args.json {
             println!("{}", serde_json::to_string_pretty(&output)?);
         } else {
@@ -1844,6 +1922,7 @@ pub fn profile_policy_apply_all(ctx: &CmdContext, args: ProfilePolicyApplyAllArg
     }
     ensure_profile_policy_apply_all_preset_supported(preset)?;
     let (mut vault, data_key) = crate::commands::load_and_unlock(&ctx.vault_path)?;
+    print_bulk_profile_policy_downgrade_walkthrough(&vault, preset);
     let output = build_profile_policy_apply_all_plan(&vault, preset)?;
     if output.unrepairable_count > 0 {
         anyhow::bail!(
@@ -2585,6 +2664,13 @@ fn print_vault_status(ctx: &CmdContext) -> Result<Option<HashSet<String>>> {
             "disabled"
         }
     );
+    if let Some(metadata) = &ciphertext.policy_metadata {
+        println!(
+            "recovery-share sets: {}",
+            metadata.recovery_share_sets.len()
+        );
+        println!("remote/KMS factors: {}", metadata.remote_factors.len());
+    }
 
     let mut recipients = HashSet::new();
     for recipient in ciphertext.recipients {

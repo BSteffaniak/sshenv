@@ -13,10 +13,16 @@ pub mod crypto;
 #[cfg(feature = "device-seal")]
 pub mod device;
 pub mod format;
+#[cfg(feature = "hardware-recipient")]
+pub mod hardware;
 pub mod identity;
 #[cfg(feature = "passphrase-factor")]
 pub mod passphrase;
 pub mod recipient;
+#[cfg(feature = "recovery-shares")]
+pub mod recovery;
+#[cfg(feature = "remote-factor")]
+pub mod remote;
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
@@ -1861,6 +1867,8 @@ fn policy_metadata_from_recipients(recipients: &[RecipientEntry]) -> VaultPolicy
                 kind: UnlockFactorKindV2::SshRecipient,
             })
             .collect(),
+        recovery_share_sets: Vec::new(),
+        remote_factors: Vec::new(),
     }
 }
 
