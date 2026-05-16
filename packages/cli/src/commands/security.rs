@@ -11,11 +11,11 @@ use sshenv_cli_models::{
     ProfilePolicyRequirePassphraseArgs, ProfilePolicyRequirementArgs, ProfilePolicyRotateKeyArgs,
     ProfilePolicySetArgs, ProfilePolicyStatusArgs, SecurityPresetArg, SecurityPresetArgs,
 };
-use sshenv_vault::Vault;
 use sshenv_vault::models::{
     ProfileFactorRequirement, ProfilePolicy, ProfilePolicyPreset, UnlockFactorKindV2, VERSION,
     VERSION_V2,
 };
+use sshenv_vault::{DataKey, Vault};
 
 use crate::commands::Context as CmdContext;
 #[cfg(feature = "passphrase-factor")]
@@ -393,6 +393,9 @@ fn profile_requirement_source(
     "missing".to_string()
 }
 
+const PROFILE_ENTRY_MISSING_WARNING: &str =
+    "profile-key mode is enabled but this profile has no encrypted profile entry";
+
 #[derive(Debug, Default)]
 struct ProfilePolicyValidation {
     profile_exists: bool,
@@ -443,10 +446,9 @@ fn validate_profile_policy(vault: &Vault, profile: &str) -> ProfilePolicyValidat
         && profile_exists
         && !vault.profiles.profile_entries.contains_key(profile)
     {
-        validation.warnings.push(
-            "profile-key mode is enabled but this profile has no encrypted profile entry"
-                .to_string(),
-        );
+        validation
+            .warnings
+            .push(PROFILE_ENTRY_MISSING_WARNING.to_string());
     }
     for factor in &policy.factor_metadata {
         if !matches!(
@@ -498,6 +500,73 @@ fn profile_repair_hint(
         hint.push_str(" --passphrase <value>");
     }
     Some(hint)
+}
+
+fn save_profile_policy_vault(
+    ctx: &CmdContext,
+    vault: &mut Vault,
+    data_key: &DataKey,
+    profile: &str,
+) -> Result<()> {
+    validate_profile_policy_for_save(vault, profile)?;
+    save_vault(ctx, vault, data_key)
+}
+
+fn save_all_profile_policy_vaults(
+    ctx: &CmdContext,
+    vault: &mut Vault,
+    data_key: &DataKey,
+) -> Result<()> {
+    let mut profiles: Vec<_> = vault
+        .profiles
+        .profiles
+        .keys()
+        .chain(vault.profiles.profile_entries.keys())
+        .chain(vault.profiles.profile_policies.keys())
+        .cloned()
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    profiles.sort();
+    for profile in profiles {
+        validate_profile_policy_for_save(vault, &profile)?;
+    }
+    save_vault(ctx, vault, data_key)
+}
+
+fn validate_profile_policy_for_save(vault: &Vault, profile: &str) -> Result<()> {
+    let mut validation = validate_profile_policy(vault, profile);
+    if vault.profiles.profiles.contains_key(profile) {
+        validation
+            .warnings
+            .retain(|warning| warning != PROFILE_ENTRY_MISSING_WARNING);
+    }
+    if !validation.errors.is_empty() {
+        anyhow::bail!(
+            "profile policy has unrecoverable validation error(s): {}",
+            validation.errors.join(", ")
+        );
+    }
+    if validation.warnings.is_empty() {
+        return Ok(());
+    }
+
+    eprintln!("warning: profile policy for {profile} is not fully consistent:");
+    for warning in &validation.warnings {
+        eprintln!("- {warning}");
+    }
+    if let Some(policy) = vault.profiles.profile_policy(profile)
+        && let Some(hint) = profile_repair_hint(
+            vault,
+            profile,
+            policy,
+            &validation.warnings,
+            &validation.errors,
+        )
+    {
+        eprintln!("repair: {hint}");
+    }
+    Ok(())
 }
 
 fn profile_repair_needs_passphrase(policy: &ProfilePolicy) -> bool {
@@ -621,7 +690,7 @@ pub fn profile_policy_migrate(ctx: &CmdContext) -> Result<()> {
     let (mut vault, data_key) = crate::commands::load_and_unlock(&ctx.vault_path)?;
     let changed = vault.enable_profile_keys()?;
     if changed {
-        save_vault(ctx, &mut vault, &data_key)?;
+        save_all_profile_policy_vaults(ctx, &mut vault, &data_key)?;
         eprintln!("Migrated profiles to independently encrypted v2 profile entries.");
     } else {
         eprintln!("Profiles are already stored as independently encrypted v2 entries.");
@@ -632,7 +701,7 @@ pub fn profile_policy_migrate(ctx: &CmdContext) -> Result<()> {
 pub fn profile_policy_rotate_key(ctx: &CmdContext, args: ProfilePolicyRotateKeyArgs) -> Result<()> {
     let (mut vault, data_key) = load_and_unlock_profile(&ctx.vault_path, &args.profile)?;
     vault.rotate_profile_key(&args.profile)?;
-    save_vault(ctx, &mut vault, &data_key)?;
+    save_profile_policy_vault(ctx, &mut vault, &data_key, &args.profile)?;
     eprintln!("Rotated profile data key for {}.", args.profile);
     Ok(())
 }
@@ -646,7 +715,7 @@ pub fn profile_policy_require_passphrase(
         passphrase_arg_or_prompt(args.passphrase, "Enter new sshenv profile passphrase: ")?;
     let (mut vault, data_key) = load_and_unlock_profile(&ctx.vault_path, &args.profile)?;
     vault.require_profile_passphrase(&args.profile, passphrase.as_str())?;
-    save_vault(ctx, &mut vault, &data_key)?;
+    save_profile_policy_vault(ctx, &mut vault, &data_key, &args.profile)?;
     eprintln!(
         "Required passphrase factor for profile {}. The profile payload is now bound to this passphrase.",
         args.profile
@@ -686,7 +755,7 @@ pub fn profile_policy_change_passphrase(
         anyhow::bail!("profile {} does not require a passphrase", args.profile);
     }
     vault.require_profile_passphrase(&args.profile, new_passphrase.as_str())?;
-    save_vault(ctx, &mut vault, &data_key)?;
+    save_profile_policy_vault(ctx, &mut vault, &data_key, &args.profile)?;
     eprintln!("Changed passphrase factor for profile {}.", args.profile);
     Ok(())
 }
@@ -728,7 +797,7 @@ pub fn profile_policy_disable_passphrase(
         .required_factors
         .retain(|factor| *factor != ProfileFactorRequirement::Passphrase);
     vault.profiles.set_profile_policy(&args.profile, policy)?;
-    save_vault(ctx, &mut vault, &data_key)?;
+    save_profile_policy_vault(ctx, &mut vault, &data_key, &args.profile)?;
     eprintln!("Disabled passphrase factor for profile {}.", args.profile);
     Ok(())
 }
@@ -748,7 +817,7 @@ pub fn profile_policy_require_device_seal(
 ) -> Result<()> {
     let (mut vault, data_key) = load_and_unlock_profile(&ctx.vault_path, &args.profile)?;
     vault.require_profile_device_seal(&args.profile)?;
-    save_vault(ctx, &mut vault, &data_key)?;
+    save_profile_policy_vault(ctx, &mut vault, &data_key, &args.profile)?;
     eprintln!(
         "Required device-seal factor for profile {}. The profile payload is now bound to this device.",
         args.profile
@@ -789,7 +858,7 @@ pub fn profile_policy_disable_device_seal(
         .required_factors
         .retain(|factor| *factor != ProfileFactorRequirement::DeviceSeal);
     vault.profiles.set_profile_policy(&args.profile, policy)?;
-    save_vault(ctx, &mut vault, &data_key)?;
+    save_profile_policy_vault(ctx, &mut vault, &data_key, &args.profile)?;
     eprintln!("Disabled device-seal factor for profile {}.", args.profile);
     Ok(())
 }
@@ -812,7 +881,7 @@ pub fn profile_policy_clear_requirements(
     policy.required_factors.clear();
     policy.factor_metadata.clear();
     vault.profiles.set_profile_policy(&args.profile, policy)?;
-    save_vault(ctx, &mut vault, &data_key)?;
+    save_profile_policy_vault(ctx, &mut vault, &data_key, &args.profile)?;
     eprintln!("Cleared profile factor requirements for {}.", args.profile);
     Ok(())
 }
@@ -881,7 +950,7 @@ pub fn profile_policy_apply(ctx: &CmdContext, args: ProfilePolicyApplyArgs) -> R
         }
     }
 
-    save_vault(ctx, &mut vault, &data_key)?;
+    save_profile_policy_vault(ctx, &mut vault, &data_key, &args.profile)?;
     eprintln!(
         "Applied {:?} profile policy enforcement to {}.",
         preset, args.profile
@@ -955,7 +1024,7 @@ pub fn profile_policy_repair(ctx: &CmdContext, args: ProfilePolicyRepairArgs) ->
 
     if changed {
         vault.rotate_profile_key(&args.profile)?;
-        save_vault(ctx, &mut vault, &data_key)?;
+        save_profile_policy_vault(ctx, &mut vault, &data_key, &args.profile)?;
         eprintln!("Repaired profile policy for {}.", args.profile);
     } else {
         eprintln!(
@@ -1076,7 +1145,7 @@ pub fn profile_policy_set(ctx: &CmdContext, args: ProfilePolicySetArgs) -> Resul
     let mut policy = existing_or_default_profile_policy(&vault, &args.profile);
     policy.preset = preset;
     vault.profiles.set_profile_policy(&args.profile, policy)?;
-    save_vault(ctx, &mut vault, &data_key)?;
+    save_profile_policy_vault(ctx, &mut vault, &data_key, &args.profile)?;
     eprintln!(
         "Set advisory profile policy for {} to {:?}. Per-profile cryptographic enforcement is planned but not active yet.",
         args.profile, preset
@@ -1419,7 +1488,7 @@ mod tests {
     use super::*;
     use rand_core::OsRng;
     use ssh_key::{Algorithm, PrivateKey};
-    use sshenv_vault::models::{ProfilePolicy, UnlockFactorV2};
+    use sshenv_vault::models::{ProfileEntry, ProfilePolicy, UnlockFactorV2};
 
     fn test_vault_with_profile() -> Vault {
         let private = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).expect("gen key");
@@ -1429,6 +1498,14 @@ mod tests {
         vault
             .migrate_to_v2(std::slice::from_ref(&pubkey))
             .expect("migrate");
+        vault.enable_profile_keys().expect("enable profile keys");
+        vault.profiles.profile_entries.insert(
+            "p".to_string(),
+            ProfileEntry {
+                wrapped_key: vec![1],
+                ciphertext: vec![2],
+            },
+        );
         vault
     }
 
@@ -1479,6 +1556,22 @@ mod tests {
                 .iter()
                 .any(|warning| warning.contains("requirement device-seal is not satisfied"))
         );
+    }
+
+    #[cfg(feature = "passphrase-factor")]
+    #[test]
+    fn validator_accepts_enforced_portable_passphrase_policy() {
+        let mut vault = test_vault_with_profile();
+        vault
+            .require_profile_passphrase("p", "test-passphrase")
+            .expect("require passphrase");
+        set_profile_policy_preset(&mut vault, "p", ProfilePolicyPreset::Portable)
+            .expect("set preset");
+
+        let validation = validate_profile_policy(&vault, "p");
+
+        assert!(validation.errors.is_empty(), "{:?}", validation.errors);
+        assert!(validation.warnings.is_empty(), "{:?}", validation.warnings);
     }
 
     #[test]
