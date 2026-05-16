@@ -36,6 +36,7 @@ runtime-hardening = []
 shamir-sharing = ["recovery-shares", "sshenv_vault/shamir-sharing"]
 ssh-hardening = ["sshenv_vault/ssh-hardening"]
 threshold-policies = ["sshenv_vault/threshold-policies"]
+tpm-device-seal = ["device-seal", "sshenv_vault/tpm-device-seal"]
 windows-dpapi = ["device-seal", "sshenv_vault/windows-dpapi"]
 
 [[bin]]

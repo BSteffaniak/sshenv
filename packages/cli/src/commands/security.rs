@@ -710,9 +710,10 @@ fn device_backend_implementation_notes(backend: DeviceBackendArg) -> Vec<String>
             "detects missing `secret-tool` or locked/unavailable collections with actionable CLI errors".to_string(),
         ],
         DeviceBackendArg::Tpm => vec![
-            "seal factor bytes under TPM storage hierarchy".to_string(),
-            "record PCR policy and public name for inspection".to_string(),
-            "provide backup/recovery guidance before requiring TPM-only unlock".to_string(),
+            "available with the `tpm-device-seal` feature on Linux".to_string(),
+            "seals factor bytes with tpm2-tools and stores only TPM public/private blobs plus contexts".to_string(),
+            "current implementation uses owner hierarchy without PCR policy; PCR-bound policies remain future work".to_string(),
+            "requires backup/recovery guidance before requiring TPM-only unlock".to_string(),
         ],
         DeviceBackendArg::SecureEnclave => vec![
             "create a non-exportable key with Keychain/Secure Enclave attributes".to_string(),

@@ -24,6 +24,7 @@ remote-factor        = []
 shamir-sharing       = ["recovery-shares"]
 ssh-hardening        = []
 threshold-policies   = []
+tpm-device-seal      = ["device-seal"]
 windows-dpapi        = ["device-seal"]
 
 [dependencies]

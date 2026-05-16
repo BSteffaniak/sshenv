@@ -9,23 +9,29 @@
 use std::collections::BTreeMap;
 #[cfg(any(
     all(feature = "linux-secret-service", target_os = "linux"),
+    all(feature = "tpm-device-seal", target_os = "linux"),
     all(feature = "windows-dpapi", target_os = "windows")
 ))]
 use std::io::Write;
+#[cfg(all(feature = "tpm-device-seal", target_os = "linux"))]
+use std::path::Path;
 #[cfg(any(
     feature = "device-seal-file",
     all(feature = "macos-keychain", target_os = "macos"),
+    all(feature = "tpm-device-seal", target_os = "linux"),
     all(feature = "windows-dpapi", target_os = "windows")
 ))]
 use std::path::PathBuf;
 #[cfg(any(
     all(feature = "macos-keychain", target_os = "macos"),
     all(feature = "linux-secret-service", target_os = "linux"),
+    all(feature = "tpm-device-seal", target_os = "linux"),
     all(feature = "windows-dpapi", target_os = "windows")
 ))]
 use std::process::Command;
 #[cfg(any(
     all(feature = "linux-secret-service", target_os = "linux"),
+    all(feature = "tpm-device-seal", target_os = "linux"),
     all(feature = "windows-dpapi", target_os = "windows")
 ))]
 use std::process::Stdio;
@@ -35,6 +41,7 @@ use anyhow::{Context, Result, bail};
     feature = "device-seal-file",
     all(feature = "macos-keychain", target_os = "macos"),
     all(feature = "linux-secret-service", target_os = "linux"),
+    all(feature = "tpm-device-seal", target_os = "linux"),
     all(feature = "windows-dpapi", target_os = "windows")
 ))]
 use rand_core::RngCore;
@@ -46,6 +53,7 @@ const BACKEND: &str = "backend";
 const BACKEND_LOCAL_FILE: &str = "local-file";
 const BACKEND_LINUX_SECRET_SERVICE: &str = "linux-secret-service";
 const BACKEND_MACOS_KEYCHAIN: &str = "macos-keychain";
+const BACKEND_TPM: &str = "tpm";
 const BACKEND_WINDOWS_DPAPI: &str = "windows-dpapi";
 const KEY_LEN: usize = 32;
 #[cfg(all(feature = "macos-keychain", target_os = "macos"))]
@@ -93,6 +101,7 @@ pub fn derive_factor_from_metadata(factor: &UnlockFactorV2) -> Result<Zeroizing<
     match backend.as_str() {
         BACKEND_MACOS_KEYCHAIN => load_macos_keychain_secret(),
         BACKEND_LINUX_SECRET_SERVICE => load_linux_secret_service_secret(),
+        BACKEND_TPM => load_tpm_secret(),
         BACKEND_WINDOWS_DPAPI => load_windows_dpapi_secret(),
         BACKEND_LOCAL_FILE => load_local_file_secret(),
         _ => bail!("device-seal backend '{backend}' is not supported by this build"),
@@ -133,6 +142,17 @@ pub const fn backend_status() -> &'static str {
         not(all(feature = "macos-keychain", target_os = "macos")),
         not(all(feature = "linux-secret-service", target_os = "linux")),
         not(all(feature = "windows-dpapi", target_os = "windows")),
+        feature = "tpm-device-seal",
+        target_os = "linux"
+    ))]
+    {
+        "TPM"
+    }
+    #[cfg(all(
+        not(all(feature = "macos-keychain", target_os = "macos")),
+        not(all(feature = "linux-secret-service", target_os = "linux")),
+        not(all(feature = "windows-dpapi", target_os = "windows")),
+        not(all(feature = "tpm-device-seal", target_os = "linux")),
         feature = "device-seal-file"
     ))]
     {
@@ -142,6 +162,7 @@ pub const fn backend_status() -> &'static str {
         not(all(feature = "macos-keychain", target_os = "macos")),
         not(all(feature = "linux-secret-service", target_os = "linux")),
         not(all(feature = "windows-dpapi", target_os = "windows")),
+        not(all(feature = "tpm-device-seal", target_os = "linux")),
         not(feature = "device-seal-file")
     ))]
     {
@@ -190,10 +211,27 @@ fn load_or_create_device_secret() -> Result<(&'static str, Zeroizing<[u8; KEY_LE
     }
 
     #[cfg(all(
-        feature = "device-seal-file",
+        feature = "tpm-device-seal",
+        target_os = "linux",
         not(all(feature = "macos-keychain", target_os = "macos")),
         not(all(feature = "linux-secret-service", target_os = "linux")),
         not(all(feature = "windows-dpapi", target_os = "windows"))
+    ))]
+    {
+        if let Ok(secret) = load_tpm_secret() {
+            return Ok((BACKEND_TPM, secret));
+        }
+        let secret = create_random_secret();
+        store_tpm_secret(secret.as_slice())?;
+        Ok((BACKEND_TPM, secret))
+    }
+
+    #[cfg(all(
+        feature = "device-seal-file",
+        not(all(feature = "macos-keychain", target_os = "macos")),
+        not(all(feature = "linux-secret-service", target_os = "linux")),
+        not(all(feature = "windows-dpapi", target_os = "windows")),
+        not(all(feature = "tpm-device-seal", target_os = "linux"))
     ))]
     {
         if let Ok(secret) = load_local_file_secret() {
@@ -209,6 +247,7 @@ fn load_or_create_device_secret() -> Result<(&'static str, Zeroizing<[u8; KEY_LE
         feature = "device-seal-file",
         all(feature = "macos-keychain", target_os = "macos"),
         all(feature = "linux-secret-service", target_os = "linux"),
+        all(feature = "tpm-device-seal", target_os = "linux"),
         all(feature = "windows-dpapi", target_os = "windows")
     )))]
     bail!("no device-seal backend is available in this build")
@@ -218,6 +257,7 @@ fn load_or_create_device_secret() -> Result<(&'static str, Zeroizing<[u8; KEY_LE
     feature = "device-seal-file",
     all(feature = "macos-keychain", target_os = "macos"),
     all(feature = "linux-secret-service", target_os = "linux"),
+    all(feature = "tpm-device-seal", target_os = "linux"),
     all(feature = "windows-dpapi", target_os = "windows")
 ))]
 fn create_random_secret() -> Zeroizing<[u8; KEY_LEN]> {
@@ -339,6 +379,150 @@ fn add_secret_tool_attributes(command: &mut Command) {
         .arg("default");
 }
 
+fn load_tpm_secret() -> Result<Zeroizing<[u8; KEY_LEN]>> {
+    #[cfg(all(feature = "tpm-device-seal", target_os = "linux"))]
+    {
+        let state = tpm_state_dir();
+        let primary = state.join("primary.ctx");
+        let public = state.join("seal.pub");
+        let private = state.join("seal.priv");
+        let seal = state.join("seal.ctx");
+        if !seal.exists() {
+            create_tpm_primary(&primary)?;
+            load_tpm_sealed_object(&primary, &public, &private, &seal)?;
+        }
+        let output = Command::new("tpm2_unseal")
+            .arg("-c")
+            .arg(&seal)
+            .output()
+            .context("failed to invoke tpm2_unseal")?;
+        if !output.status.success() {
+            bail!(
+                "failed to unseal TPM device seal: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        parse_binary_secret(&output.stdout, "TPM device seal secret")
+    }
+
+    #[cfg(not(all(feature = "tpm-device-seal", target_os = "linux")))]
+    bail!("TPM device-seal backend is not available in this build")
+}
+
+#[cfg(all(feature = "tpm-device-seal", target_os = "linux"))]
+fn store_tpm_secret(secret: &[u8]) -> Result<()> {
+    let state = tpm_state_dir();
+    std::fs::create_dir_all(&state).with_context(|| {
+        format!(
+            "failed to create TPM device seal state dir {}",
+            state.display()
+        )
+    })?;
+    let primary = state.join("primary.ctx");
+    let public = state.join("seal.pub");
+    let private = state.join("seal.priv");
+    let seal = state.join("seal.ctx");
+    create_tpm_primary(&primary)?;
+    create_tpm_sealed_object(&primary, &public, &private, secret)?;
+    load_tpm_sealed_object(&primary, &public, &private, &seal)
+}
+
+#[cfg(all(feature = "tpm-device-seal", target_os = "linux"))]
+fn create_tpm_primary(primary: &Path) -> Result<()> {
+    run_tpm2(
+        Command::new("tpm2_createprimary")
+            .arg("-C")
+            .arg("o")
+            .arg("-G")
+            .arg("rsa")
+            .arg("-c")
+            .arg(primary),
+        "create TPM primary context",
+    )
+}
+
+#[cfg(all(feature = "tpm-device-seal", target_os = "linux"))]
+fn create_tpm_sealed_object(
+    primary: &Path,
+    public: &Path,
+    private: &Path,
+    secret: &[u8],
+) -> Result<()> {
+    let mut child = Command::new("tpm2_create")
+        .arg("-C")
+        .arg(primary)
+        .arg("-u")
+        .arg(public)
+        .arg("-r")
+        .arg(private)
+        .arg("-i")
+        .arg("-")
+        .stdin(Stdio::piped())
+        .spawn()
+        .context("failed to invoke tpm2_create")?;
+    {
+        let stdin = child
+            .stdin
+            .as_mut()
+            .context("failed to open tpm2_create stdin")?;
+        stdin
+            .write_all(secret)
+            .context("failed to write device seal to tpm2_create stdin")?;
+    }
+    let status = child
+        .wait()
+        .context("failed to wait for tpm2_create to seal device secret")?;
+    if status.success() {
+        Ok(())
+    } else {
+        bail!("failed to create TPM sealed device seal object")
+    }
+}
+
+#[cfg(all(feature = "tpm-device-seal", target_os = "linux"))]
+fn load_tpm_sealed_object(
+    primary: &Path,
+    public: &Path,
+    private: &Path,
+    seal: &Path,
+) -> Result<()> {
+    run_tpm2(
+        Command::new("tpm2_load")
+            .arg("-C")
+            .arg(primary)
+            .arg("-u")
+            .arg(public)
+            .arg("-r")
+            .arg(private)
+            .arg("-c")
+            .arg(seal),
+        "load TPM sealed device seal object",
+    )
+}
+
+#[cfg(all(feature = "tpm-device-seal", target_os = "linux"))]
+fn run_tpm2(command: &mut Command, action: &str) -> Result<()> {
+    let output = command
+        .output()
+        .with_context(|| format!("failed to invoke tpm2-tools command to {action}"))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        bail!(
+            "failed to {action}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+    }
+}
+
+#[cfg(all(feature = "tpm-device-seal", target_os = "linux"))]
+fn tpm_state_dir() -> PathBuf {
+    dirs::home_dir().map_or_else(
+        || PathBuf::from(".sshenv/device-seal-tpm"),
+        |home| home.join(".sshenv").join("device-seal-tpm"),
+    )
+}
+
 fn load_windows_dpapi_secret() -> Result<Zeroizing<[u8; KEY_LEN]>> {
     #[cfg(all(feature = "windows-dpapi", target_os = "windows"))]
     {
@@ -454,13 +638,25 @@ fn store_macos_keychain_secret(secret: &[u8]) -> Result<()> {
     feature = "device-seal-file",
     all(feature = "macos-keychain", target_os = "macos"),
     all(feature = "linux-secret-service", target_os = "linux"),
+    all(feature = "tpm-device-seal", target_os = "linux"),
     all(feature = "windows-dpapi", target_os = "windows")
 ))]
 fn parse_hex_secret(value: &str, label: &str) -> Result<Zeroizing<[u8; KEY_LEN]>> {
     let bytes = hex::decode(value).with_context(|| format!("{label} is not valid hex"))?;
-    let secret: [u8; KEY_LEN] = bytes.try_into().map_err(|value: Vec<u8>| {
-        anyhow::anyhow!("{label} is {} bytes, expected {KEY_LEN}", value.len())
-    })?;
+    parse_binary_secret(&bytes, label)
+}
+
+#[cfg(any(
+    feature = "device-seal-file",
+    all(feature = "macos-keychain", target_os = "macos"),
+    all(feature = "linux-secret-service", target_os = "linux"),
+    all(feature = "tpm-device-seal", target_os = "linux"),
+    all(feature = "windows-dpapi", target_os = "windows")
+))]
+fn parse_binary_secret(bytes: &[u8], label: &str) -> Result<Zeroizing<[u8; KEY_LEN]>> {
+    let secret: [u8; KEY_LEN] = bytes
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("{label} is {} bytes, expected {KEY_LEN}", bytes.len()))?;
     Ok(Zeroizing::new(secret))
 }
 
