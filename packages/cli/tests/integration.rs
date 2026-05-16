@@ -907,6 +907,53 @@ fn binary_profile_policy_repair_enforces_advisory_portable() {
         "{check_json}"
     );
 
+    let dry_run_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("security")
+        .arg("profile-policy")
+        .arg("repair")
+        .arg("myprofile")
+        .arg("--dry-run")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run profile-policy repair dry-run");
+    assert!(dry_run_out.status.success());
+    let dry_run_stdout = String::from_utf8_lossy(&dry_run_out.stdout);
+    assert!(
+        dry_run_stdout.contains("profile policy repair plan"),
+        "{dry_run_stdout}"
+    );
+    assert!(
+        dry_run_stdout.contains("bound profile payload to passphrase"),
+        "{dry_run_stdout}"
+    );
+
+    let dry_run_json_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("security")
+        .arg("profile-policy")
+        .arg("repair")
+        .arg("myprofile")
+        .arg("--dry-run")
+        .arg("--json")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run profile-policy repair dry-run json");
+    assert!(dry_run_json_out.status.success());
+    let dry_run_json = String::from_utf8_lossy(&dry_run_json_out.stdout);
+    assert!(
+        dry_run_json.contains("\"repairable\": true"),
+        "{dry_run_json}"
+    );
+    assert!(
+        dry_run_json.contains("\"bind-passphrase\""),
+        "{dry_run_json}"
+    );
+
     let repair_out = Command::new(&bin)
         .arg("--vault")
         .arg(&vault_path)

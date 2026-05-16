@@ -578,7 +578,32 @@ fn validate_profile_policy_for_save(vault: &Vault, profile: &str) -> Result<()> 
     Ok(())
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+fn print_profile_policy_repair_plan(output: &ProfilePolicyRepairOutput) {
+    println!("profile policy repair plan");
+    println!("==========================");
+    println!("profile: {}", output.profile);
+    println!("repairable: {}", yes_no(output.repairable));
+    println!("already consistent: {}", yes_no(output.already_consistent));
+    if output.actions.is_empty() {
+        println!("actions: none");
+    } else {
+        println!("actions:");
+        for action in &output.action_labels {
+            println!("- {action}");
+        }
+    }
+    if output.unrepairable.is_empty() {
+        println!("unrepairable: none");
+    } else {
+        println!("unrepairable:");
+        for item in &output.unrepairable {
+            println!("- {item}");
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
 enum ProfilePolicyRepairAction {
     MigrateToV2,
     EnableProfileKeyMode,
@@ -601,6 +626,17 @@ impl ProfilePolicyRepairAction {
     }
 }
 
+#[derive(Debug, Serialize)]
+struct ProfilePolicyRepairOutput {
+    profile: String,
+    repairable: bool,
+    already_consistent: bool,
+    actions: Vec<ProfilePolicyRepairAction>,
+    action_labels: Vec<&'static str>,
+    unrepairable: Vec<String>,
+    findings: Vec<ProfilePolicyFinding>,
+}
+
 #[derive(Debug, Default)]
 struct ProfilePolicyRepairPlan {
     actions: Vec<ProfilePolicyRepairAction>,
@@ -608,6 +644,22 @@ struct ProfilePolicyRepairPlan {
 }
 
 impl ProfilePolicyRepairPlan {
+    fn output(
+        &self,
+        profile: &str,
+        findings: Vec<ProfilePolicyFinding>,
+    ) -> ProfilePolicyRepairOutput {
+        ProfilePolicyRepairOutput {
+            profile: profile.to_string(),
+            repairable: self.unrepairable.is_empty(),
+            already_consistent: self.actions.is_empty() && self.unrepairable.is_empty(),
+            actions: self.actions.clone(),
+            action_labels: self.actions.iter().map(|action| action.label()).collect(),
+            unrepairable: self.unrepairable.clone(),
+            findings,
+        }
+    }
+
     fn from_validation(vault: &Vault, profile: &str, validation: &ProfilePolicyValidation) -> Self {
         let mut plan = Self::default();
         if vault.header.version != VERSION_V2 {
@@ -1085,6 +1137,21 @@ pub fn profile_policy_repair(ctx: &CmdContext, args: ProfilePolicyRepairArgs) ->
     let (mut vault, data_key) = load_and_unlock_profile(&ctx.vault_path, &args.profile)?;
     let initial_validation = vault.validate_profile_policy(&args.profile);
     let plan = ProfilePolicyRepairPlan::from_validation(&vault, &args.profile, &initial_validation);
+    if args.dry_run || args.json {
+        let output = plan.output(&args.profile, initial_validation.findings);
+        if args.json {
+            println!("{}", serde_json::to_string_pretty(&output)?);
+        } else {
+            print_profile_policy_repair_plan(&output);
+        }
+        if !output.unrepairable.is_empty() {
+            anyhow::bail!(
+                "profile policy has unrecoverable validation issue(s): {}",
+                output.unrepairable.join(", ")
+            );
+        }
+        return Ok(());
+    }
     if !plan.unrepairable.is_empty() {
         for item in &plan.unrepairable {
             eprintln!("cannot repair: {item}");
