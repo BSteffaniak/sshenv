@@ -399,6 +399,111 @@ fn binary_recovery_split_validate_and_combine_roundtrip() {
     );
 }
 
+#[cfg(feature = "shamir-sharing")]
+#[test]
+fn binary_recovery_split_vault_key_and_recover_recipient_roundtrip() {
+    let bin = cargo_bin();
+    if !bin.exists() {
+        eprintln!("skipping: {} does not exist", bin.display());
+        return;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let recovery_home = dir.path().join("recovery-home");
+    let vault_path = dir.path().join("vault");
+    let recovered_vault = dir.path().join("recovered-vault");
+    let metadata_path = dir.path().join("recovery.json");
+    init_vault_with_profile(&bin, &home, &vault_path, "myprofile");
+    migrate_vault_to_v2(&bin, &home, &vault_path);
+    std::fs::write(
+        &metadata_path,
+        r#"{
+  "id": "ops-break-glass",
+  "label": "ops break glass",
+  "threshold": 2,
+  "shares": [
+    { "id": "share-a", "label": "A", "holder": "alice", "public_identifier": "alice-pub" },
+    { "id": "share-b", "label": "B", "holder": "bob", "public_identifier": "bob-pub" },
+    { "id": "share-c", "label": "C", "holder": "carol", "public_identifier": "carol-pub" }
+  ],
+  "shamir": { "threshold": 2, "share_count": 3 }
+}"#,
+    )
+    .unwrap();
+
+    let split_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .args(["security", "recovery", "split-vault-key"])
+        .arg("--metadata")
+        .arg(&metadata_path)
+        .arg("--json")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run split-vault-key");
+    assert!(
+        split_out.status.success(),
+        "split-vault-key failed: {}",
+        String::from_utf8_lossy(&split_out.stderr)
+    );
+    let split_json: serde_json::Value = serde_json::from_slice(&split_out.stdout).unwrap();
+    let shares = split_json["shares"].as_array().unwrap();
+    assert_eq!(shares.len(), 3);
+
+    let share_a = dir.path().join("vault-share-a.txt");
+    let share_b = dir.path().join("vault-share-b.txt");
+    std::fs::write(&share_a, shares[0].as_str().unwrap()).unwrap();
+    std::fs::write(&share_b, shares[1].as_str().unwrap()).unwrap();
+
+    std::fs::create_dir_all(recovery_home.join(".ssh")).unwrap();
+    let (_recovery_key, recovery_pubkey) =
+        write_named_keypair(&recovery_home.join(".ssh"), "id_ed25519");
+
+    let recover_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .args(["security", "recovery", "recover-recipient"])
+        .arg("--share-file")
+        .arg(&share_a)
+        .arg("--share-file")
+        .arg(&share_b)
+        .arg("--metadata")
+        .arg(&metadata_path)
+        .arg("--recipient-key")
+        .arg(&recovery_pubkey)
+        .arg("--output")
+        .arg(&recovered_vault)
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run recover-recipient");
+    assert!(
+        recover_out.status.success(),
+        "recover-recipient failed: {}",
+        String::from_utf8_lossy(&recover_out.stderr)
+    );
+    assert!(recovered_vault.exists());
+
+    let show_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&recovered_vault)
+        .arg("show")
+        .arg("myprofile")
+        .env("HOME", &recovery_home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("show recovered vault with recovery recipient");
+    assert!(
+        show_out.status.success(),
+        "show with recovery recipient failed: {}",
+        String::from_utf8_lossy(&show_out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&show_out.stdout);
+    assert!(stdout.contains("DUMMY=value"), "show output: {stdout}");
+}
+
 #[cfg(feature = "recovery-shares")]
 #[test]
 fn binary_recovery_metadata_import_list_remove_roundtrip() {
