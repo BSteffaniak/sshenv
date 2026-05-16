@@ -28,9 +28,10 @@ use sshenv_vault_models::{
     DATA_KEY_LEN, PAYLOAD_AAD, PROFILE_ENTRY_MISSING_WARNING, ProfileEntry,
     ProfileFactorRequirement, ProfileMap, ProfilePolicy, ProfilePolicyCheck, ProfilePolicyFinding,
     ProfilePolicyFindingCode, ProfilePolicyPreset, ProfilePolicyRepairAction,
-    ProfilePolicyRepairPlan, ProfilePolicyValidation, RecipientEntry, RecipientMetadataV2,
-    UnlockFactorKindV2, V2_PAYLOAD_AAD, V2_PROFILE_KEY_AAD, V2_PROFILE_PAYLOAD_AAD, VERSION,
-    VERSION_V2, VaultHeader, VaultModelsError, VaultPolicyMetadataV2,
+    ProfilePolicyRepairApplyResult, ProfilePolicyRepairPlan, ProfilePolicyValidation,
+    RecipientEntry, RecipientMetadataV2, UnlockFactorKindV2, V2_PAYLOAD_AAD, V2_PROFILE_KEY_AAD,
+    V2_PROFILE_PAYLOAD_AAD, VERSION, VERSION_V2, VaultHeader, VaultModelsError,
+    VaultPolicyMetadataV2,
 };
 use zeroize::Zeroizing;
 
@@ -1098,6 +1099,60 @@ impl Vault {
         }
     }
 
+    /// Apply non-secret profile policy repair actions.
+    ///
+    /// Secret-bearing actions such as passphrase/device-seal binding and v1
+    /// migration recipient-key discovery are returned as remaining actions for
+    /// the caller to handle.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a profile-key operation is requested for a missing
+    /// profile or before profile-key mode is available.
+    pub fn apply_profile_policy_repair_plan_base(
+        &mut self,
+        profile: &str,
+        plan: &ProfilePolicyRepairPlan,
+    ) -> Result<ProfilePolicyRepairApplyResult> {
+        let mut changed = false;
+        let mut applied_actions = Vec::new();
+        let mut remaining_actions = Vec::new();
+
+        for action in &plan.actions {
+            match action {
+                ProfilePolicyRepairAction::EnableProfileKeyMode => {
+                    if self.header.version != VERSION_V2 {
+                        push_profile_policy_repair_action(&mut remaining_actions, *action);
+                    } else if self.enable_profile_keys()? {
+                        changed = true;
+                        push_profile_policy_repair_action(&mut applied_actions, *action);
+                    }
+                }
+                ProfilePolicyRepairAction::RegenerateProfileEntry
+                | ProfilePolicyRepairAction::RotateProfileKey => {
+                    if !self.profile_keys_enabled() {
+                        push_profile_policy_repair_action(&mut remaining_actions, *action);
+                    } else {
+                        self.rotate_profile_key(profile)?;
+                        changed = true;
+                        push_profile_policy_repair_action(&mut applied_actions, *action);
+                    }
+                }
+                ProfilePolicyRepairAction::MigrateToV2
+                | ProfilePolicyRepairAction::BindPassphrase
+                | ProfilePolicyRepairAction::BindDeviceSeal => {
+                    push_profile_policy_repair_action(&mut remaining_actions, *action);
+                }
+            }
+        }
+
+        Ok(ProfilePolicyRepairApplyResult {
+            changed,
+            applied_actions,
+            remaining_actions,
+        })
+    }
+
     /// Return the v2 metadata generation, if present.
     #[must_use]
     pub fn generation(&self) -> Option<u64> {
@@ -2038,6 +2093,50 @@ mod tests {
         assert_eq!(check.warnings, 1);
         assert_eq!(check.errors, 0);
         assert!(check.profiles.contains_key("p"));
+    }
+
+    #[test]
+    fn profile_policy_repair_plan_base_applies_non_secret_actions() {
+        let mut vault = test_vault_with_profile_key_mode();
+        vault.profiles.profile_entries.remove("p");
+        vault
+            .profiles
+            .set_profile_policy(
+                "p",
+                ProfilePolicy {
+                    preset: ProfilePolicyPreset::Standard,
+                    required_factors: Vec::new(),
+                    factor_metadata: Vec::new(),
+                },
+            )
+            .expect("set policy");
+
+        let validation = vault.validate_profile_policy("p");
+        let plan = vault.plan_profile_policy_repair("p", Some(&validation));
+        let result = vault
+            .apply_profile_policy_repair_plan_base("p", &plan)
+            .expect("apply base repair");
+
+        assert!(result.changed);
+        assert!(
+            result
+                .applied_actions
+                .contains(&ProfilePolicyRepairAction::RegenerateProfileEntry),
+            "{:?}",
+            result.applied_actions
+        );
+        assert!(
+            result
+                .applied_actions
+                .contains(&ProfilePolicyRepairAction::RotateProfileKey),
+            "{:?}",
+            result.applied_actions
+        );
+        assert!(
+            result.remaining_actions.is_empty(),
+            "{:?}",
+            result.remaining_actions
+        );
     }
 
     #[test]

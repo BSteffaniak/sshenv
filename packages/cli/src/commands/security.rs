@@ -1036,22 +1036,30 @@ pub fn profile_policy_repair(ctx: &CmdContext, args: ProfilePolicyRepairArgs) ->
     }
     ensure_repair_inputs_available(&plan, &args)?;
 
-    let mut changed =
-        prepare_profile_policy_enforcement(&mut vault, &args.profile, &args.recipient_keys)?;
+    let mut changed = false;
     let mut applied_actions = Vec::new();
+
+    if plan
+        .actions
+        .contains(&ProfilePolicyRepairAction::MigrateToV2)
+        && migrate_to_v2_if_needed(&mut vault, &args.recipient_keys)?
+    {
+        changed = true;
+        applied_actions.push(ProfilePolicyRepairAction::MigrateToV2.label());
+    }
+
+    let base_result = vault.apply_profile_policy_repair_plan_base(&args.profile, &plan)?;
+    changed |= base_result.changed;
+    applied_actions.extend(
+        base_result
+            .applied_actions
+            .iter()
+            .map(|action| action.label()),
+    );
+    ensure_profile_policy_editable(&vault, &args.profile)?;
 
     for action in &plan.actions {
         match action {
-            ProfilePolicyRepairAction::MigrateToV2
-            | ProfilePolicyRepairAction::EnableProfileKeyMode => {
-                if changed {
-                    applied_actions.push(action.label());
-                }
-            }
-            ProfilePolicyRepairAction::RegenerateProfileEntry => {
-                changed = true;
-                applied_actions.push(action.label());
-            }
             ProfilePolicyRepairAction::BindPassphrase => {
                 if repair_profile_passphrase_if_needed(
                     &mut vault,
@@ -1078,18 +1086,14 @@ pub fn profile_policy_repair(ctx: &CmdContext, args: ProfilePolicyRepairArgs) ->
                     }
                 }
             }
-            ProfilePolicyRepairAction::RotateProfileKey => {}
+            ProfilePolicyRepairAction::MigrateToV2
+            | ProfilePolicyRepairAction::EnableProfileKeyMode
+            | ProfilePolicyRepairAction::RegenerateProfileEntry
+            | ProfilePolicyRepairAction::RotateProfileKey => {}
         }
     }
 
     if changed {
-        if plan
-            .actions
-            .contains(&ProfilePolicyRepairAction::RotateProfileKey)
-        {
-            vault.rotate_profile_key(&args.profile)?;
-            applied_actions.push(ProfilePolicyRepairAction::RotateProfileKey.label());
-        }
         save_profile_policy_vault(ctx, &mut vault, &data_key, &args.profile)?;
         eprintln!("Repaired profile policy for {}.", args.profile);
         for action in applied_actions {

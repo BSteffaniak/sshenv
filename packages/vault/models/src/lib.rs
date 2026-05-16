@@ -458,6 +458,14 @@ pub struct ProfilePolicyRepairPlan {
     pub findings: Vec<ProfilePolicyFinding>,
 }
 
+/// Result from applying non-secret profile policy repair actions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProfilePolicyRepairApplyResult {
+    pub changed: bool,
+    pub applied_actions: Vec<ProfilePolicyRepairAction>,
+    pub remaining_actions: Vec<ProfilePolicyRepairAction>,
+}
+
 /// One profile-level factor requirement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
