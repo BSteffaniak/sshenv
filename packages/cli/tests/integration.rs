@@ -628,7 +628,15 @@ fn binary_remote_request_template_validates_roundtrip() {
         .args(["security", "remote", "validate-request"])
         .arg(&metadata_path)
         .arg(&request_path)
-        .arg("--json")
+        .args([
+            "--expected-vault-id",
+            "vault-prod",
+            "--expected-generation",
+            "7",
+            "--expected-request-id",
+            "req-1",
+            "--json",
+        ])
         .output()
         .expect("run remote validate-request");
     assert!(
@@ -640,6 +648,10 @@ fn binary_remote_request_template_validates_roundtrip() {
         serde_json::from_slice(&validate_request_out.stdout).unwrap();
     assert_eq!(request_json["valid"], true);
     assert_eq!(request_json["factor_id"], "prod-kms");
+    assert_eq!(
+        request_json["checked_expectations"],
+        serde_json::json!(["vault-id", "generation", "request-id"])
+    );
 }
 
 #[cfg(feature = "remote-factor")]

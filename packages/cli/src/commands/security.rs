@@ -1685,6 +1685,7 @@ pub fn remote_validate_request(args: RemoteRequestArgs) -> Result<()> {
     let metadata = load_remote_factor_metadata(&args.metadata_path)?;
     let request = load_remote_factor_request(&args.request_path)?;
     sshenv_vault::remote::validate_remote_factor_request(&metadata, &request)?;
+    let checked_expectations = validate_remote_request_expectations(&request, &args)?;
     if args.json {
         println!(
             "{}",
@@ -1693,6 +1694,7 @@ pub fn remote_validate_request(args: RemoteRequestArgs) -> Result<()> {
                 "factor_id": request.factor_id,
                 "backend": metadata.backend,
                 "context_keys": request.context.keys().collect::<Vec<_>>(),
+                "checked_expectations": checked_expectations,
             })
         );
     } else {
@@ -1700,6 +1702,9 @@ pub fn remote_validate_request(args: RemoteRequestArgs) -> Result<()> {
         println!("factor id: {}", request.factor_id);
         println!("backend: {:?}", metadata.backend);
         println!("context keys: {}", request.context.len());
+        if !checked_expectations.is_empty() {
+            println!("checked expectations: {}", checked_expectations.join(", "));
+        }
     }
     Ok(())
 }
@@ -1707,6 +1712,45 @@ pub fn remote_validate_request(args: RemoteRequestArgs) -> Result<()> {
 #[cfg(not(feature = "remote-factor"))]
 pub fn remote_validate_request(_args: RemoteRequestArgs) -> Result<()> {
     anyhow::bail!("this sshenv build was compiled without remote-factor support")
+}
+
+#[cfg(feature = "remote-factor")]
+fn validate_remote_request_expectations(
+    request: &sshenv_vault::remote::RemoteFactorRequest,
+    args: &RemoteRequestArgs,
+) -> Result<Vec<String>> {
+    let mut checked = Vec::new();
+    if let Some(expected) = args.expected_vault_id.as_deref() {
+        ensure_remote_context_equals(request, "vault-id", expected)?;
+        checked.push("vault-id".to_string());
+    }
+    if let Some(expected) = args.expected_generation {
+        ensure_remote_context_equals(request, "generation", &expected.to_string())?;
+        checked.push("generation".to_string());
+    }
+    if let Some(expected) = args.expected_request_id.as_deref() {
+        ensure_remote_context_equals(request, "request-id", expected)?;
+        checked.push("request-id".to_string());
+    }
+    Ok(checked)
+}
+
+#[cfg(feature = "remote-factor")]
+fn ensure_remote_context_equals(
+    request: &sshenv_vault::remote::RemoteFactorRequest,
+    key: &str,
+    expected: &str,
+) -> Result<()> {
+    let actual = request
+        .context
+        .get(key)
+        .ok_or_else(|| anyhow::anyhow!("remote request context is missing `{key}`"))?;
+    if actual != expected {
+        anyhow::bail!(
+            "remote request context `{key}` value '{actual}' does not match expected '{expected}'"
+        );
+    }
+    Ok(())
 }
 
 #[cfg(feature = "remote-factor")]

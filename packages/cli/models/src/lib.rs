@@ -389,6 +389,15 @@ pub struct RemoteRequestArgs {
     pub metadata_path: PathBuf,
     /// Path to a JSON RemoteFactorRequest document.
     pub request_path: PathBuf,
+    /// Expected vault id for this request context.
+    #[arg(long)]
+    pub expected_vault_id: Option<String>,
+    /// Expected vault generation for this request context.
+    #[arg(long)]
+    pub expected_generation: Option<u64>,
+    /// Expected request id for this request context.
+    #[arg(long)]
+    pub expected_request_id: Option<String>,
     /// Print machine-readable JSON.
     #[arg(long)]
     pub json: bool,
