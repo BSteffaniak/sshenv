@@ -59,6 +59,9 @@ pub fn run(ctx: &CmdContext, args: RunArgs) -> Result<()> {
 
     let mut child = Command::new(&target);
     child.args(cmd_args);
+    if args.clean_env {
+        child.env_clear();
+    }
     for (k, v) in vars {
         child.env(k, v);
     }

@@ -15,6 +15,7 @@ use anyhow::Result;
 pub fn apply_for_secret_runtime() -> Result<()> {
     apply_core_dump_limit()?;
     apply_non_dumpable()?;
+    apply_memory_lock_best_effort();
     Ok(())
 }
 
@@ -53,3 +54,17 @@ fn apply_non_dumpable() -> Result<()> {
 fn apply_non_dumpable() -> Result<()> {
     Ok(())
 }
+
+#[cfg(unix)]
+fn apply_memory_lock_best_effort() {
+    let rc = unsafe { libc::mlockall(libc::MCL_CURRENT | libc::MCL_FUTURE) };
+    if rc != 0 {
+        eprintln!(
+            "warning: could not lock process memory for sshenv runtime hardening: {}",
+            std::io::Error::last_os_error()
+        );
+    }
+}
+
+#[cfg(not(unix))]
+const fn apply_memory_lock_best_effort() {}

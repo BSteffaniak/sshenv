@@ -13,6 +13,9 @@ use crate::picker::{PubkeyCandidate, select_pubkey_interactive};
 use crate::pubkey::load_public_key;
 
 pub fn add(ctx: &CmdContext, args: AddRecipientArgs) -> Result<()> {
+    if args.hardware {
+        add_hardware_recipient()?;
+    }
     let (ciphertext, existing) = load_ciphertext_and_fps(&ctx.vault_path)?;
 
     let (pubkey_line, incoming_fp) = resolve_new_recipient(args.key.as_deref(), &existing)?;
@@ -31,6 +34,18 @@ pub fn add(ctx: &CmdContext, args: AddRecipientArgs) -> Result<()> {
 
     eprintln!("Added recipient {fingerprint}.");
     Ok(())
+}
+
+#[cfg(feature = "hardware-recipient")]
+fn add_hardware_recipient() -> Result<()> {
+    bail!(
+        "hardware recipients are not implemented yet; this build only reserves the hardware-recipient feature gate"
+    )
+}
+
+#[cfg(not(feature = "hardware-recipient"))]
+fn add_hardware_recipient() -> Result<()> {
+    bail!("this sshenv build was compiled without hardware-recipient support")
 }
 
 /// Resolve the SSH public key line for a new recipient, either from the

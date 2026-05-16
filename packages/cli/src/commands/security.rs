@@ -2642,7 +2642,7 @@ fn print_feature_status() {
         enabled_label(cfg!(feature = "age-plugin-recipient"))
     );
     println!(
-        "runtime:       {}",
+        "runtime:       {} (coredumps off, non-dumpable where supported, best-effort memory lock)",
         enabled_label(cfg!(feature = "runtime-hardening"))
     );
     println!(

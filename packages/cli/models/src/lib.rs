@@ -473,6 +473,10 @@ pub struct AddRecipientArgs {
     /// from `~/.ssh/` (requires a TTY).
     #[arg(long, value_name = "PATH_OR_LINE")]
     pub key: Option<String>,
+    /// Add a hardware-backed recipient. This is currently reserved for future
+    /// age-plugin/YubiKey/FIDO integrations.
+    #[arg(long)]
+    pub hardware: bool,
 }
 
 #[derive(Debug, clap::Args)]
@@ -546,6 +550,9 @@ pub struct RunArgs {
     /// Do not add this execution to the local session registry.
     #[arg(long)]
     pub incognito: bool,
+    /// Clear inherited environment before injecting profile variables.
+    #[arg(long)]
+    pub clean_env: bool,
 
     pub profile: String,
     /// Command and its arguments. Use `--` to separate from sshenv's own
