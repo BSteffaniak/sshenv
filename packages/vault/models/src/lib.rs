@@ -250,6 +250,45 @@ pub struct ProfilePolicy {
     pub factor_metadata: Vec<UnlockFactorV2>,
 }
 
+/// Warning emitted when a metadata-only unlock has not decrypted/generated the
+/// selected profile entry yet.
+pub const PROFILE_ENTRY_MISSING_WARNING: &str =
+    "profile-key mode is enabled but this profile has no encrypted profile entry";
+
+/// Consistency validation for one profile policy.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProfilePolicyValidation {
+    /// True when the profile exists in plaintext or profile-entry storage.
+    pub profile_exists: bool,
+    /// True when policy metadata exists for this profile.
+    pub policy_present: bool,
+    /// Recoverable or actionable drift findings.
+    pub warnings: Vec<String>,
+    /// Unrecoverable policy/schema errors.
+    pub errors: Vec<String>,
+}
+
+impl ProfilePolicyValidation {
+    /// True when neither a profile nor policy metadata exists for a name.
+    #[must_use]
+    pub const fn profile_policy_missing(&self) -> bool {
+        !self.profile_exists && !self.policy_present
+    }
+}
+
+/// Aggregate consistency validation across every profile/policy entry.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProfilePolicyCheck {
+    /// Number of profile/policy names checked.
+    pub profiles_checked: usize,
+    /// Sum of all warnings across profiles.
+    pub warnings: usize,
+    /// Sum of all errors across profiles.
+    pub errors: usize,
+    /// Per-profile validation results, keyed by profile name.
+    pub profiles: BTreeMap<String, ProfilePolicyValidation>,
+}
+
 /// One profile-level factor requirement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]

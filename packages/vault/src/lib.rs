@@ -25,10 +25,11 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow};
 use sshenv_vault_models::{
-    DATA_KEY_LEN, PAYLOAD_AAD, ProfileEntry, ProfileFactorRequirement, ProfileMap, RecipientEntry,
-    RecipientMetadataV2, UnlockFactorKindV2, V2_PAYLOAD_AAD, V2_PROFILE_KEY_AAD,
-    V2_PROFILE_PAYLOAD_AAD, VERSION, VERSION_V2, VaultHeader, VaultModelsError,
-    VaultPolicyMetadataV2,
+    DATA_KEY_LEN, PAYLOAD_AAD, PROFILE_ENTRY_MISSING_WARNING, ProfileEntry,
+    ProfileFactorRequirement, ProfileMap, ProfilePolicy, ProfilePolicyCheck, ProfilePolicyPreset,
+    ProfilePolicyValidation, RecipientEntry, RecipientMetadataV2, UnlockFactorKindV2,
+    V2_PAYLOAD_AAD, V2_PROFILE_KEY_AAD, V2_PROFILE_PAYLOAD_AAD, VERSION, VERSION_V2, VaultHeader,
+    VaultModelsError, VaultPolicyMetadataV2,
 };
 use zeroize::Zeroizing;
 
@@ -883,6 +884,108 @@ impl Vault {
             .is_some_and(|metadata| metadata.profile_keys_enabled)
     }
 
+    /// Validate consistency for one profile's policy metadata.
+    #[must_use]
+    pub fn validate_profile_policy(&self, profile: &str) -> ProfilePolicyValidation {
+        let profile_exists = self.profiles.profiles.contains_key(profile)
+            || self.profiles.profile_entries.contains_key(profile);
+        let Some(policy) = self.profiles.profile_policy(profile) else {
+            return ProfilePolicyValidation {
+                profile_exists,
+                policy_present: false,
+                warnings: Vec::new(),
+                errors: Vec::new(),
+            };
+        };
+
+        let mut validation = ProfilePolicyValidation {
+            profile_exists,
+            policy_present: true,
+            warnings: Vec::new(),
+            errors: Vec::new(),
+        };
+
+        if !profile_exists {
+            validation
+                .warnings
+                .push("policy metadata exists for a missing profile".to_string());
+        }
+        if !self.profile_keys_enabled()
+            && (!policy.required_factors.is_empty() || !policy.factor_metadata.is_empty())
+        {
+            validation.warnings.push(
+                "profile factor requirements or metadata exist but profile-key mode is disabled"
+                    .to_string(),
+            );
+        }
+        if self.profile_keys_enabled()
+            && profile_exists
+            && !self.profiles.profile_entries.contains_key(profile)
+        {
+            validation
+                .warnings
+                .push(PROFILE_ENTRY_MISSING_WARNING.to_string());
+        }
+        for factor in &policy.factor_metadata {
+            if !matches!(
+                factor.kind,
+                UnlockFactorKindV2::Passphrase | UnlockFactorKindV2::DeviceSeal
+            ) {
+                validation.errors.push(format!(
+                    "unsupported profile factor metadata kind: {:?}",
+                    factor.kind
+                ));
+            }
+        }
+        for requirement in &policy.required_factors {
+            if !profile_requirement_satisfied(self, policy, *requirement) {
+                validation.warnings.push(format!(
+                    "requirement {} is not satisfied by profile-specific metadata or a vault-level factor",
+                    profile_factor_requirement_label(*requirement)
+                ));
+            }
+        }
+        for requirement in profile_preset_expected_requirements(policy.preset) {
+            let kind = unlock_factor_kind_for_profile_requirement(requirement);
+            if !profile_has_factor_metadata(policy, kind) {
+                validation.warnings.push(format!(
+                    "preset {:?} expects profile-specific {} binding",
+                    policy.preset,
+                    profile_factor_requirement_label(requirement)
+                ));
+            }
+        }
+        validation
+    }
+
+    /// Validate consistency across every profile, profile entry, and policy
+    /// metadata record.
+    #[must_use]
+    pub fn validate_profile_policies(&self) -> ProfilePolicyCheck {
+        let profiles = profile_policy_names(self)
+            .into_iter()
+            .map(|profile| {
+                let validation = self.validate_profile_policy(&profile);
+                (profile, validation)
+            })
+            .collect::<BTreeMap<_, _>>();
+        let warnings = profiles
+            .values()
+            .map(|validation| validation.warnings.len())
+            .sum();
+        let errors = profiles
+            .values()
+            .map(|validation| validation.errors.len())
+            .sum();
+
+        ProfilePolicyCheck {
+            profiles_checked: profiles.len(),
+            warnings,
+            errors,
+            profiles,
+        }
+    }
+
     /// Return the v2 metadata generation, if present.
     #[must_use]
     pub fn generation(&self) -> Option<u64> {
@@ -1311,6 +1414,81 @@ const fn profile_factor_requirement_label(requirement: ProfileFactorRequirement)
     }
 }
 
+fn profile_policy_names(vault: &Vault) -> Vec<String> {
+    let mut profiles: Vec<_> = vault
+        .profiles
+        .profiles
+        .keys()
+        .chain(vault.profiles.profile_entries.keys())
+        .chain(vault.profiles.profile_policies.keys())
+        .cloned()
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    profiles.sort();
+    profiles
+}
+
+fn profile_requirement_satisfied(
+    vault: &Vault,
+    policy: &ProfilePolicy,
+    requirement: ProfileFactorRequirement,
+) -> bool {
+    let kind = unlock_factor_kind_for_profile_requirement(requirement);
+    vault_has_factor(vault, kind) || profile_has_factor_metadata(policy, kind)
+}
+
+fn profile_has_factor_metadata(policy: &ProfilePolicy, kind: UnlockFactorKindV2) -> bool {
+    policy
+        .factor_metadata
+        .iter()
+        .any(|factor| factor.kind == kind)
+}
+
+fn vault_has_factor(vault: &Vault, kind: UnlockFactorKindV2) -> bool {
+    vault
+        .policy_metadata
+        .as_ref()
+        .into_iter()
+        .flat_map(|metadata| &metadata.policies)
+        .flat_map(|policy| &policy.factors)
+        .any(|factor| factor.kind == kind)
+}
+
+fn profile_preset_expected_requirements(
+    preset: ProfilePolicyPreset,
+) -> Vec<ProfileFactorRequirement> {
+    match preset {
+        ProfilePolicyPreset::Standard => Vec::new(),
+        ProfilePolicyPreset::Portable => vec![ProfileFactorRequirement::Passphrase],
+        ProfilePolicyPreset::Recommended => {
+            if device_seal_backend_status() == "none" {
+                Vec::new()
+            } else {
+                vec![ProfileFactorRequirement::DeviceSeal]
+            }
+        }
+        ProfilePolicyPreset::Paranoid => {
+            let mut requirements = vec![ProfileFactorRequirement::Passphrase];
+            if device_seal_backend_status() != "none" {
+                requirements.push(ProfileFactorRequirement::DeviceSeal);
+            }
+            requirements
+        }
+    }
+}
+
+const fn device_seal_backend_status() -> &'static str {
+    #[cfg(feature = "device-seal")]
+    {
+        device::backend_status()
+    }
+    #[cfg(not(feature = "device-seal"))]
+    {
+        "none"
+    }
+}
+
 fn payload_key_factors_for_metadata(
     metadata: Option<&VaultPolicyMetadataV2>,
     passphrase: Option<&str>,
@@ -1535,6 +1713,24 @@ mod tests {
         (pub_key_line, Box::new(id))
     }
 
+    fn test_vault_with_profile_key_mode() -> Vault {
+        let (pubkey, _identity) = generate_keypair();
+        let (mut vault, _key) = Vault::create(&pubkey).expect("create vault");
+        vault.profiles.set("p", "K", "v".to_string());
+        vault
+            .migrate_to_v2(std::slice::from_ref(&pubkey))
+            .expect("migrate");
+        vault.enable_profile_keys().expect("enable profile keys");
+        vault.profiles.profile_entries.insert(
+            "p".to_string(),
+            ProfileEntry {
+                wrapped_key: vec![1],
+                ciphertext: vec![2],
+            },
+        );
+        vault
+    }
+
     #[test]
     fn create_save_load_unlock_roundtrip() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -1563,6 +1759,128 @@ mod tests {
             .add_recipient(&pubkey, &key)
             .expect_err("should be duplicate");
         assert!(err.to_string().contains("duplicate"), "got: {err}");
+    }
+
+    #[test]
+    fn profile_policy_validator_warns_when_portable_preset_lacks_profile_passphrase_binding() {
+        let mut vault = test_vault_with_profile_key_mode();
+        vault
+            .profiles
+            .set_profile_policy(
+                "p",
+                ProfilePolicy {
+                    preset: ProfilePolicyPreset::Portable,
+                    required_factors: Vec::new(),
+                    factor_metadata: Vec::new(),
+                },
+            )
+            .expect("set policy");
+
+        let validation = vault.validate_profile_policy("p");
+
+        assert!(validation.errors.is_empty());
+        assert!(validation.warnings.iter().any(|warning| {
+            warning.contains("preset Portable expects profile-specific passphrase binding")
+        }));
+    }
+
+    #[test]
+    fn profile_policy_validator_warns_when_required_factor_is_unsatisfied() {
+        let mut vault = test_vault_with_profile_key_mode();
+        vault
+            .profiles
+            .set_profile_policy(
+                "p",
+                ProfilePolicy {
+                    preset: ProfilePolicyPreset::Standard,
+                    required_factors: vec![ProfileFactorRequirement::DeviceSeal],
+                    factor_metadata: Vec::new(),
+                },
+            )
+            .expect("set policy");
+
+        let validation = vault.validate_profile_policy("p");
+
+        assert!(validation.errors.is_empty());
+        assert!(
+            validation
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("requirement device-seal is not satisfied"))
+        );
+    }
+
+    #[cfg(feature = "passphrase-factor")]
+    #[test]
+    fn profile_policy_validator_accepts_enforced_portable_passphrase_policy() {
+        let mut vault = test_vault_with_profile_key_mode();
+        vault
+            .require_profile_passphrase("p", "test-passphrase")
+            .expect("require passphrase");
+        let mut policy = vault.profiles.profile_policy("p").cloned().expect("policy");
+        policy.preset = ProfilePolicyPreset::Portable;
+        vault
+            .profiles
+            .set_profile_policy("p", policy)
+            .expect("set policy");
+
+        let validation = vault.validate_profile_policy("p");
+
+        assert!(validation.errors.is_empty(), "{:?}", validation.errors);
+        assert!(validation.warnings.is_empty(), "{:?}", validation.warnings);
+    }
+
+    #[test]
+    fn profile_policy_validator_errors_on_unsupported_profile_factor_metadata() {
+        let mut vault = test_vault_with_profile_key_mode();
+        vault
+            .profiles
+            .set_profile_policy(
+                "p",
+                ProfilePolicy {
+                    preset: ProfilePolicyPreset::Standard,
+                    required_factors: Vec::new(),
+                    factor_metadata: vec![sshenv_vault_models::UnlockFactorV2 {
+                        id: "hardware:test".to_string(),
+                        kind: UnlockFactorKindV2::HardwareRecipient,
+                        recipient_fingerprint: None,
+                        params: BTreeMap::new(),
+                    }],
+                },
+            )
+            .expect("set policy");
+
+        let validation = vault.validate_profile_policy("p");
+
+        assert!(
+            validation
+                .errors
+                .iter()
+                .any(|error| error.contains("unsupported profile factor metadata kind"))
+        );
+    }
+
+    #[test]
+    fn profile_policy_check_aggregates_all_profiles() {
+        let mut vault = test_vault_with_profile_key_mode();
+        vault
+            .profiles
+            .set_profile_policy(
+                "p",
+                ProfilePolicy {
+                    preset: ProfilePolicyPreset::Portable,
+                    required_factors: Vec::new(),
+                    factor_metadata: Vec::new(),
+                },
+            )
+            .expect("set policy");
+
+        let check = vault.validate_profile_policies();
+
+        assert_eq!(check.profiles_checked, 1);
+        assert_eq!(check.warnings, 1);
+        assert_eq!(check.errors, 0);
+        assert!(check.profiles.contains_key("p"));
     }
 
     #[test]
