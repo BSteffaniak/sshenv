@@ -159,6 +159,8 @@ pub enum ProfilePolicyCommand {
     RepairAll(ProfilePolicyRepairAllArgs),
     /// Restore the current vault from a profile-policy backup file.
     RestoreBackup(ProfilePolicyRestoreBackupArgs),
+    /// Verify a profile-policy backup file is readable and unlockable.
+    VerifyBackup(ProfilePolicyVerifyBackupArgs),
     /// Set advisory policy metadata for a profile.
     Set(ProfilePolicySetArgs),
 }
@@ -302,6 +304,15 @@ pub struct ProfilePolicyApplyAllArgs {
 pub struct ProfilePolicyRestoreBackupArgs {
     /// Backup vault file to restore over the current vault.
     pub backup_path: PathBuf,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct ProfilePolicyVerifyBackupArgs {
+    /// Backup vault file to verify.
+    pub backup_path: PathBuf,
+    /// Print machine-readable JSON.
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Debug, clap::Args)]

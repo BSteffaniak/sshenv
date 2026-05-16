@@ -14,7 +14,8 @@ use sshenv_cli_models::{
     ProfilePolicyCheckArgs, ProfilePolicyDisablePassphraseArgs, ProfilePolicyPruneBackupsArgs,
     ProfilePolicyRepairAllArgs, ProfilePolicyRepairArgs, ProfilePolicyRequirePassphraseArgs,
     ProfilePolicyRequirementArgs, ProfilePolicyRestoreBackupArgs, ProfilePolicyRotateKeyArgs,
-    ProfilePolicySetArgs, ProfilePolicyStatusArgs, SecurityPresetArg, SecurityPresetArgs,
+    ProfilePolicySetArgs, ProfilePolicyStatusArgs, ProfilePolicyVerifyBackupArgs,
+    SecurityPresetArg, SecurityPresetArgs,
 };
 use sshenv_vault::models::{
     ProfileFactorRequirement, ProfilePolicy, ProfilePolicyFinding, ProfilePolicyFindingCode,
@@ -122,6 +123,25 @@ pub fn profile_policy_backups(ctx: &CmdContext, args: ProfilePolicyBackupsArgs) 
     Ok(())
 }
 
+pub fn profile_policy_verify_backup(
+    _ctx: &CmdContext,
+    args: ProfilePolicyVerifyBackupArgs,
+) -> Result<()> {
+    let output = build_profile_policy_verify_backup(&args.backup_path);
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        print_profile_policy_verify_backup(&output);
+    }
+    if !output.readable || !output.unlockable || output.errors.unwrap_or(0) > 0 {
+        anyhow::bail!(
+            "profile policy backup verification failed for {}",
+            output.path
+        );
+    }
+    Ok(())
+}
+
 pub fn profile_policy_prune_backups(
     ctx: &CmdContext,
     args: ProfilePolicyPruneBackupsArgs,
@@ -173,6 +193,84 @@ fn profile_policy_backup_candidates(ctx: &CmdContext) -> Result<Vec<ProfilePolic
     }
 
     Ok(backups)
+}
+
+fn build_profile_policy_verify_backup(path: &Path) -> ProfilePolicyVerifyBackupOutput {
+    let mut output = ProfilePolicyVerifyBackupOutput {
+        path: path.display().to_string(),
+        readable: false,
+        unlockable: false,
+        version: None,
+        generation: None,
+        profiles_checked: None,
+        warnings: None,
+        errors: None,
+        error: None,
+    };
+
+    let ciphertext = match Vault::load_ciphertext(path) {
+        Ok(ciphertext) => ciphertext,
+        Err(error) => {
+            output.error = Some(error.to_string());
+            return output;
+        }
+    };
+    output.readable = true;
+    output.version = Some(ciphertext.header.version);
+    output.generation = ciphertext.generation();
+
+    match load_and_unlock_metadata(path) {
+        Ok((vault, _key)) => {
+            output.unlockable = true;
+            let validation = vault.validate_profile_policies();
+            output.profiles_checked = Some(validation.profiles.len());
+            output.warnings = Some(validation.warnings);
+            output.errors = Some(validation.errors);
+        }
+        Err(error) => output.error = Some(error.to_string()),
+    }
+    output
+}
+
+fn print_profile_policy_verify_backup(output: &ProfilePolicyVerifyBackupOutput) {
+    println!("profile policy backup verification");
+    println!("==================================");
+    println!("path: {}", output.path);
+    println!("readable: {}", yes_no(output.readable));
+    println!("unlockable: {}", yes_no(output.unlockable));
+    println!(
+        "version: {}",
+        output
+            .version
+            .map_or_else(|| "unknown".to_string(), |value| value.to_string())
+    );
+    println!(
+        "generation: {}",
+        output
+            .generation
+            .map_or_else(|| "unknown".to_string(), |value| value.to_string())
+    );
+    println!(
+        "profiles checked: {}",
+        output
+            .profiles_checked
+            .map_or_else(|| "unknown".to_string(), |value| value.to_string())
+    );
+    println!(
+        "warnings: {}",
+        output
+            .warnings
+            .map_or_else(|| "unknown".to_string(), |value| value.to_string())
+    );
+    println!(
+        "errors: {}",
+        output
+            .errors
+            .map_or_else(|| "unknown".to_string(), |value| value.to_string())
+    );
+    if let Some(error) = &output.error {
+        println!("error: {error}");
+    }
 }
 
 fn profile_policy_backup_kind(file_name: &str, vault_file_name: &str) -> Option<&'static str> {
@@ -543,6 +641,19 @@ struct ProfilePolicyPruneBackupsOutput {
     kept: Vec<ProfilePolicyBackupInfo>,
     pruned: Vec<ProfilePolicyBackupInfo>,
     errors: Vec<ProfilePolicyPruneBackupError>,
+}
+
+#[derive(Debug, Serialize)]
+struct ProfilePolicyVerifyBackupOutput {
+    path: String,
+    readable: bool,
+    unlockable: bool,
+    version: Option<u8>,
+    generation: Option<u64>,
+    profiles_checked: Option<usize>,
+    warnings: Option<usize>,
+    errors: Option<usize>,
+    error: Option<String>,
 }
 
 #[derive(Debug, Serialize)]

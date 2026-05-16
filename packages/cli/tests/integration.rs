@@ -2014,6 +2014,61 @@ fn binary_profile_policy_repair_all_enforces_advisory_portable() {
         "{backups_stdout}"
     );
 
+    let verify_backup_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("security")
+        .arg("profile-policy")
+        .arg("verify-backup")
+        .arg(&backup_path)
+        .arg("--json")
+        .env("HOME", &home)
+        .env_remove("SSHENV_PROFILE_PASSPHRASE")
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run profile-policy verify-backup json");
+    assert!(
+        verify_backup_out.status.success(),
+        "profile-policy verify-backup failed: {}",
+        String::from_utf8_lossy(&verify_backup_out.stderr)
+    );
+    let verify_json = String::from_utf8_lossy(&verify_backup_out.stdout);
+    assert!(verify_json.contains("\"readable\": true"), "{verify_json}");
+    assert!(
+        verify_json.contains("\"unlockable\": true"),
+        "{verify_json}"
+    );
+    assert!(
+        verify_json.contains("\"profiles_checked\":"),
+        "{verify_json}"
+    );
+
+    let corrupt_backup = dir.path().join("corrupt-backup");
+    std::fs::write(&corrupt_backup, b"not a vault").unwrap();
+    let corrupt_verify_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("security")
+        .arg("profile-policy")
+        .arg("verify-backup")
+        .arg(&corrupt_backup)
+        .arg("--json")
+        .env("HOME", &home)
+        .env_remove("SSHENV_PROFILE_PASSPHRASE")
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run profile-policy verify-backup corrupt json");
+    assert!(!corrupt_verify_out.status.success());
+    let corrupt_verify_json = String::from_utf8_lossy(&corrupt_verify_out.stdout);
+    assert!(
+        corrupt_verify_json.contains("\"readable\": false"),
+        "{corrupt_verify_json}"
+    );
+    assert!(
+        corrupt_verify_json.contains("\"unlockable\": false"),
+        "{corrupt_verify_json}"
+    );
+
     let backups_json_out = Command::new(&bin)
         .arg("--vault")
         .arg(&vault_path)
