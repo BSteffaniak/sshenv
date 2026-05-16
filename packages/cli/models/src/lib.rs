@@ -179,6 +179,10 @@ pub enum RollbackCommand {
     Status(RollbackStatusArgs),
     /// Print a stronger rollback-protection plan.
     Plan(RollbackPlanArgs),
+    /// Generate a non-secret remote-checkpoint JSON template.
+    CheckpointTemplate(RollbackCheckpointTemplateArgs),
+    /// Validate a non-secret rollback checkpoint JSON file against the current vault.
+    ValidateCheckpoint(RollbackCheckpointArgs),
 }
 
 #[derive(Debug, clap::Args)]
@@ -193,6 +197,25 @@ pub struct RollbackPlanArgs {
     /// Stronger rollback backend family to plan for.
     #[arg(long, value_enum)]
     pub backend: RollbackBackendArg,
+    /// Print machine-readable JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct RollbackCheckpointTemplateArgs {
+    /// Vault identifier. Defaults to the canonical current vault id.
+    #[arg(long)]
+    pub vault_id: Option<String>,
+    /// Generation to put in the checkpoint. Defaults to current v2 vault generation.
+    #[arg(long)]
+    pub generation: Option<u64>,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct RollbackCheckpointArgs {
+    /// Path to a rollback checkpoint JSON document.
+    pub checkpoint_path: PathBuf,
     /// Print machine-readable JSON.
     #[arg(long)]
     pub json: bool,

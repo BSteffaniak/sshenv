@@ -2434,6 +2434,41 @@ fn binary_rollback_protection_rejects_older_v2_generation() {
         "{status_json}"
     );
 
+    let checkpoint_path = dir.path().join("checkpoint.json");
+    std::fs::write(
+        &checkpoint_path,
+        r#"{
+  "backend": "remote-checkpoint",
+  "vault-id": "test-vault",
+  "generation": 2,
+  "created-unix": 4102444800,
+  "signer": null,
+  "signature": null
+}"#,
+    )
+    .unwrap();
+    let checkpoint_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .args(["security", "rollback", "validate-checkpoint"])
+        .arg(&checkpoint_path)
+        .arg("--json")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run rollback validate-checkpoint");
+    assert!(
+        checkpoint_out.status.success(),
+        "validate-checkpoint failed: {}",
+        String::from_utf8_lossy(&checkpoint_out.stderr)
+    );
+    let checkpoint_json: serde_json::Value =
+        serde_json::from_slice(&checkpoint_out.stdout).unwrap();
+    assert_eq!(checkpoint_json["valid"], true);
+    assert_eq!(checkpoint_json["checkpoint_generation"], 2);
+    assert_eq!(checkpoint_json["vault_generation"], 1);
+    assert_eq!(checkpoint_json["would_reject_current_vault"], true);
+
     let show_out = Command::new(&bin)
         .arg("--vault")
         .arg(&vault_path)

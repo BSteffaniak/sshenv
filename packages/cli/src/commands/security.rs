@@ -8,14 +8,9 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-#[cfg(any(
-    feature = "passphrase-factor",
-    feature = "recovery-shares",
-    feature = "remote-factor"
-))]
 use anyhow::Context as AnyhowContext;
 use anyhow::Result;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sshenv_cli_models::{
     ChangePassphraseArgs, DeviceBackendArg, DevicePlanArgs, DisablePassphraseArgs,
     EnablePassphraseArgs, HardenArgs, HardwareKindArg, HardwarePlanArgs, HardwareStatusArgs,
@@ -28,8 +23,9 @@ use sshenv_cli_models::{
     RecoveryCombineArgs, RecoveryListArgs, RecoveryMetadataArgs, RecoveryPlanArgs,
     RecoveryRemoveArgs, RecoveryShareFileArgs, RecoverySplitArgs, RemoteBackendArg, RemoteListArgs,
     RemoteMetadataArgs, RemotePlanArgs, RemoteRemoveArgs, RemoteRequestArgs,
-    RemoteRequestTemplateArgs, RollbackBackendArg, RollbackPlanArgs, RollbackStatusArgs,
-    SecurityPresetArg, SecurityPresetArgs,
+    RemoteRequestTemplateArgs, RollbackBackendArg, RollbackCheckpointArgs,
+    RollbackCheckpointTemplateArgs, RollbackPlanArgs, RollbackStatusArgs, SecurityPresetArg,
+    SecurityPresetArgs,
 };
 use sshenv_vault::models::{
     ProfileFactorRequirement, ProfilePolicy, ProfilePolicyFinding, ProfilePolicyFindingCode,
@@ -202,6 +198,26 @@ struct RollbackPlanOutput {
     failure_modes: Vec<String>,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+struct RollbackCheckpointDocument {
+    backend: String,
+    vault_id: String,
+    generation: u64,
+    created_unix: u64,
+    signer: Option<String>,
+    signature: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct RollbackCheckpointValidationOutput {
+    valid: bool,
+    checkpoint_generation: u64,
+    vault_generation: Option<u64>,
+    would_reject_current_vault: bool,
+    notes: Vec<String>,
+}
+
 pub fn rollback_status(ctx: &CmdContext, args: RollbackStatusArgs) -> Result<()> {
     let generation = if ctx.vault_path.exists() {
         Vault::load_ciphertext(&ctx.vault_path)
@@ -293,6 +309,104 @@ fn rollback_baseline_status(
         (Some(_), None) => "no local baseline recorded".to_string(),
         (None, Some(baseline)) => format!("local baseline {baseline}; vault generation unknown"),
         (None, None) => "unknown".to_string(),
+    }
+}
+
+pub fn rollback_checkpoint_template(
+    ctx: &CmdContext,
+    args: RollbackCheckpointTemplateArgs,
+) -> Result<()> {
+    let generation = match args.generation {
+        Some(generation) => generation,
+        None => vault_generation(&ctx.vault_path).ok_or_else(|| {
+            anyhow::anyhow!(
+                "rollback checkpoint template requires a v2 vault generation or --generation"
+            )
+        })?,
+    };
+    let created_unix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs());
+    let document = RollbackCheckpointDocument {
+        backend: "remote-checkpoint".to_string(),
+        vault_id: args
+            .vault_id
+            .unwrap_or_else(|| crate::session_registry::vault_id(&ctx.vault_path)),
+        generation,
+        created_unix,
+        signer: None,
+        signature: None,
+    };
+    println!("{}", serde_json::to_string_pretty(&document)?);
+    Ok(())
+}
+
+pub fn rollback_validate_checkpoint(ctx: &CmdContext, args: RollbackCheckpointArgs) -> Result<()> {
+    let content = fs::read_to_string(&args.checkpoint_path).with_context(|| {
+        format!(
+            "failed to read rollback checkpoint {}",
+            args.checkpoint_path.display()
+        )
+    })?;
+    let checkpoint: RollbackCheckpointDocument =
+        serde_json::from_str(&content).with_context(|| {
+            format!(
+                "failed to parse rollback checkpoint {}",
+                args.checkpoint_path.display()
+            )
+        })?;
+    if checkpoint.backend != "remote-checkpoint" {
+        anyhow::bail!(
+            "rollback checkpoint backend '{}' is not supported",
+            checkpoint.backend
+        );
+    }
+    if checkpoint.vault_id.trim().is_empty() {
+        anyhow::bail!("rollback checkpoint vault-id is empty");
+    }
+    let current_generation = vault_generation(&ctx.vault_path);
+    let would_reject_current_vault =
+        current_generation.is_some_and(|generation| generation < checkpoint.generation);
+    let mut notes = vec![
+        "checkpoint metadata is non-secret".to_string(),
+        "signature verification is scaffold-only and not enforced yet".to_string(),
+    ];
+    if would_reject_current_vault {
+        notes.push("current vault generation is older than checkpoint generation".to_string());
+    }
+    let output = RollbackCheckpointValidationOutput {
+        valid: true,
+        checkpoint_generation: checkpoint.generation,
+        vault_generation: current_generation,
+        would_reject_current_vault,
+        notes,
+    };
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        println!("rollback checkpoint: valid");
+        println!("checkpoint generation: {}", output.checkpoint_generation);
+        println!(
+            "vault generation: {}",
+            output
+                .vault_generation
+                .map_or_else(|| "unknown".to_string(), |value| value.to_string())
+        );
+        println!(
+            "would reject current vault: {}",
+            yes_no(output.would_reject_current_vault)
+        );
+    }
+    Ok(())
+}
+
+fn vault_generation(vault_path: &Path) -> Option<u64> {
+    if vault_path.exists() {
+        Vault::load_ciphertext(vault_path)
+            .ok()
+            .and_then(|vault| vault.generation())
+    } else {
+        None
     }
 }
 

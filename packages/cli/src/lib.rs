@@ -62,6 +62,12 @@ pub fn run(cli: Cli) -> Result<()> {
             SecurityCommand::Rollback(sub) => match sub {
                 RollbackCommand::Status(args) => commands::security::rollback_status(&ctx, args),
                 RollbackCommand::Plan(args) => commands::security::rollback_plan(args),
+                RollbackCommand::CheckpointTemplate(args) => {
+                    commands::security::rollback_checkpoint_template(&ctx, args)
+                }
+                RollbackCommand::ValidateCheckpoint(args) => {
+                    commands::security::rollback_validate_checkpoint(&ctx, args)
+                }
             },
             SecurityCommand::Device(sub) => match sub {
                 DeviceCommand::List => commands::security::device_list(&ctx),
