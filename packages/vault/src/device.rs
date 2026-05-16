@@ -9,6 +9,7 @@
 use std::collections::BTreeMap;
 #[cfg(any(
     all(feature = "linux-secret-service", target_os = "linux"),
+    feature = "secure-enclave",
     all(feature = "tpm-device-seal", target_os = "linux"),
     all(feature = "windows-dpapi", target_os = "windows")
 ))]
@@ -25,12 +26,14 @@ use std::path::PathBuf;
 #[cfg(any(
     all(feature = "macos-keychain", target_os = "macos"),
     all(feature = "linux-secret-service", target_os = "linux"),
+    feature = "secure-enclave",
     all(feature = "tpm-device-seal", target_os = "linux"),
     all(feature = "windows-dpapi", target_os = "windows")
 ))]
 use std::process::Command;
 #[cfg(any(
     all(feature = "linux-secret-service", target_os = "linux"),
+    feature = "secure-enclave",
     all(feature = "tpm-device-seal", target_os = "linux"),
     all(feature = "windows-dpapi", target_os = "windows")
 ))]
@@ -41,10 +44,13 @@ use anyhow::{Context, Result, bail};
     feature = "device-seal-file",
     all(feature = "macos-keychain", target_os = "macos"),
     all(feature = "linux-secret-service", target_os = "linux"),
+    feature = "secure-enclave",
     all(feature = "tpm-device-seal", target_os = "linux"),
     all(feature = "windows-dpapi", target_os = "windows")
 ))]
 use rand_core::RngCore;
+#[cfg(feature = "secure-enclave")]
+use serde::{Deserialize, Serialize};
 use sshenv_vault_models::{UnlockFactorKindV2, UnlockFactorV2};
 use zeroize::Zeroizing;
 
@@ -53,9 +59,12 @@ const BACKEND: &str = "backend";
 const BACKEND_LOCAL_FILE: &str = "local-file";
 const BACKEND_LINUX_SECRET_SERVICE: &str = "linux-secret-service";
 const BACKEND_MACOS_KEYCHAIN: &str = "macos-keychain";
+const BACKEND_SECURE_ENCLAVE: &str = "secure-enclave";
 const BACKEND_TPM: &str = "tpm";
 const BACKEND_WINDOWS_DPAPI: &str = "windows-dpapi";
 const KEY_LEN: usize = 32;
+#[cfg(feature = "secure-enclave")]
+pub const SECURE_ENCLAVE_COMMAND_ENV: &str = "SSHENV_SECURE_ENCLAVE_DEVICE_SEAL_COMMAND";
 #[cfg(all(feature = "macos-keychain", target_os = "macos"))]
 const MACOS_KEYCHAIN_SERVICE: &str = "sshenv device seal";
 #[cfg(all(feature = "macos-keychain", target_os = "macos"))]
@@ -100,6 +109,7 @@ pub fn derive_factor_from_metadata(factor: &UnlockFactorV2) -> Result<Zeroizing<
         .context("device-seal factor is missing backend")?;
     match backend.as_str() {
         BACKEND_MACOS_KEYCHAIN => load_macos_keychain_secret(),
+        BACKEND_SECURE_ENCLAVE => load_secure_enclave_secret(),
         BACKEND_LINUX_SECRET_SERVICE => load_linux_secret_service_secret(),
         BACKEND_TPM => load_tpm_secret(),
         BACKEND_WINDOWS_DPAPI => load_windows_dpapi_secret(),
@@ -153,6 +163,17 @@ pub const fn backend_status() -> &'static str {
         not(all(feature = "linux-secret-service", target_os = "linux")),
         not(all(feature = "windows-dpapi", target_os = "windows")),
         not(all(feature = "tpm-device-seal", target_os = "linux")),
+        feature = "secure-enclave"
+    ))]
+    {
+        "Secure Enclave command adapter"
+    }
+    #[cfg(all(
+        not(all(feature = "macos-keychain", target_os = "macos")),
+        not(all(feature = "linux-secret-service", target_os = "linux")),
+        not(all(feature = "windows-dpapi", target_os = "windows")),
+        not(all(feature = "tpm-device-seal", target_os = "linux")),
+        not(feature = "secure-enclave"),
         feature = "device-seal-file"
     ))]
     {
@@ -163,6 +184,7 @@ pub const fn backend_status() -> &'static str {
         not(all(feature = "linux-secret-service", target_os = "linux")),
         not(all(feature = "windows-dpapi", target_os = "windows")),
         not(all(feature = "tpm-device-seal", target_os = "linux")),
+        not(feature = "secure-enclave"),
         not(feature = "device-seal-file")
     ))]
     {
@@ -171,6 +193,16 @@ pub const fn backend_status() -> &'static str {
 }
 
 fn load_or_create_device_secret() -> Result<(&'static str, Zeroizing<[u8; KEY_LEN]>)> {
+    #[cfg(feature = "secure-enclave")]
+    if secure_enclave_command_path().is_some() {
+        if let Ok(secret) = load_secure_enclave_secret() {
+            return Ok((BACKEND_SECURE_ENCLAVE, secret));
+        }
+        let secret = create_random_secret();
+        store_secure_enclave_secret(secret.as_slice())?;
+        return Ok((BACKEND_SECURE_ENCLAVE, secret));
+    };
+
     #[cfg(all(feature = "macos-keychain", target_os = "macos"))]
     {
         if let Ok(secret) = load_macos_keychain_secret() {
@@ -243,10 +275,21 @@ fn load_or_create_device_secret() -> Result<(&'static str, Zeroizing<[u8; KEY_LE
         Ok((BACKEND_LOCAL_FILE, secret))
     }
 
+    #[cfg(all(
+        feature = "secure-enclave",
+        not(feature = "device-seal-file"),
+        not(all(feature = "macos-keychain", target_os = "macos")),
+        not(all(feature = "linux-secret-service", target_os = "linux")),
+        not(all(feature = "tpm-device-seal", target_os = "linux")),
+        not(all(feature = "windows-dpapi", target_os = "windows"))
+    ))]
+    bail!("Secure Enclave device-seal backend requires SSHENV_SECURE_ENCLAVE_DEVICE_SEAL_COMMAND");
+
     #[cfg(not(any(
         feature = "device-seal-file",
         all(feature = "macos-keychain", target_os = "macos"),
         all(feature = "linux-secret-service", target_os = "linux"),
+        feature = "secure-enclave",
         all(feature = "tpm-device-seal", target_os = "linux"),
         all(feature = "windows-dpapi", target_os = "windows")
     )))]
@@ -257,6 +300,7 @@ fn load_or_create_device_secret() -> Result<(&'static str, Zeroizing<[u8; KEY_LE
     feature = "device-seal-file",
     all(feature = "macos-keychain", target_os = "macos"),
     all(feature = "linux-secret-service", target_os = "linux"),
+    feature = "secure-enclave",
     all(feature = "tpm-device-seal", target_os = "linux"),
     all(feature = "windows-dpapi", target_os = "windows")
 ))]
@@ -301,6 +345,89 @@ fn load_macos_keychain_secret() -> Result<Zeroizing<[u8; KEY_LEN]>> {
 
     #[cfg(not(all(feature = "macos-keychain", target_os = "macos")))]
     bail!("macOS Keychain device-seal backend is not available in this build")
+}
+
+#[cfg(feature = "secure-enclave")]
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "kebab-case")]
+struct SecureEnclaveCommandInput<'a> {
+    operation: &'a str,
+    secret_hex: Option<String>,
+}
+
+#[cfg(feature = "secure-enclave")]
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+struct SecureEnclaveCommandOutput {
+    #[serde(alias = "secret_hex")]
+    secret_hex: String,
+}
+
+#[cfg(feature = "secure-enclave")]
+fn secure_enclave_command_path() -> Option<String> {
+    std::env::var(SECURE_ENCLAVE_COMMAND_ENV)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+}
+
+fn load_secure_enclave_secret() -> Result<Zeroizing<[u8; KEY_LEN]>> {
+    #[cfg(feature = "secure-enclave")]
+    {
+        let command_path = secure_enclave_command_path().with_context(|| {
+            format!("Secure Enclave device-seal backend requires {SECURE_ENCLAVE_COMMAND_ENV}")
+        })?;
+        let output = invoke_secure_enclave_command(&command_path, "load", None)?;
+        parse_hex_secret(&output.secret_hex, "Secure Enclave device seal secret")
+    }
+
+    #[cfg(not(feature = "secure-enclave"))]
+    bail!("Secure Enclave device-seal backend is not available in this build")
+}
+
+#[cfg(feature = "secure-enclave")]
+fn store_secure_enclave_secret(secret: &[u8]) -> Result<()> {
+    let command_path = secure_enclave_command_path().with_context(|| {
+        format!("Secure Enclave device-seal backend requires {SECURE_ENCLAVE_COMMAND_ENV}")
+    })?;
+    invoke_secure_enclave_command(&command_path, "store", Some(secret))?;
+    Ok(())
+}
+
+#[cfg(feature = "secure-enclave")]
+fn invoke_secure_enclave_command(
+    command_path: &str,
+    operation: &str,
+    secret: Option<&[u8]>,
+) -> Result<SecureEnclaveCommandOutput> {
+    let input = serde_json::to_vec(&SecureEnclaveCommandInput {
+        operation,
+        secret_hex: secret.map(hex::encode),
+    })
+    .context("failed to serialize Secure Enclave device-seal request")?;
+    let mut child = Command::new(command_path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .with_context(|| format!("failed to invoke Secure Enclave adapter '{command_path}'"))?;
+    {
+        let stdin = child
+            .stdin
+            .as_mut()
+            .context("failed to open Secure Enclave adapter stdin")?;
+        stdin
+            .write_all(&input)
+            .context("failed to write Secure Enclave adapter request")?;
+    }
+    let output = child
+        .wait_with_output()
+        .context("failed to wait for Secure Enclave adapter")?;
+    if !output.status.success() {
+        bail!(
+            "Secure Enclave adapter exited unsuccessfully: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    serde_json::from_slice(&output.stdout).context("Secure Enclave adapter returned invalid JSON")
 }
 
 fn load_linux_secret_service_secret() -> Result<Zeroizing<[u8; KEY_LEN]>> {
@@ -638,6 +765,7 @@ fn store_macos_keychain_secret(secret: &[u8]) -> Result<()> {
     feature = "device-seal-file",
     all(feature = "macos-keychain", target_os = "macos"),
     all(feature = "linux-secret-service", target_os = "linux"),
+    feature = "secure-enclave",
     all(feature = "tpm-device-seal", target_os = "linux"),
     all(feature = "windows-dpapi", target_os = "windows")
 ))]
@@ -650,6 +778,7 @@ fn parse_hex_secret(value: &str, label: &str) -> Result<Zeroizing<[u8; KEY_LEN]>
     feature = "device-seal-file",
     all(feature = "macos-keychain", target_os = "macos"),
     all(feature = "linux-secret-service", target_os = "linux"),
+    feature = "secure-enclave",
     all(feature = "tpm-device-seal", target_os = "linux"),
     all(feature = "windows-dpapi", target_os = "windows")
 ))]
@@ -666,4 +795,48 @@ fn local_file_secret_path() -> PathBuf {
         || PathBuf::from(".sshenv/device-seal"),
         |home| home.join(".sshenv").join("device-seal"),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(all(feature = "secure-enclave", unix))]
+    #[test]
+    fn secure_enclave_command_roundtrips_secret_hex() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let command_path = dir.path().join("secure-enclave-adapter.sh");
+        std::fs::write(
+            &command_path,
+            r#"#!/bin/sh
+input=$(cat)
+case "$input" in
+  *'"operation":"store"'*|*'"operation": "store"'*)
+    key=$(printf '%s' "$input" | sed -n 's/.*"secret-hex":"\([0-9a-f]*\)".*/\1/p')
+    printf '{"secret-hex":"%s"}\n' "$key"
+    ;;
+  *'"operation":"load"'*|*'"operation": "load"'*)
+    printf '{"secret-hex":"00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"}\n'
+    ;;
+  *) echo 'unknown operation' >&2; exit 1 ;;
+esac
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&command_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let output =
+            super::invoke_secure_enclave_command(command_path.to_str().unwrap(), "load", None)
+                .unwrap();
+        let parsed = super::parse_hex_secret(&output.secret_hex, "test secret").unwrap();
+        assert_eq!(parsed.len(), super::KEY_LEN);
+
+        let output = super::invoke_secure_enclave_command(
+            command_path.to_str().unwrap(),
+            "store",
+            Some(parsed.as_slice()),
+        )
+        .unwrap();
+        assert_eq!(output.secret_hex, hex::encode(parsed.as_slice()));
+    }
 }

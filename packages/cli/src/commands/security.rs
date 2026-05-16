@@ -752,9 +752,10 @@ fn device_backend_implementation_notes(backend: DeviceBackendArg) -> Vec<String>
             "requires backup/recovery guidance before requiring TPM-only unlock".to_string(),
         ],
         DeviceBackendArg::SecureEnclave => vec![
-            "create a non-exportable key with Keychain/Secure Enclave attributes".to_string(),
-            "wrap factor bytes through the key and persist only ciphertext metadata".to_string(),
-            "surface user-presence prompts before command execution".to_string(),
+            "available with the `secure-enclave` feature via a command-backed adapter".to_string(),
+            "set SSHENV_SECURE_ENCLAVE_DEVICE_SEAL_COMMAND to an adapter that stores/loads factor bytes using Secure Enclave-backed key material".to_string(),
+            "the adapter receives secret material on stdin JSON during store; never pass factor bytes in argv".to_string(),
+            "surface user-presence prompts before command execution where supported by the platform adapter".to_string(),
         ],
     }
 }
