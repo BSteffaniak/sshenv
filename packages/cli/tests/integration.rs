@@ -2079,6 +2079,31 @@ fn binary_ssh_hardening_config_denies_unencrypted_authorized_key() {
 
     std::fs::write(
         &config_path,
+        "[security]\nunencrypted_ssh_keys = \"warn\"\n",
+    )
+    .unwrap();
+    let warned_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("show")
+        .arg("myprofile")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run show with warn config");
+    assert!(
+        warned_out.status.success(),
+        "show with warn config failed: {}",
+        String::from_utf8_lossy(&warned_out.stderr)
+    );
+    let warned_stderr = String::from_utf8_lossy(&warned_out.stderr);
+    assert!(
+        warned_stderr.contains("warning: authorized SSH private key is unencrypted"),
+        "{warned_stderr}"
+    );
+
+    std::fs::write(
+        &config_path,
         "[security]\nunencrypted_ssh_keys = \"allow\"\n",
     )
     .unwrap();

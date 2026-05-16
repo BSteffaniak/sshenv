@@ -133,6 +133,9 @@ pub enum SecurityCommand {
     EnableDeviceSeal,
     /// Apply a named security preset.
     Preset(SecurityPresetArgs),
+    /// Inspect future passphrase-cache design and controls.
+    #[command(subcommand)]
+    PassphraseCache(PassphraseCacheCommand),
     /// Manage local device-seal authorization.
     #[command(subcommand)]
     Device(DeviceCommand),
@@ -151,6 +154,23 @@ pub enum SecurityCommand {
 }
 
 #[derive(Debug, Subcommand)]
+pub enum PassphraseCacheCommand {
+    /// Show passphrase-cache status for this build.
+    Status(PassphraseCacheStatusArgs),
+    /// Print the passphrase-cache threat model and implementation plan.
+    Plan(PassphraseCacheStatusArgs),
+    /// Clear cached passphrases if a cache backend is available.
+    Clear,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct PassphraseCacheStatusArgs {
+    /// Print machine-readable JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Subcommand)]
 pub enum DeviceCommand {
     /// List configured device-seal factors.
     List,
@@ -158,6 +178,26 @@ pub enum DeviceCommand {
     Authorize,
     /// Remove the vault-level device-seal factor.
     Remove,
+    /// Print a setup plan for a future device-seal backend.
+    Plan(DevicePlanArgs),
+}
+
+#[derive(Debug, clap::Args)]
+pub struct DevicePlanArgs {
+    /// Device-seal backend family to plan for.
+    #[arg(long, value_enum)]
+    pub backend: DeviceBackendArg,
+    /// Print machine-readable JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum DeviceBackendArg {
+    WindowsDpapi,
+    LinuxSecretService,
+    Tpm,
+    SecureEnclave,
 }
 
 #[derive(Debug, Subcommand)]

@@ -18,8 +18,8 @@ pub mod session_registry;
 
 use anyhow::Result;
 use sshenv_cli_models::{
-    Cli, Command, DeviceCommand, HardwareCommand, ProfilePolicyCommand, RecoveryCommand,
-    RemoteCommand, SecurityCommand, SessionsCommand, ShimsCommand,
+    Cli, Command, DeviceCommand, HardwareCommand, PassphraseCacheCommand, ProfilePolicyCommand,
+    RecoveryCommand, RemoteCommand, SecurityCommand, SessionsCommand, ShimsCommand,
 };
 
 /// Dispatch a parsed [`Cli`] to the appropriate command handler.
@@ -49,10 +49,20 @@ pub fn run(cli: Cli) -> Result<()> {
             }
             SecurityCommand::EnableDeviceSeal => commands::security::enable_device_seal(&ctx),
             SecurityCommand::Preset(args) => commands::security::preset(&ctx, args),
+            SecurityCommand::PassphraseCache(sub) => match sub {
+                PassphraseCacheCommand::Status(args) => {
+                    commands::security::passphrase_cache_status(args)
+                }
+                PassphraseCacheCommand::Plan(args) => {
+                    commands::security::passphrase_cache_plan(args)
+                }
+                PassphraseCacheCommand::Clear => commands::security::passphrase_cache_clear(),
+            },
             SecurityCommand::Device(sub) => match sub {
                 DeviceCommand::List => commands::security::device_list(&ctx),
                 DeviceCommand::Authorize => commands::security::device_authorize(&ctx),
                 DeviceCommand::Remove => commands::security::device_remove(&ctx),
+                DeviceCommand::Plan(args) => commands::security::device_plan(args),
             },
             SecurityCommand::Hardware(sub) => match sub {
                 HardwareCommand::Status(args) => commands::security::hardware_status(args),

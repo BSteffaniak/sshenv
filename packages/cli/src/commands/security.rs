@@ -15,8 +15,9 @@ use anyhow::Context as AnyhowContext;
 use anyhow::Result;
 use serde::Serialize;
 use sshenv_cli_models::{
-    ChangePassphraseArgs, DisablePassphraseArgs, EnablePassphraseArgs, HardenArgs, HardwareKindArg,
-    HardwarePlanArgs, HardwareStatusArgs, ProfilePolicyApplyAllArgs, ProfilePolicyApplyArgs,
+    ChangePassphraseArgs, DeviceBackendArg, DevicePlanArgs, DisablePassphraseArgs,
+    EnablePassphraseArgs, HardenArgs, HardwareKindArg, HardwarePlanArgs, HardwareStatusArgs,
+    PassphraseCacheStatusArgs, ProfilePolicyApplyAllArgs, ProfilePolicyApplyArgs,
     ProfilePolicyBackupsArgs, ProfilePolicyChangePassphraseArgs, ProfilePolicyCheckArgs,
     ProfilePolicyDisablePassphraseArgs, ProfilePolicyPruneBackupsArgs, ProfilePolicyRepairAllArgs,
     ProfilePolicyRepairArgs, ProfilePolicyRequirePassphraseArgs, ProfilePolicyRequirementArgs,
@@ -108,6 +109,75 @@ pub fn disable_passphrase(_ctx: &CmdContext, _args: DisablePassphraseArgs) -> Re
     anyhow::bail!("this sshenv build was compiled without passphrase-factor support")
 }
 
+#[derive(Debug, Serialize)]
+struct PassphraseCacheOutput {
+    available: bool,
+    backend: &'static str,
+    opt_in_required: bool,
+    expiry_controls: Vec<String>,
+    threat_model: Vec<String>,
+}
+
+pub fn passphrase_cache_status(args: PassphraseCacheStatusArgs) -> Result<()> {
+    let output = passphrase_cache_output();
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        println!("passphrase cache status");
+        println!("=======================");
+        println!("available: {}", yes_no(output.available));
+        println!("backend: {}", output.backend);
+        println!("opt-in required: {}", yes_no(output.opt_in_required));
+    }
+    Ok(())
+}
+
+pub fn passphrase_cache_plan(args: PassphraseCacheStatusArgs) -> Result<()> {
+    let output = passphrase_cache_output();
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        println!("passphrase cache plan");
+        println!("=====================");
+        println!("backend: {}", output.backend);
+        println!("expiry/clear controls:");
+        for item in &output.expiry_controls {
+            println!("- {item}");
+        }
+        println!("threat model:");
+        for item in &output.threat_model {
+            println!("- {item}");
+        }
+    }
+    Ok(())
+}
+
+pub fn passphrase_cache_clear() -> Result<()> {
+    eprintln!("No passphrase cache backend is implemented; nothing to clear.");
+    Ok(())
+}
+
+fn passphrase_cache_output() -> PassphraseCacheOutput {
+    PassphraseCacheOutput {
+        available: false,
+        backend: "not implemented",
+        opt_in_required: true,
+        expiry_controls: vec![
+            "cache entries must have explicit TTLs".to_string(),
+            "users need `sshenv security passphrase-cache clear` to evict all entries".to_string(),
+            "cache keys should bind vault path, vault generation, and profile name where relevant"
+                .to_string(),
+        ],
+        threat_model: vec![
+            "improves repeated command ergonomics but increases risk on an unlocked local account"
+                .to_string(),
+            "must never write plaintext passphrases to the vault or logs".to_string(),
+            "OS-backed storage should require local user/session access and support expiry"
+                .to_string(),
+        ],
+    }
+}
+
 #[cfg(feature = "device-seal")]
 pub fn enable_device_seal(ctx: &CmdContext) -> Result<()> {
     let (ciphertext, recipients) = load_ciphertext_and_fps(&ctx.vault_path)?;
@@ -180,6 +250,109 @@ pub fn device_remove(ctx: &CmdContext) -> Result<()> {
 #[cfg(not(feature = "device-seal"))]
 pub fn device_remove(_ctx: &CmdContext) -> Result<()> {
     anyhow::bail!("this sshenv build was compiled without device-seal support")
+}
+
+#[derive(Debug, Serialize)]
+struct DevicePlanOutput {
+    backend: String,
+    feature_enabled: bool,
+    current_build_backend: String,
+    threat_model: Vec<String>,
+    implementation_notes: Vec<String>,
+    user_flow: Vec<String>,
+}
+
+pub fn device_plan(args: DevicePlanArgs) -> Result<()> {
+    let output = DevicePlanOutput {
+        backend: format!("{:?}", args.backend),
+        feature_enabled: cfg!(feature = "device-seal"),
+        current_build_backend: device_seal_backend_status().to_string(),
+        threat_model: device_backend_threat_model(args.backend),
+        implementation_notes: device_backend_implementation_notes(args.backend),
+        user_flow: vec![
+            "build sshenv with the backend feature once implemented".to_string(),
+            "run `sshenv security device authorize` on each trusted device".to_string(),
+            "use `sshenv security profile-policy apply ... --preset recommended` or paranoid for profile binding".to_string(),
+            "remove lost devices with `sshenv security device remove` and rotate affected keys".to_string(),
+        ],
+    };
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        println!("device-seal backend plan");
+        println!("========================");
+        println!("backend: {}", output.backend);
+        println!(
+            "device-seal feature: {}",
+            enabled_label(output.feature_enabled)
+        );
+        println!("current build backend: {}", output.current_build_backend);
+        println!("threat model:");
+        for item in &output.threat_model {
+            println!("- {item}");
+        }
+        println!("implementation notes:");
+        for item in &output.implementation_notes {
+            println!("- {item}");
+        }
+        println!("user flow:");
+        for item in &output.user_flow {
+            println!("- {item}");
+        }
+    }
+    Ok(())
+}
+
+fn device_backend_threat_model(backend: DeviceBackendArg) -> Vec<String> {
+    match backend {
+        DeviceBackendArg::WindowsDpapi => vec![
+            "binds secrets to the Windows user/machine DPAPI boundary".to_string(),
+            "protects against vault-file theft without the user profile or machine state"
+                .to_string(),
+            "does not protect against compromise of the logged-in Windows account".to_string(),
+        ],
+        DeviceBackendArg::LinuxSecretService => vec![
+            "binds secrets to the desktop Secret Service collection".to_string(),
+            "best for workstation ergonomics, not headless servers".to_string(),
+            "security depends on the collection lock policy and session compromise resistance"
+                .to_string(),
+        ],
+        DeviceBackendArg::Tpm => vec![
+            "binds secrets to TPM-resident sealed state and optionally PCR policy".to_string(),
+            "can improve theft resistance for copied vaults and disks".to_string(),
+            "PCR policy must balance tamper detection with OS update recoverability".to_string(),
+        ],
+        DeviceBackendArg::SecureEnclave => vec![
+            "binds secrets to Apple hardware-backed key material where available".to_string(),
+            "can require local user presence depending on access-control flags".to_string(),
+            "requires a migration/recovery story for hardware replacement".to_string(),
+        ],
+    }
+}
+
+fn device_backend_implementation_notes(backend: DeviceBackendArg) -> Vec<String> {
+    match backend {
+        DeviceBackendArg::WindowsDpapi => vec![
+            "wrap profile/vault factor bytes with CryptProtectData".to_string(),
+            "store only DPAPI ciphertext and non-secret metadata in v2 policy metadata".to_string(),
+            "support explicit reauthorize after Windows profile migration".to_string(),
+        ],
+        DeviceBackendArg::LinuxSecretService => vec![
+            "store factor bytes in a named Secret Service item".to_string(),
+            "persist item lookup attributes, not plaintext, in policy metadata".to_string(),
+            "detect locked/unavailable collections with actionable CLI errors".to_string(),
+        ],
+        DeviceBackendArg::Tpm => vec![
+            "seal factor bytes under TPM storage hierarchy".to_string(),
+            "record PCR policy and public name for inspection".to_string(),
+            "provide backup/recovery guidance before requiring TPM-only unlock".to_string(),
+        ],
+        DeviceBackendArg::SecureEnclave => vec![
+            "create a non-exportable key with Keychain/Secure Enclave attributes".to_string(),
+            "wrap factor bytes through the key and persist only ciphertext metadata".to_string(),
+            "surface user-presence prompts before command execution".to_string(),
+        ],
+    }
 }
 
 #[derive(Debug, Serialize)]
