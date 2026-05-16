@@ -1511,19 +1511,21 @@ pub fn recovery_recover_recipient(
     raw_key.copy_from_slice(recovered.as_slice());
     let data_key = zeroize::Zeroizing::new(raw_key);
     let (ciphertext, _fps) = load_ciphertext_and_fps(&ctx.vault_path)?;
-    let (mut vault, data_key) = sshenv_vault::Vault::unlock_with_data_key_and_passphrase(
+    let (mut vault, mut data_key) = sshenv_vault::Vault::unlock_with_data_key_and_passphrase(
         ciphertext,
         data_key,
         args.passphrase.as_deref(),
     )?;
     let entry = vault.add_recipient(&args.recipient_key, &data_key)?;
     let fingerprint = entry.fingerprint.clone();
+    let rotated = rotate_recovered_vault_key_if_possible(&mut vault, &mut data_key)?;
     vault.save(&args.output, &data_key)?;
     eprintln!(
-        "Recovered vault to {} with new recipient {}. Metadata verified: {}. Rotate the vault data key after confirming access.",
+        "Recovered vault to {} with new recipient {}. Metadata verified: {}. Data key rotated: {}.",
         args.output.display(),
         fingerprint,
-        yes_no(metadata_verified)
+        yes_no(metadata_verified),
+        yes_no(rotated)
     );
     Ok(())
 }
@@ -1534,6 +1536,35 @@ pub fn recovery_recover_recipient(
     _args: RecoveryRecoverRecipientArgs,
 ) -> Result<()> {
     anyhow::bail!("this sshenv build was compiled without shamir-sharing support")
+}
+
+#[cfg(all(feature = "shamir-sharing", feature = "rekey"))]
+fn rotate_recovered_vault_key_if_possible(
+    vault: &mut Vault,
+    data_key: &mut DataKey,
+) -> Result<bool> {
+    let recipient_descriptors = vault
+        .recipients
+        .iter()
+        .map(|recipient| recipient.public_key_line.clone())
+        .collect::<Vec<_>>();
+    if recipient_descriptors
+        .iter()
+        .any(|descriptor| descriptor.trim().is_empty())
+    {
+        return Ok(false);
+    }
+    *data_key = vault.rotate_data_key(&recipient_descriptors)?;
+    Ok(true)
+}
+
+#[cfg(all(feature = "shamir-sharing", not(feature = "rekey")))]
+#[allow(clippy::unnecessary_wraps)]
+fn rotate_recovered_vault_key_if_possible(
+    _vault: &mut Vault,
+    _data_key: &mut DataKey,
+) -> Result<bool> {
+    Ok(false)
 }
 
 #[cfg(feature = "shamir-sharing")]
@@ -2058,7 +2089,7 @@ pub fn remote_command_unwrap(_args: RemoteCommandUnwrapArgs) -> Result<()> {
     anyhow::bail!("this sshenv build was compiled without remote-factor support")
 }
 
-#[cfg(any(feature = "remote-factor", feature = "shamir-sharing"))]
+#[cfg(feature = "remote-factor")]
 fn read_hex_secret_from_stdin(label: &str) -> Result<zeroize::Zeroizing<Vec<u8>>> {
     let mut input = String::new();
     std::io::stdin()
