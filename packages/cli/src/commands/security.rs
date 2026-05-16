@@ -969,41 +969,55 @@ pub fn profile_policy_apply(ctx: &CmdContext, args: ProfilePolicyApplyArgs) -> R
     prepare_profile_policy_enforcement(&mut vault, &args.profile, &args.recipient_keys)?;
 
     let preset = profile_policy_preset(args.preset);
-    match preset {
-        ProfilePolicyPreset::Standard => {
-            let mut policy = existing_or_default_profile_policy(&vault, &args.profile);
-            policy.preset = preset;
-            policy.required_factors.clear();
-            policy.factor_metadata.clear();
-            vault.profiles.set_profile_policy(&args.profile, policy)?;
-        }
-        ProfilePolicyPreset::Portable => {
-            apply_profile_passphrase_if_needed(&mut vault, &args.profile, args.passphrase)?;
-            set_profile_policy_preset(&mut vault, &args.profile, preset)?;
-        }
-        ProfilePolicyPreset::Recommended => {
-            #[cfg(feature = "device-seal")]
-            apply_profile_device_seal_if_available(&mut vault, &args.profile)?;
-            #[cfg(not(feature = "device-seal"))]
-            note_profile_device_seal_unavailable();
-            set_profile_policy_preset(&mut vault, &args.profile, preset)?;
-        }
-        ProfilePolicyPreset::Paranoid => {
-            apply_profile_passphrase_if_needed(&mut vault, &args.profile, args.passphrase)?;
-            #[cfg(feature = "device-seal")]
-            apply_profile_device_seal_if_available(&mut vault, &args.profile)?;
-            #[cfg(not(feature = "device-seal"))]
-            note_profile_device_seal_unavailable();
-            set_profile_policy_preset(&mut vault, &args.profile, preset)?;
-            vault.rotate_profile_key(&args.profile)?;
-        }
+    let mut policy = existing_or_default_profile_policy(&vault, &args.profile);
+    policy.preset = preset;
+    if preset == ProfilePolicyPreset::Standard {
+        policy.required_factors.clear();
+        policy.factor_metadata.clear();
     }
+    vault.profiles.set_profile_policy(&args.profile, policy)?;
+    let mut changed = true;
 
-    save_profile_policy_vault(ctx, &mut vault, &data_key, &args.profile)?;
+    let validation = vault.validate_profile_policy(&args.profile);
+    let mut plan = vault.plan_profile_policy_repair(&args.profile, Some(&validation));
+    if preset == ProfilePolicyPreset::Paranoid
+        && !plan
+            .actions
+            .contains(&ProfilePolicyRepairAction::RotateProfileKey)
+    {
+        plan.actions
+            .push(ProfilePolicyRepairAction::RotateProfileKey);
+        plan.action_labels.push(
+            ProfilePolicyRepairAction::RotateProfileKey
+                .label()
+                .to_string(),
+        );
+    }
+    ensure_profile_policy_plan_inputs_available(
+        &plan,
+        args.passphrase.as_ref(),
+        &args.recipient_keys,
+        "profile policy apply",
+    )?;
+    let (plan_changed, applied_actions) = apply_profile_policy_plan_actions(
+        &mut vault,
+        &args.profile,
+        &args.recipient_keys,
+        args.passphrase,
+        &plan,
+    )?;
+    changed |= plan_changed;
+
+    if changed {
+        save_profile_policy_vault(ctx, &mut vault, &data_key, &args.profile)?;
+    }
     eprintln!(
         "Applied {:?} profile policy enforcement to {}.",
         preset, args.profile
     );
+    for action in applied_actions {
+        eprintln!("- {action}");
+    }
     Ok(())
 }
 
@@ -1036,62 +1050,13 @@ pub fn profile_policy_repair(ctx: &CmdContext, args: ProfilePolicyRepairArgs) ->
     }
     ensure_repair_inputs_available(&plan, &args)?;
 
-    let mut changed = false;
-    let mut applied_actions = Vec::new();
-
-    if plan
-        .actions
-        .contains(&ProfilePolicyRepairAction::MigrateToV2)
-        && migrate_to_v2_if_needed(&mut vault, &args.recipient_keys)?
-    {
-        changed = true;
-        applied_actions.push(ProfilePolicyRepairAction::MigrateToV2.label());
-    }
-
-    let base_result = vault.apply_profile_policy_repair_plan_base(&args.profile, &plan)?;
-    changed |= base_result.changed;
-    applied_actions.extend(
-        base_result
-            .applied_actions
-            .iter()
-            .map(|action| action.label()),
-    );
-    ensure_profile_policy_editable(&vault, &args.profile)?;
-
-    for action in &plan.actions {
-        match action {
-            ProfilePolicyRepairAction::BindPassphrase => {
-                if repair_profile_passphrase_if_needed(
-                    &mut vault,
-                    &args.profile,
-                    args.passphrase.clone(),
-                )? {
-                    changed = true;
-                    applied_actions.push(action.label());
-                }
-            }
-            ProfilePolicyRepairAction::BindDeviceSeal => {
-                #[cfg(feature = "device-seal")]
-                {
-                    if repair_profile_device_seal_if_available(&mut vault, &args.profile)? {
-                        changed = true;
-                        applied_actions.push(action.label());
-                    }
-                }
-                #[cfg(not(feature = "device-seal"))]
-                {
-                    if repair_profile_device_seal_unavailable() {
-                        changed = true;
-                        applied_actions.push(action.label());
-                    }
-                }
-            }
-            ProfilePolicyRepairAction::MigrateToV2
-            | ProfilePolicyRepairAction::EnableProfileKeyMode
-            | ProfilePolicyRepairAction::RegenerateProfileEntry
-            | ProfilePolicyRepairAction::RotateProfileKey => {}
-        }
-    }
+    let (changed, applied_actions) = apply_profile_policy_plan_actions(
+        &mut vault,
+        &args.profile,
+        &args.recipient_keys,
+        args.passphrase,
+        &plan,
+    )?;
 
     if changed {
         save_profile_policy_vault(ctx, &mut vault, &data_key, &args.profile)?;
@@ -1112,17 +1077,92 @@ fn ensure_repair_inputs_available(
     plan: &ProfilePolicyRepairPlan,
     args: &ProfilePolicyRepairArgs,
 ) -> Result<()> {
-    if plan.requires_passphrase && args.passphrase.is_none() && !std::io::stdin().is_terminal() {
-        anyhow::bail!(
-            "profile policy repair requires --passphrase <value> in non-interactive mode"
-        );
+    ensure_profile_policy_plan_inputs_available(
+        plan,
+        args.passphrase.as_ref(),
+        &args.recipient_keys,
+        "profile policy repair",
+    )
+}
+
+fn ensure_profile_policy_plan_inputs_available(
+    plan: &ProfilePolicyRepairPlan,
+    passphrase: Option<&String>,
+    recipient_keys: &[String],
+    context: &str,
+) -> Result<()> {
+    if plan.requires_passphrase && passphrase.is_none() && !std::io::stdin().is_terminal() {
+        anyhow::bail!("{context} requires --passphrase <value> in non-interactive mode");
     }
-    if plan.requires_recipient_key && args.recipient_keys.is_empty() {
+    if plan.requires_recipient_key && recipient_keys.is_empty() {
         eprintln!(
-            "note: repair may need --recipient-key <path-or-public-key-line> to migrate this v1 vault"
+            "note: {context} may need --recipient-key <path-or-public-key-line> to migrate this v1 vault"
         );
     }
     Ok(())
+}
+
+fn apply_profile_policy_plan_actions(
+    vault: &mut Vault,
+    profile: &str,
+    recipient_keys: &[String],
+    passphrase: Option<String>,
+    plan: &ProfilePolicyRepairPlan,
+) -> Result<(bool, Vec<&'static str>)> {
+    let mut changed = false;
+    let mut applied_actions = Vec::new();
+
+    if plan
+        .actions
+        .contains(&ProfilePolicyRepairAction::MigrateToV2)
+        && migrate_to_v2_if_needed(vault, recipient_keys)?
+    {
+        changed = true;
+        applied_actions.push(ProfilePolicyRepairAction::MigrateToV2.label());
+    }
+
+    let base_result = vault.apply_profile_policy_repair_plan_base(profile, plan)?;
+    changed |= base_result.changed;
+    applied_actions.extend(
+        base_result
+            .applied_actions
+            .iter()
+            .map(|action| action.label()),
+    );
+    ensure_profile_policy_editable(vault, profile)?;
+
+    for action in &plan.actions {
+        match action {
+            ProfilePolicyRepairAction::BindPassphrase => {
+                if repair_profile_passphrase_if_needed(vault, profile, passphrase.clone())? {
+                    changed = true;
+                    applied_actions.push(action.label());
+                }
+            }
+            ProfilePolicyRepairAction::BindDeviceSeal => {
+                #[cfg(feature = "device-seal")]
+                {
+                    if repair_profile_device_seal_if_available(vault, profile)? {
+                        changed = true;
+                        applied_actions.push(action.label());
+                    }
+                }
+                #[cfg(not(feature = "device-seal"))]
+                {
+                    if repair_profile_device_seal_unavailable() {
+                        changed = true;
+                        applied_actions.push(action.label());
+                    }
+                }
+            }
+            ProfilePolicyRepairAction::MigrateToV2
+            | ProfilePolicyRepairAction::EnableProfileKeyMode
+            | ProfilePolicyRepairAction::RegenerateProfileEntry
+            | ProfilePolicyRepairAction::RotateProfileKey => {}
+        }
+    }
+
+    Ok((changed, applied_actions))
 }
 
 fn prepare_profile_policy_enforcement(
@@ -1140,45 +1180,6 @@ fn prepare_profile_policy_enforcement(
     Ok(!was_v2 || !had_profile_keys)
 }
 
-fn set_profile_policy_preset(
-    vault: &mut Vault,
-    profile: &str,
-    preset: ProfilePolicyPreset,
-) -> Result<()> {
-    let mut policy = existing_or_default_profile_policy(vault, profile);
-    policy.preset = preset;
-    vault.profiles.set_profile_policy(profile, policy)?;
-    Ok(())
-}
-
-#[cfg(feature = "passphrase-factor")]
-fn apply_profile_passphrase_if_needed(
-    vault: &mut Vault,
-    profile: &str,
-    passphrase: Option<String>,
-) -> Result<()> {
-    let passphrase = passphrase_arg_or_prompt(passphrase, "Enter new sshenv profile passphrase: ")?;
-    vault.require_profile_passphrase(profile, passphrase.as_str())
-}
-
-#[cfg(not(feature = "passphrase-factor"))]
-fn apply_profile_passphrase_if_needed(
-    _vault: &mut Vault,
-    _profile: &str,
-    _passphrase: Option<String>,
-) -> Result<()> {
-    anyhow::bail!("this sshenv build was compiled without passphrase-factor support")
-}
-
-#[cfg(feature = "device-seal")]
-fn apply_profile_device_seal_if_available(vault: &mut Vault, profile: &str) -> Result<()> {
-    if device_seal_backend_status() == "none" {
-        eprintln!("note: no device-seal backend is available; skipping profile device seal");
-        return Ok(());
-    }
-    vault.require_profile_device_seal(profile)
-}
-
 #[cfg(not(feature = "device-seal"))]
 fn note_profile_device_seal_unavailable() {
     eprintln!("note: this sshenv build has no device-seal support; skipping profile device seal");
@@ -1194,7 +1195,8 @@ fn repair_profile_passphrase_if_needed(
     if profile_has_factor_metadata(&policy, UnlockFactorKindV2::Passphrase) {
         return Ok(false);
     }
-    apply_profile_passphrase_if_needed(vault, profile, passphrase)?;
+    let passphrase = passphrase_arg_or_prompt(passphrase, "Enter new sshenv profile passphrase: ")?;
+    vault.require_profile_passphrase(profile, passphrase.as_str())?;
     Ok(true)
 }
 
