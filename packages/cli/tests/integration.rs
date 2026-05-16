@@ -375,6 +375,42 @@ fn binary_migrate_vault_to_v2_preserves_secret_access() {
     assert!(String::from_utf8_lossy(&show_out.stdout).contains("DUMMY=value"));
 }
 
+#[cfg(not(feature = "device-seal"))]
+#[test]
+fn binary_profile_policy_apply_all_paranoid_requires_device_seal_backend() {
+    let bin = cargo_bin();
+    if !bin.exists() {
+        eprintln!("skipping: {} does not exist", bin.display());
+        return;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let vault_path = dir.path().join("vault");
+    init_vault_with_profile(&bin, &home, &vault_path, "myprofile");
+
+    let apply_all_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("security")
+        .arg("profile-policy")
+        .arg("apply-all")
+        .arg("--preset")
+        .arg("paranoid")
+        .arg("--passphrase")
+        .arg("bulk-passphrase")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run profile-policy apply-all paranoid without device seal");
+    assert!(!apply_all_out.status.success());
+    let stderr = String::from_utf8_lossy(&apply_all_out.stderr);
+    assert!(
+        stderr.contains("requires an available device-seal backend"),
+        "{stderr}"
+    );
+}
+
 #[cfg(all(feature = "device-seal-file", not(feature = "macos-keychain")))]
 #[test]
 fn binary_profile_policy_apply_all_recommended_binds_device_seal() {
@@ -468,6 +504,125 @@ fn binary_profile_policy_apply_all_recommended_binds_device_seal() {
         .arg("show")
         .arg("myprofile")
         .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run show without device seal");
+    assert!(!missing_seal_show_out.status.success());
+}
+
+#[cfg(all(feature = "device-seal-file", not(feature = "macos-keychain")))]
+#[test]
+fn binary_profile_policy_apply_all_paranoid_binds_passphrase_and_device_seal() {
+    let bin = cargo_bin();
+    if !bin.exists() {
+        eprintln!("skipping: {} does not exist", bin.display());
+        return;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let vault_path = dir.path().join("vault");
+    init_vault_with_profile(&bin, &home, &vault_path, "myprofile");
+
+    let set_other_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("set")
+        .arg("otherprofile")
+        .arg("DUMMY")
+        .arg("--value")
+        .arg("other")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run set other profile");
+    assert!(
+        set_other_out.status.success(),
+        "set other profile failed: {}",
+        String::from_utf8_lossy(&set_other_out.stderr)
+    );
+
+    let apply_all_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("security")
+        .arg("profile-policy")
+        .arg("apply-all")
+        .arg("--preset")
+        .arg("paranoid")
+        .arg("--passphrase")
+        .arg("bulk-passphrase")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run profile-policy apply-all paranoid");
+    assert!(
+        apply_all_out.status.success(),
+        "profile-policy apply-all paranoid failed: {}",
+        String::from_utf8_lossy(&apply_all_out.stderr)
+    );
+
+    for profile in ["myprofile", "otherprofile"] {
+        let status_out = Command::new(&bin)
+            .arg("--vault")
+            .arg(&vault_path)
+            .arg("security")
+            .arg("profile-policy")
+            .arg("status")
+            .arg(profile)
+            .env("HOME", &home)
+            .env_remove("SSHENV_VAULT")
+            .output()
+            .expect("run profile-policy status");
+        assert!(status_out.status.success());
+        let stdout = String::from_utf8_lossy(&status_out.stdout);
+        assert!(stdout.contains("preset: Paranoid"), "{stdout}");
+        assert!(
+            stdout.contains("requirement passphrase: profile-specific cryptographic binding"),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("requirement device-seal: profile-specific cryptographic binding"),
+            "{stdout}"
+        );
+
+        let show_without_passphrase_out = Command::new(&bin)
+            .arg("--vault")
+            .arg(&vault_path)
+            .arg("show")
+            .arg(profile)
+            .env("HOME", &home)
+            .env_remove("SSHENV_PROFILE_PASSPHRASE")
+            .env_remove("SSHENV_VAULT")
+            .output()
+            .expect("run show without passphrase");
+        assert!(!show_without_passphrase_out.status.success());
+
+        let show_out = Command::new(&bin)
+            .arg("--vault")
+            .arg(&vault_path)
+            .arg("show")
+            .arg(profile)
+            .env("HOME", &home)
+            .env("SSHENV_PROFILE_PASSPHRASE", "bulk-passphrase")
+            .env_remove("SSHENV_VAULT")
+            .output()
+            .expect("run show with passphrase and device seal");
+        assert!(
+            show_out.status.success(),
+            "show {profile} with passphrase and device seal failed: {}",
+            String::from_utf8_lossy(&show_out.stderr)
+        );
+    }
+
+    std::fs::remove_file(home.join(".sshenv").join("device-seal")).unwrap();
+    let missing_seal_show_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("show")
+        .arg("myprofile")
+        .env("HOME", &home)
+        .env("SSHENV_PROFILE_PASSPHRASE", "bulk-passphrase")
         .env_remove("SSHENV_VAULT")
         .output()
         .expect("run show without device seal");

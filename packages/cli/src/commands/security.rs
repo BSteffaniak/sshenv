@@ -1224,9 +1224,10 @@ pub fn profile_policy_apply_all(ctx: &CmdContext, args: ProfilePolicyApplyAllArg
         ProfilePolicyPreset::Standard
             | ProfilePolicyPreset::Portable
             | ProfilePolicyPreset::Recommended
+            | ProfilePolicyPreset::Paranoid
     ) {
         anyhow::bail!(
-            "profile-policy apply-all without --dry-run currently supports --preset standard, portable, or recommended only"
+            "profile-policy apply-all without --dry-run currently supports --preset standard, portable, recommended, or paranoid only"
         );
     }
     ensure_profile_policy_apply_all_preset_supported(preset)?;
@@ -1246,7 +1247,11 @@ pub fn profile_policy_apply_all(ctx: &CmdContext, args: ProfilePolicyApplyAllArg
     for profile_output in output.profiles {
         apply_profile_policy_preset_metadata(&mut vault, &profile_output.profile, preset)?;
         let mut plan = profile_output.plan;
-        if preset == ProfilePolicyPreset::Portable && bulk_passphrase.is_some() {
+        if matches!(
+            preset,
+            ProfilePolicyPreset::Portable | ProfilePolicyPreset::Paranoid
+        ) && bulk_passphrase.is_some()
+        {
             add_profile_policy_plan_action(&mut plan, ProfilePolicyRepairAction::BindPassphrase);
             add_profile_policy_plan_action(&mut plan, ProfilePolicyRepairAction::RotateProfileKey);
         }
@@ -1338,9 +1343,13 @@ pub fn profile_policy_repair(ctx: &CmdContext, args: ProfilePolicyRepairArgs) ->
 }
 
 fn ensure_profile_policy_apply_all_preset_supported(preset: ProfilePolicyPreset) -> Result<()> {
-    if preset == ProfilePolicyPreset::Recommended && device_seal_backend_status() == "none" {
+    if matches!(
+        preset,
+        ProfilePolicyPreset::Recommended | ProfilePolicyPreset::Paranoid
+    ) && device_seal_backend_status() == "none"
+    {
         anyhow::bail!(
-            "profile-policy apply-all --preset recommended requires an available device-seal backend"
+            "profile-policy apply-all --preset {preset:?} requires an available device-seal backend"
         );
     }
     Ok(())
