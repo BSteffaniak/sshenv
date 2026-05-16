@@ -264,7 +264,7 @@ pub fn rollback_status(ctx: &CmdContext, args: RollbackStatusArgs) -> Result<()>
             "current rollback protection is local best-effort generation tracking".to_string(),
             "explicit restore updates the local baseline".to_string(),
             "set SSHENV_ROLLBACK_SYNC to a trusted synced state file for opt-in multi-device rollback observations".to_string(),
-            "signed remote checkpoints require SSHENV_ROLLBACK_CHECKPOINT for runtime enforcement".to_string(),
+            "signed remote checkpoints require SSHENV_ROLLBACK_CHECKPOINT or SSHENV_ROLLBACK_CHECKPOINT_COMMAND for runtime enforcement".to_string(),
         ],
     };
     if args.json {
@@ -508,7 +508,7 @@ fn rollback_required_metadata(backend: RollbackBackendArg) -> Vec<String> {
             "last accepted vault generation".to_string(),
         ],
         RollbackBackendArg::RemoteCheckpoint => vec![
-            "checkpoint service URL and public verification key".to_string(),
+            "checkpoint service URL/command adapter and public verification key".to_string(),
             "vault id and latest signed generation".to_string(),
             "request authentication/audit policy".to_string(),
         ],
@@ -545,7 +545,7 @@ fn rollback_read_path(backend: RollbackBackendArg) -> Vec<String> {
             "refuse older generations unless explicit restore updates the baseline".to_string(),
         ],
         RollbackBackendArg::RemoteCheckpoint => vec![
-            "before unlock, fetch latest signed checkpoint".to_string(),
+            "before unlock, fetch latest signed checkpoint with SSHENV_ROLLBACK_CHECKPOINT_COMMAND or read SSHENV_ROLLBACK_CHECKPOINT".to_string(),
             "refuse vaults older than the service checkpoint unless explicitly restored"
                 .to_string(),
         ],
