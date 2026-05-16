@@ -346,6 +346,8 @@ pub enum RemoteCommand {
     CommandWrap(RemoteCommandWrapArgs),
     /// Unwrap a hex payload key via a command-backed remote factor.
     CommandUnwrap(RemoteCommandUnwrapArgs),
+    /// Enable a command-backed remote/KMS factor for the current vault.
+    EnableCommand(RemoteEnableCommandArgs),
     /// Validate a remote/KMS factor metadata JSON file.
     Validate(RemoteMetadataArgs),
 }
@@ -437,6 +439,14 @@ pub struct RemoteCommandUnwrapArgs {
     /// Print machine-readable JSON.
     #[arg(long)]
     pub json: bool,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct RemoteEnableCommandArgs {
+    /// Path to a JSON RemoteFactorMetadataV2 document with a `command` param.
+    pub metadata_path: PathBuf,
+    /// Path to a JSON RemoteFactorRequest document used to wrap the generated factor.
+    pub request_path: PathBuf,
 }
 
 #[derive(Debug, clap::Args)]

@@ -942,6 +942,116 @@ esac
     assert_eq!(cloud_wrap_json["wrapped_key_hex"], "deadbeef");
 }
 
+#[cfg(all(feature = "remote-factor", unix))]
+#[test]
+fn binary_remote_enable_command_factor_unlocks_with_request_env() {
+    let bin = cargo_bin();
+    if !bin.exists() {
+        eprintln!("skipping: {} does not exist", bin.display());
+        return;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let vault_path = dir.path().join("vault");
+    init_vault_with_profile(&bin, &home, &vault_path, "myprofile");
+    migrate_vault_to_v2(&bin, &home, &vault_path);
+
+    let state_path = dir.path().join("remote-factor-key.hex");
+    let command_path = dir.path().join("remote-factor-stateful.sh");
+    std::fs::write(
+        &command_path,
+        format!(
+            r#"#!/bin/sh
+state='{}'
+input=$(cat)
+case "$input" in
+  *'"operation":"wrap"'*|*'"operation": "wrap"'*)
+    key=$(printf '%s' "$input" | sed -n 's/.*"payload-key-hex":"\([0-9a-f]*\)".*/\1/p')
+    printf '%s' "$key" > "$state"
+    printf '{{"wrapped_key":[1,2,3],"audit_id":"enable-audit"}}\n'
+    ;;
+  *'"operation":"unwrap"'*|*'"operation": "unwrap"'*)
+    key=$(cat "$state")
+    printf '{{"payload-key-hex":"%s"}}\n' "$key"
+    ;;
+  *) echo 'unknown operation' >&2; exit 1 ;;
+esac
+"#,
+            state_path.display()
+        ),
+    )
+    .unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&command_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let metadata_path = dir.path().join("remote-command.json");
+    std::fs::write(
+        &metadata_path,
+        format!(
+            r#"{{
+  "id": "command-remote",
+  "backend": "self-hosted",
+  "label": "command remote",
+  "params": {{ "command": "{}" }}
+}}"#,
+            command_path.display()
+        ),
+    )
+    .unwrap();
+    let request_path = dir.path().join("request.json");
+    std::fs::write(
+        &request_path,
+        r#"{
+  "factor_id": "command-remote",
+  "context": {
+    "vault-id": "vault",
+    "request-id": "req-1",
+    "generation": "1",
+    "expires-unix": "4102444800",
+    "client-id": "client"
+  }
+}"#,
+    )
+    .unwrap();
+
+    let enable_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .args(["security", "remote", "enable-command"])
+        .arg(&metadata_path)
+        .arg(&request_path)
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run remote enable-command");
+    assert!(
+        enable_out.status.success(),
+        "enable-command failed: {}",
+        String::from_utf8_lossy(&enable_out.stderr)
+    );
+
+    let show_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("show")
+        .arg("myprofile")
+        .env("HOME", &home)
+        .env("SSHENV_REMOTE_REQUEST", &request_path)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("show remote-factor vault");
+    assert!(
+        show_out.status.success(),
+        "show with remote request failed: {}",
+        String::from_utf8_lossy(&show_out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&show_out.stdout);
+    assert!(stdout.contains("DUMMY=value"), "show output: {stdout}");
+}
+
 #[cfg(feature = "remote-factor")]
 #[test]
 fn binary_remote_validate_request_rejects_expired_context() {

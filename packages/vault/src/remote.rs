@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 use sshenv_vault_models::{RemoteFactorBackendKindV2, RemoteFactorMetadataV2};
 use thiserror::Error;
 
+pub const REMOTE_REQUEST_ENV: &str = "SSHENV_REMOTE_REQUEST";
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteFactorRequest {
     pub factor_id: String,

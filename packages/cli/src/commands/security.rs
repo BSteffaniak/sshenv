@@ -27,8 +27,8 @@ use sshenv_cli_models::{
     RecoveryCombineArgs, RecoveryListArgs, RecoveryMetadataArgs, RecoveryPlanArgs,
     RecoveryRecoverRecipientArgs, RecoveryRemoveArgs, RecoveryShareFileArgs, RecoverySplitArgs,
     RecoveryVaultKeySplitArgs, RemoteBackendArg, RemoteCommandUnwrapArgs, RemoteCommandWrapArgs,
-    RemoteListArgs, RemoteMetadataArgs, RemotePlanArgs, RemoteRemoveArgs, RemoteRequestArgs,
-    RemoteRequestTemplateArgs, RollbackBackendArg, RollbackCheckpointArgs,
+    RemoteEnableCommandArgs, RemoteListArgs, RemoteMetadataArgs, RemotePlanArgs, RemoteRemoveArgs,
+    RemoteRequestArgs, RemoteRequestTemplateArgs, RollbackBackendArg, RollbackCheckpointArgs,
     RollbackCheckpointTemplateArgs, RollbackPlanArgs, RollbackStatusArgs, SecurityPresetArg,
     SecurityPresetArgs,
 };
@@ -2086,6 +2086,26 @@ pub fn remote_command_unwrap(args: RemoteCommandUnwrapArgs) -> Result<()> {
 
 #[cfg(not(feature = "remote-factor"))]
 pub fn remote_command_unwrap(_args: RemoteCommandUnwrapArgs) -> Result<()> {
+    anyhow::bail!("this sshenv build was compiled without remote-factor support")
+}
+
+#[cfg(feature = "remote-factor")]
+pub fn remote_enable_command(ctx: &CmdContext, args: RemoteEnableCommandArgs) -> Result<()> {
+    let remote_metadata = load_remote_factor_metadata(&args.metadata_path)?;
+    let request = load_remote_factor_request(&args.request_path)?;
+    let (mut vault, data_key) = load_and_unlock_metadata(&ctx.vault_path)?;
+    ensure_policy_metadata_v2(&vault)?;
+    let factor_id = remote_metadata.id.clone();
+    vault.enable_remote_command_factor(remote_metadata, &request)?;
+    save_vault(ctx, &mut vault, &data_key)?;
+    eprintln!(
+        "Enabled command-backed remote/KMS factor {factor_id}. Set SSHENV_REMOTE_REQUEST to a fresh request JSON when unlocking."
+    );
+    Ok(())
+}
+
+#[cfg(not(feature = "remote-factor"))]
+pub fn remote_enable_command(_ctx: &CmdContext, _args: RemoteEnableCommandArgs) -> Result<()> {
     anyhow::bail!("this sshenv build was compiled without remote-factor support")
 }
 

@@ -43,7 +43,11 @@ use zeroize::Zeroizing;
 
 pub use sshenv_vault_models as models;
 
-#[cfg(any(feature = "passphrase-factor", feature = "device-seal"))]
+#[cfg(any(
+    feature = "passphrase-factor",
+    feature = "device-seal",
+    feature = "remote-factor"
+))]
 use crate::crypto::bind_data_key_to_factor;
 use crate::crypto::{decrypt_payload_with_aad, encrypt_payload_with_aad, generate_data_key};
 use crate::format::{encode, encode_v2, parse};
@@ -51,6 +55,8 @@ use crate::identity::{
     discover_private_key_paths, error_no_identity_unlocked_detailed,
     load_identities_for_vault_from_paths,
 };
+#[cfg(feature = "remote-factor")]
+use crate::remote::RemoteFactorBackend;
 
 /// Shorthand alias for the fixed-size, auto-zeroizing data key.
 pub type DataKey = Zeroizing<[u8; DATA_KEY_LEN]>;
@@ -839,6 +845,72 @@ impl Vault {
         metadata_has_device_seal_factor(self.policy_metadata.as_ref())
     }
 
+    /// Add a command-backed remote/KMS payload factor.
+    ///
+    /// The remote metadata must include a non-secret `command` parameter. A
+    /// fresh factor key is generated, wrapped by the command adapter, and then
+    /// required for future payload decrypts via `SSHENV_REMOTE_REQUEST`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the vault is not v2, metadata/request validation
+    /// fails, or the command adapter cannot wrap the generated factor key.
+    #[cfg(feature = "remote-factor")]
+    pub fn enable_remote_command_factor(
+        &mut self,
+        remote_metadata: sshenv_vault_models::RemoteFactorMetadataV2,
+        request: &remote::RemoteFactorRequest,
+    ) -> Result<()> {
+        if self.header.version != VERSION_V2 {
+            return Err(anyhow!(
+                "remote factors require v2; run `sshenv migrate-vault --to v2` first"
+            ));
+        }
+        let backend = remote::CommandRemoteFactorBackend::from_metadata(remote_metadata.clone())?;
+        let factor_key = generate_data_key();
+        let response = backend.wrap_payload_key(request, factor_key.as_slice())?;
+        let mut params = BTreeMap::new();
+        params.insert("metadata-id".to_string(), remote_metadata.id.clone());
+        params.insert(
+            "wrapped-key-hex".to_string(),
+            hex::encode(&response.wrapped_key),
+        );
+        if let Some(audit_id) = response.audit_id {
+            params.insert("last-wrap-audit-id".to_string(), audit_id);
+        }
+        let factor_id = format!("remote-kms:{}", remote_metadata.id);
+        let metadata = self
+            .policy_metadata
+            .get_or_insert_with(|| policy_metadata_from_recipients(&self.recipients));
+        metadata
+            .remote_factors
+            .retain(|factor| factor.id != remote_metadata.id);
+        metadata.remote_factors.push(remote_metadata);
+        metadata
+            .remote_factors
+            .sort_by(|left, right| left.id.cmp(&right.id));
+        metadata
+            .policies
+            .retain(|policy| policy.id != format!("ssh+{factor_id}"));
+        metadata.policies.push(sshenv_vault_models::UnlockPolicyV2 {
+            id: format!("ssh+{factor_id}"),
+            threshold: None,
+            factors: vec![sshenv_vault_models::UnlockFactorV2 {
+                id: factor_id,
+                kind: UnlockFactorKindV2::RemoteKms,
+                recipient_fingerprint: None,
+                params,
+            }],
+        });
+        self.payload_key_factors
+            .retain(|factor| factor.kind != UnlockFactorKindV2::RemoteKms);
+        self.payload_key_factors.push(PayloadKeyFactor {
+            kind: UnlockFactorKindV2::RemoteKms,
+            key: factor_key,
+        });
+        Ok(())
+    }
+
     /// Attach public key lines to existing recipients without changing their
     /// wrapped keys.
     ///
@@ -1302,7 +1374,11 @@ impl CiphertextVault {
 /// # Errors
 ///
 /// Returns an error if any filesystem operation fails.
-#[cfg(any(feature = "passphrase-factor", feature = "device-seal"))]
+#[cfg(any(
+    feature = "passphrase-factor",
+    feature = "device-seal",
+    feature = "remote-factor"
+))]
 fn payload_key_for_data_key(
     data_key: &[u8],
     payload_key_factors: &[PayloadKeyFactor],
@@ -1314,7 +1390,11 @@ fn payload_key_for_data_key(
     current
 }
 
-#[cfg(not(any(feature = "passphrase-factor", feature = "device-seal")))]
+#[cfg(not(any(
+    feature = "passphrase-factor",
+    feature = "device-seal",
+    feature = "remote-factor"
+)))]
 fn payload_key_for_data_key(
     data_key: &[u8],
     _payload_key_factors: &[PayloadKeyFactor],
@@ -1796,6 +1876,10 @@ fn payload_key_factors_for_metadata(
                 kind: UnlockFactorKindV2::DeviceSeal,
                 key: device_seal_factor_key(factor)?,
             }),
+            UnlockFactorKindV2::RemoteKms => factors.push(PayloadKeyFactor {
+                kind: UnlockFactorKindV2::RemoteKms,
+                key: remote_factor_key(metadata, factor)?,
+            }),
             _ => {}
         }
     }
@@ -1836,6 +1920,57 @@ fn device_seal_factor_key(
 ) -> Result<Zeroizing<[u8; DATA_KEY_LEN]>> {
     Err(anyhow!(
         "vault requires a device-seal factor, but this sshenv build was compiled without device-seal support"
+    ))
+}
+
+#[cfg(feature = "remote-factor")]
+fn remote_factor_key(
+    metadata: &VaultPolicyMetadataV2,
+    factor: &sshenv_vault_models::UnlockFactorV2,
+) -> Result<Zeroizing<[u8; DATA_KEY_LEN]>> {
+    let metadata_id = factor
+        .params
+        .get("metadata-id")
+        .context("remote factor is missing metadata-id")?;
+    let wrapped_key = factor
+        .params
+        .get("wrapped-key-hex")
+        .context("remote factor is missing wrapped-key-hex")
+        .and_then(|value| hex::decode(value).context("remote factor wrapped-key-hex is invalid"))?;
+    let request_path = std::env::var(remote::REMOTE_REQUEST_ENV).with_context(|| {
+        format!(
+            "vault requires a remote/KMS factor; set {} to a fresh remote request JSON file",
+            remote::REMOTE_REQUEST_ENV
+        )
+    })?;
+    let request_content = fs::read_to_string(&request_path)
+        .with_context(|| format!("failed to read remote request {request_path}"))?;
+    let request: remote::RemoteFactorRequest = serde_json::from_str(&request_content)
+        .with_context(|| format!("failed to parse remote request {request_path}"))?;
+    let remote_metadata = metadata
+        .remote_factors
+        .iter()
+        .find(|remote| remote.id == *metadata_id)
+        .with_context(|| format!("remote factor metadata '{metadata_id}' is not configured"))?
+        .clone();
+    let backend = remote::CommandRemoteFactorBackend::from_metadata(remote_metadata)?;
+    let factor_key = backend.unwrap_payload_key(&request, &wrapped_key)?;
+    let factor_key: [u8; DATA_KEY_LEN] = factor_key.try_into().map_err(|value: Vec<u8>| {
+        anyhow!(
+            "remote factor key is {} bytes, expected {DATA_KEY_LEN}",
+            value.len()
+        )
+    })?;
+    Ok(Zeroizing::new(factor_key))
+}
+
+#[cfg(not(feature = "remote-factor"))]
+fn remote_factor_key(
+    _metadata: &VaultPolicyMetadataV2,
+    _factor: &sshenv_vault_models::UnlockFactorV2,
+) -> Result<Zeroizing<[u8; DATA_KEY_LEN]>> {
+    Err(anyhow!(
+        "vault requires a remote/KMS factor, but this sshenv build was compiled without remote-factor support"
     ))
 }
 

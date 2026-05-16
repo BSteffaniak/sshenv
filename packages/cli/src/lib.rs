@@ -117,6 +117,9 @@ pub fn run(cli: Cli) -> Result<()> {
                 RemoteCommand::CommandUnwrap(args) => {
                     commands::security::remote_command_unwrap(args)
                 }
+                RemoteCommand::EnableCommand(args) => {
+                    commands::security::remote_enable_command(&ctx, args)
+                }
                 RemoteCommand::Validate(args) => commands::security::remote_validate(args),
             },
             SecurityCommand::ProfilePolicy(sub) => match sub {
