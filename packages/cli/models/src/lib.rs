@@ -342,6 +342,10 @@ pub enum RemoteCommand {
     RequestTemplate(RemoteRequestTemplateArgs),
     /// Validate a remote/KMS request JSON file against metadata.
     ValidateRequest(RemoteRequestArgs),
+    /// Wrap a hex payload key via a command-backed remote factor.
+    CommandWrap(RemoteCommandWrapArgs),
+    /// Unwrap a hex payload key via a command-backed remote factor.
+    CommandUnwrap(RemoteCommandUnwrapArgs),
     /// Validate a remote/KMS factor metadata JSON file.
     Validate(RemoteMetadataArgs),
 }
@@ -402,6 +406,34 @@ pub struct RemoteRequestArgs {
     /// Expected request id for this request context.
     #[arg(long)]
     pub expected_request_id: Option<String>,
+    /// Print machine-readable JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct RemoteCommandWrapArgs {
+    /// Path to a JSON RemoteFactorMetadataV2 document with a `command` param.
+    pub metadata_path: PathBuf,
+    /// Path to a JSON RemoteFactorRequest document.
+    pub request_path: PathBuf,
+    /// Read the payload key as hex from stdin.
+    #[arg(long)]
+    pub payload_key_hex_stdin: bool,
+    /// Print machine-readable JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct RemoteCommandUnwrapArgs {
+    /// Path to a JSON RemoteFactorMetadataV2 document with a `command` param.
+    pub metadata_path: PathBuf,
+    /// Path to a JSON RemoteFactorRequest document.
+    pub request_path: PathBuf,
+    /// Read the wrapped key as hex from stdin.
+    #[arg(long)]
+    pub wrapped_key_hex_stdin: bool,
     /// Print machine-readable JSON.
     #[arg(long)]
     pub json: bool,

@@ -1,11 +1,11 @@
 //! Integration tests that drive the CLI end-to-end against temp files.
 
 use std::io::Cursor;
-#[cfg(feature = "shamir-sharing")]
+#[cfg(any(feature = "remote-factor", feature = "shamir-sharing"))]
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::Command;
-#[cfg(feature = "shamir-sharing")]
+#[cfg(any(feature = "remote-factor", feature = "shamir-sharing"))]
 use std::process::Stdio;
 
 use rand_core::OsRng;
@@ -770,6 +770,118 @@ fn binary_remote_request_template_validates_roundtrip() {
     assert_eq!(
         request_json["checked_expectations"],
         serde_json::json!(["vault-id", "generation", "request-id"])
+    );
+}
+
+#[cfg(all(feature = "remote-factor", unix))]
+#[test]
+fn binary_remote_command_adapter_wraps_and_unwraps() {
+    let bin = cargo_bin();
+    if !bin.exists() {
+        eprintln!("skipping: {} does not exist", bin.display());
+        return;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let command_path = dir.path().join("remote-factor.sh");
+    std::fs::write(
+        &command_path,
+        r#"#!/bin/sh
+input=$(cat)
+case "$input" in
+  *'"operation":"wrap"'*|*'"operation": "wrap"'*) printf '{"wrapped_key":[222,173,190,239],"audit_id":"audit-1"}\n' ;;
+  *'"operation":"unwrap"'*|*'"operation": "unwrap"'*) printf '{"payload-key-hex":"00112233445566778899aabbccddeeff"}\n' ;;
+  *) echo 'unknown operation' >&2; exit 1 ;;
+esac
+"#,
+    )
+    .unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&command_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let metadata_path = dir.path().join("remote-command.json");
+    std::fs::write(
+        &metadata_path,
+        format!(
+            r#"{{
+  "id": "command-remote",
+  "backend": "self-hosted",
+  "label": "command remote",
+  "params": {{ "command": "{}" }}
+}}"#,
+            command_path.display()
+        ),
+    )
+    .unwrap();
+    let request_path = dir.path().join("request.json");
+    std::fs::write(
+        &request_path,
+        r#"{
+  "factor_id": "command-remote",
+  "context": {
+    "vault-id": "vault",
+    "request-id": "req-1",
+    "generation": "1",
+    "expires-unix": "4102444800",
+    "client-id": "client"
+  }
+}"#,
+    )
+    .unwrap();
+
+    let mut wrap = Command::new(&bin)
+        .args(["security", "remote", "command-wrap"])
+        .arg(&metadata_path)
+        .arg(&request_path)
+        .arg("--payload-key-hex-stdin")
+        .arg("--json")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn command-wrap");
+    wrap.stdin
+        .as_mut()
+        .unwrap()
+        .write_all(b"00112233445566778899aabbccddeeff")
+        .unwrap();
+    let wrap_out = wrap.wait_with_output().expect("wait command-wrap");
+    assert!(
+        wrap_out.status.success(),
+        "command-wrap failed: {}",
+        String::from_utf8_lossy(&wrap_out.stderr)
+    );
+    let wrap_json: serde_json::Value = serde_json::from_slice(&wrap_out.stdout).unwrap();
+    assert_eq!(wrap_json["wrapped_key_hex"], "deadbeef");
+    assert_eq!(wrap_json["audit_id"], "audit-1");
+
+    let mut unwrap = Command::new(&bin)
+        .args(["security", "remote", "command-unwrap"])
+        .arg(&metadata_path)
+        .arg(&request_path)
+        .arg("--wrapped-key-hex-stdin")
+        .arg("--json")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn command-unwrap");
+    unwrap
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(b"deadbeef")
+        .unwrap();
+    let unwrap_out = unwrap.wait_with_output().expect("wait command-unwrap");
+    assert!(
+        unwrap_out.status.success(),
+        "command-unwrap failed: {}",
+        String::from_utf8_lossy(&unwrap_out.stderr)
+    );
+    let unwrap_json: serde_json::Value = serde_json::from_slice(&unwrap_out.stdout).unwrap();
+    assert_eq!(
+        unwrap_json["payload_key_hex"],
+        "00112233445566778899aabbccddeeff"
     );
 }
 

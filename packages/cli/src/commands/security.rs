@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::io::IsTerminal;
-#[cfg(feature = "shamir-sharing")]
+#[cfg(any(feature = "remote-factor", feature = "shamir-sharing"))]
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -26,16 +26,19 @@ use sshenv_cli_models::{
     ProfilePolicySetArgs, ProfilePolicyStatusArgs, ProfilePolicyVerifyBackupArgs,
     RecoveryCombineArgs, RecoveryListArgs, RecoveryMetadataArgs, RecoveryPlanArgs,
     RecoveryRecoverRecipientArgs, RecoveryRemoveArgs, RecoveryShareFileArgs, RecoverySplitArgs,
-    RecoveryVaultKeySplitArgs, RemoteBackendArg, RemoteListArgs, RemoteMetadataArgs,
-    RemotePlanArgs, RemoteRemoveArgs, RemoteRequestArgs, RemoteRequestTemplateArgs,
-    RollbackBackendArg, RollbackCheckpointArgs, RollbackCheckpointTemplateArgs, RollbackPlanArgs,
-    RollbackStatusArgs, SecurityPresetArg, SecurityPresetArgs,
+    RecoveryVaultKeySplitArgs, RemoteBackendArg, RemoteCommandUnwrapArgs, RemoteCommandWrapArgs,
+    RemoteListArgs, RemoteMetadataArgs, RemotePlanArgs, RemoteRemoveArgs, RemoteRequestArgs,
+    RemoteRequestTemplateArgs, RollbackBackendArg, RollbackCheckpointArgs,
+    RollbackCheckpointTemplateArgs, RollbackPlanArgs, RollbackStatusArgs, SecurityPresetArg,
+    SecurityPresetArgs,
 };
 use sshenv_vault::models::{
     ProfileFactorRequirement, ProfilePolicy, ProfilePolicyFinding, ProfilePolicyFindingCode,
     ProfilePolicyPreset, ProfilePolicyRepairAction, ProfilePolicyRepairPlan,
     RemoteFactorBackendKindV2, RemoteFactorMetadataV2, UnlockFactorKindV2, VERSION, VERSION_V2,
 };
+#[cfg(feature = "remote-factor")]
+use sshenv_vault::remote::RemoteFactorBackend;
 use sshenv_vault::{DataKey, Vault, atomic_write};
 
 use crate::commands::Context as CmdContext;
@@ -1840,6 +1843,10 @@ fn remote_plan_notes(backend: RemoteBackendArg) -> Vec<String> {
                 "self-hosted service should authenticate clients and enforce approval/TTL policy"
                     .to_string(),
             );
+            notes.push(
+                "command-backed adapters can set a non-secret `command` param and use `remote command-wrap` / `remote command-unwrap`"
+                    .to_string(),
+            );
         }
         RemoteBackendArg::CloudKms => {
             notes.push(
@@ -1973,6 +1980,86 @@ pub fn remote_validate_request(args: RemoteRequestArgs) -> Result<()> {
 #[cfg(not(feature = "remote-factor"))]
 pub fn remote_validate_request(_args: RemoteRequestArgs) -> Result<()> {
     anyhow::bail!("this sshenv build was compiled without remote-factor support")
+}
+
+#[cfg(feature = "remote-factor")]
+pub fn remote_command_wrap(args: RemoteCommandWrapArgs) -> Result<()> {
+    if !args.payload_key_hex_stdin {
+        anyhow::bail!(
+            "remote command-wrap requires --payload-key-hex-stdin to avoid shell-history exposure"
+        );
+    }
+    let metadata = load_remote_factor_metadata(&args.metadata_path)?;
+    let request = load_remote_factor_request(&args.request_path)?;
+    let payload_key = read_hex_secret_from_stdin("payload key")?;
+    let backend = sshenv_vault::remote::CommandRemoteFactorBackend::from_metadata(metadata)?;
+    let response = backend.wrap_payload_key(&request, payload_key.as_slice())?;
+    let wrapped_key_hex = hex::encode(&response.wrapped_key);
+    if args.json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "wrapped_key_hex": wrapped_key_hex,
+                "audit_id": response.audit_id,
+            })
+        );
+    } else {
+        if let Some(audit_id) = response.audit_id {
+            eprintln!("remote audit id: {audit_id}");
+        }
+        println!("{wrapped_key_hex}");
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "remote-factor"))]
+pub fn remote_command_wrap(_args: RemoteCommandWrapArgs) -> Result<()> {
+    anyhow::bail!("this sshenv build was compiled without remote-factor support")
+}
+
+#[cfg(feature = "remote-factor")]
+pub fn remote_command_unwrap(args: RemoteCommandUnwrapArgs) -> Result<()> {
+    if !args.wrapped_key_hex_stdin {
+        anyhow::bail!(
+            "remote command-unwrap requires --wrapped-key-hex-stdin to avoid shell-history exposure"
+        );
+    }
+    let metadata = load_remote_factor_metadata(&args.metadata_path)?;
+    let request = load_remote_factor_request(&args.request_path)?;
+    let wrapped_key = read_hex_secret_from_stdin("wrapped key")?;
+    let backend = sshenv_vault::remote::CommandRemoteFactorBackend::from_metadata(metadata)?;
+    let payload_key =
+        zeroize::Zeroizing::new(backend.unwrap_payload_key(&request, wrapped_key.as_slice())?);
+    let payload_key_hex = hex::encode(payload_key.as_slice());
+    if args.json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "payload_key_hex": payload_key_hex,
+            })
+        );
+    } else {
+        eprintln!("warning: recovered remote payload key is being written to stdout as hex");
+        println!("{payload_key_hex}");
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "remote-factor"))]
+pub fn remote_command_unwrap(_args: RemoteCommandUnwrapArgs) -> Result<()> {
+    anyhow::bail!("this sshenv build was compiled without remote-factor support")
+}
+
+#[cfg(any(feature = "remote-factor", feature = "shamir-sharing"))]
+fn read_hex_secret_from_stdin(label: &str) -> Result<zeroize::Zeroizing<Vec<u8>>> {
+    let mut input = String::new();
+    std::io::stdin()
+        .read_to_string(&mut input)
+        .with_context(|| format!("failed to read {label} hex from stdin"))?;
+    Ok(zeroize::Zeroizing::new(
+        hex::decode(input.trim())
+            .with_context(|| format!("failed to decode {label} hex from stdin"))?,
+    ))
 }
 
 #[cfg(feature = "remote-factor")]

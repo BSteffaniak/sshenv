@@ -1,4 +1,6 @@
 use std::collections::BTreeMap;
+use std::io::Write;
+use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -29,6 +31,26 @@ pub enum RemoteFactorError {
     InvalidResponse(String),
 }
 
+pub struct CommandRemoteFactorBackend {
+    metadata: RemoteFactorMetadataV2,
+    command: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "kebab-case")]
+struct CommandRemoteFactorInput<'a> {
+    operation: &'a str,
+    request: &'a RemoteFactorRequest,
+    payload_key_hex: Option<String>,
+    wrapped_key_hex: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+struct CommandRemoteFactorUnwrapOutput {
+    payload_key_hex: String,
+}
+
 pub trait RemoteFactorBackend {
     fn kind(&self) -> RemoteFactorBackendKindV2;
 
@@ -45,6 +67,114 @@ pub trait RemoteFactorBackend {
         request: &RemoteFactorRequest,
         wrapped_key: &[u8],
     ) -> Result<Vec<u8>, RemoteFactorError>;
+}
+
+impl CommandRemoteFactorBackend {
+    pub fn from_metadata(metadata: RemoteFactorMetadataV2) -> Result<Self, RemoteFactorError> {
+        let command = metadata
+            .params
+            .get("command")
+            .filter(|value| !value.trim().is_empty())
+            .cloned()
+            .ok_or_else(|| {
+                RemoteFactorError::Unavailable(
+                    "command-backed remote factor requires non-secret `command` param".to_string(),
+                )
+            })?;
+        Ok(Self { metadata, command })
+    }
+
+    fn invoke<I: Serialize, O: for<'de> Deserialize<'de>>(
+        &self,
+        input: &I,
+    ) -> Result<O, RemoteFactorError> {
+        let encoded = serde_json::to_vec(input).map_err(|error| {
+            RemoteFactorError::InvalidRequest(format!(
+                "failed to serialize command remote request: {error}"
+            ))
+        })?;
+        let mut child = Command::new(&self.command)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .map_err(|error| {
+                RemoteFactorError::Unavailable(format!(
+                    "failed to invoke command-backed remote factor '{}': {error}",
+                    self.command
+                ))
+            })?;
+        {
+            let stdin = child.stdin.as_mut().ok_or_else(|| {
+                RemoteFactorError::Unavailable(
+                    "failed to open command-backed remote factor stdin".to_string(),
+                )
+            })?;
+            stdin.write_all(&encoded).map_err(|error| {
+                RemoteFactorError::Unavailable(format!(
+                    "failed to write command-backed remote factor request: {error}"
+                ))
+            })?;
+        }
+        let output = child.wait_with_output().map_err(|error| {
+            RemoteFactorError::Unavailable(format!(
+                "failed to wait for command-backed remote factor: {error}"
+            ))
+        })?;
+        if !output.status.success() {
+            return Err(RemoteFactorError::Denied(format!(
+                "command-backed remote factor exited unsuccessfully: {}",
+                String::from_utf8_lossy(&output.stderr)
+            )));
+        }
+        serde_json::from_slice(&output.stdout).map_err(|error| {
+            RemoteFactorError::InvalidResponse(format!(
+                "command-backed remote factor returned invalid JSON: {error}"
+            ))
+        })
+    }
+}
+
+impl RemoteFactorBackend for CommandRemoteFactorBackend {
+    fn kind(&self) -> RemoteFactorBackendKindV2 {
+        self.metadata.backend
+    }
+
+    fn metadata(&self) -> RemoteFactorMetadataV2 {
+        self.metadata.clone()
+    }
+
+    fn wrap_payload_key(
+        &self,
+        request: &RemoteFactorRequest,
+        payload_key: &[u8],
+    ) -> Result<RemoteFactorResponse, RemoteFactorError> {
+        validate_remote_factor_request(&self.metadata, request)?;
+        self.invoke(&CommandRemoteFactorInput {
+            operation: "wrap",
+            request,
+            payload_key_hex: Some(hex::encode(payload_key)),
+            wrapped_key_hex: None,
+        })
+    }
+
+    fn unwrap_payload_key(
+        &self,
+        request: &RemoteFactorRequest,
+        wrapped_key: &[u8],
+    ) -> Result<Vec<u8>, RemoteFactorError> {
+        validate_remote_factor_request(&self.metadata, request)?;
+        let output: CommandRemoteFactorUnwrapOutput = self.invoke(&CommandRemoteFactorInput {
+            operation: "unwrap",
+            request,
+            payload_key_hex: None,
+            wrapped_key_hex: Some(hex::encode(wrapped_key)),
+        })?;
+        hex::decode(output.payload_key_hex).map_err(|error| {
+            RemoteFactorError::InvalidResponse(format!(
+                "command-backed remote factor returned invalid payload key hex: {error}"
+            ))
+        })
+    }
 }
 
 pub fn validate_remote_factor_request(
@@ -127,11 +257,15 @@ pub fn validate_remote_factor_metadata(metadata: &RemoteFactorMetadataV2) -> Res
 
     match metadata.backend {
         RemoteFactorBackendKindV2::SelfHosted | RemoteFactorBackendKindV2::OidcApproval => {
-            let url = require_non_empty_metadata_param(metadata, "url")?;
-            if !(url.starts_with("https://") || url.starts_with("http://")) {
-                return Err(
-                    "remote factor `url` param must start with http:// or https://".to_string(),
-                );
+            if metadata.params.contains_key("command") {
+                require_non_empty_metadata_param(metadata, "command")?;
+            } else {
+                let url = require_non_empty_metadata_param(metadata, "url")?;
+                if !(url.starts_with("https://") || url.starts_with("http://")) {
+                    return Err(
+                        "remote factor `url` param must start with http:// or https://".to_string(),
+                    );
+                }
             }
         }
         RemoteFactorBackendKindV2::CloudKms => {

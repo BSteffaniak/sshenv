@@ -113,6 +113,10 @@ pub fn run(cli: Cli) -> Result<()> {
                 RemoteCommand::ValidateRequest(args) => {
                     commands::security::remote_validate_request(args)
                 }
+                RemoteCommand::CommandWrap(args) => commands::security::remote_command_wrap(args),
+                RemoteCommand::CommandUnwrap(args) => {
+                    commands::security::remote_command_unwrap(args)
+                }
                 RemoteCommand::Validate(args) => commands::security::remote_validate(args),
             },
             SecurityCommand::ProfilePolicy(sub) => match sub {
