@@ -58,8 +58,8 @@ pub fn validate_remote_factor_request(
     }
     require_context(&request.context, "vault-id")?;
     require_context(&request.context, "request-id")?;
-    require_context(&request.context, "generation")?;
-    require_context(&request.context, "expires-unix")?;
+    require_u64_context(&request.context, "generation")?;
+    require_u64_context(&request.context, "expires-unix")?;
 
     match metadata.backend {
         RemoteFactorBackendKindV2::SelfHosted => {
@@ -88,6 +88,19 @@ fn require_context(context: &BTreeMap<String, String>, key: &str) -> Result<(), 
             "missing request context `{key}`"
         )))
     }
+}
+
+fn require_u64_context(
+    context: &BTreeMap<String, String>,
+    key: &str,
+) -> Result<u64, RemoteFactorError> {
+    require_context(context, key)?;
+    let value = context.get(key).expect("context key checked above");
+    value.trim().parse::<u64>().map_err(|_| {
+        RemoteFactorError::InvalidRequest(format!(
+            "request context `{key}` must be an unsigned integer"
+        ))
+    })
 }
 
 pub fn validate_remote_factor_metadata(metadata: &RemoteFactorMetadataV2) -> Result<(), String> {
@@ -176,6 +189,33 @@ mod tests {
         assert!(matches!(
             validate_remote_factor_request(&metadata, &request),
             Err(RemoteFactorError::InvalidRequest(message)) if message.contains("does not match")
+        ));
+    }
+
+    #[test]
+    fn rejects_non_numeric_generation_context() {
+        let mut params = BTreeMap::new();
+        params.insert("url".to_string(), "https://unlock.example".to_string());
+        let metadata = RemoteFactorMetadataV2 {
+            id: "remote".to_string(),
+            backend: RemoteFactorBackendKindV2::SelfHosted,
+            label: None,
+            params,
+        };
+        let request = RemoteFactorRequest {
+            factor_id: "remote".to_string(),
+            context: BTreeMap::from([
+                ("vault-id".to_string(), "vault".to_string()),
+                ("request-id".to_string(), "req".to_string()),
+                ("generation".to_string(), "not-a-number".to_string()),
+                ("expires-unix".to_string(), "123".to_string()),
+                ("client-id".to_string(), "client".to_string()),
+            ]),
+        };
+        assert!(matches!(
+            validate_remote_factor_request(&metadata, &request),
+            Err(RemoteFactorError::InvalidRequest(message))
+                if message.contains("generation") && message.contains("unsigned integer")
         ));
     }
 

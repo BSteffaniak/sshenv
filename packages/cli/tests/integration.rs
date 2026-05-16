@@ -95,6 +95,30 @@ fn init_vault_with_profile(
     );
 }
 
+fn migrate_vault_to_v2(
+    bin: &std::path::Path,
+    home: &std::path::Path,
+    vault_path: &std::path::Path,
+) {
+    let migrate_out = Command::new(bin)
+        .arg("--vault")
+        .arg(vault_path)
+        .arg("migrate-vault")
+        .arg("--to")
+        .arg("v2")
+        .arg("--recipient-key")
+        .arg(home.join(".ssh").join("id_ed25519.pub"))
+        .env("HOME", home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run migrate-vault");
+    assert!(
+        migrate_out.status.success(),
+        "migrate-vault failed: {}",
+        String::from_utf8_lossy(&migrate_out.stderr)
+    );
+}
+
 /// Prove the `age` roundtrip works without invoking the binary. Keeps CI
 /// passing even when the binary hasn't been built yet (e.g. `cargo test
 /// --no-run` scenarios).
@@ -330,6 +354,88 @@ fn binary_recovery_split_validate_and_combine_roundtrip() {
     );
 }
 
+#[cfg(feature = "recovery-shares")]
+#[test]
+fn binary_recovery_metadata_import_list_remove_roundtrip() {
+    let bin = cargo_bin();
+    if !bin.exists() {
+        eprintln!("skipping: {} does not exist", bin.display());
+        return;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let vault_path = dir.path().join("vault");
+    let metadata_path = dir.path().join("recovery.json");
+    init_vault_with_profile(&bin, &home, &vault_path, "myprofile");
+    migrate_vault_to_v2(&bin, &home, &vault_path);
+    std::fs::write(
+        &metadata_path,
+        r#"{
+  "id": "ops-break-glass",
+  "label": "ops break glass",
+  "threshold": 2,
+  "shares": [
+    { "id": "share-a", "label": "A", "holder": "alice", "public_identifier": "alice-pub" },
+    { "id": "share-b", "label": "B", "holder": "bob", "public_identifier": "bob-pub" },
+    { "id": "share-c", "label": "C", "holder": "carol", "public_identifier": "carol-pub" }
+  ],
+  "shamir": { "threshold": 2, "share_count": 3 }
+}"#,
+    )
+    .unwrap();
+
+    let import_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .args(["security", "recovery", "import"])
+        .arg(&metadata_path)
+        .arg("--json")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run recovery import");
+    assert!(
+        import_out.status.success(),
+        "recovery import failed: {}",
+        String::from_utf8_lossy(&import_out.stderr)
+    );
+    let import_json: serde_json::Value = serde_json::from_slice(&import_out.stdout).unwrap();
+    assert_eq!(import_json["imported"], "ops-break-glass");
+    assert_eq!(import_json["replaced"], false);
+
+    let list_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .args(["security", "recovery", "list", "--json"])
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run recovery list");
+    assert!(
+        list_out.status.success(),
+        "recovery list failed: {}",
+        String::from_utf8_lossy(&list_out.stderr)
+    );
+    let list_json: serde_json::Value = serde_json::from_slice(&list_out.stdout).unwrap();
+    assert_eq!(list_json.as_array().unwrap().len(), 1);
+    assert_eq!(list_json[0]["id"], "ops-break-glass");
+
+    let remove_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .args(["security", "recovery", "remove", "ops-break-glass"])
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run recovery remove");
+    assert!(
+        remove_out.status.success(),
+        "recovery remove failed: {}",
+        String::from_utf8_lossy(&remove_out.stderr)
+    );
+}
+
 #[cfg(feature = "remote-factor")]
 #[test]
 fn binary_remote_request_template_validates_roundtrip() {
@@ -405,6 +511,83 @@ fn binary_remote_request_template_validates_roundtrip() {
         serde_json::from_slice(&validate_request_out.stdout).unwrap();
     assert_eq!(request_json["valid"], true);
     assert_eq!(request_json["factor_id"], "prod-kms");
+}
+
+#[cfg(feature = "remote-factor")]
+#[test]
+fn binary_remote_metadata_import_list_remove_roundtrip() {
+    let bin = cargo_bin();
+    if !bin.exists() {
+        eprintln!("skipping: {} does not exist", bin.display());
+        return;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let vault_path = dir.path().join("vault");
+    let metadata_path = dir.path().join("remote.json");
+    init_vault_with_profile(&bin, &home, &vault_path, "myprofile");
+    migrate_vault_to_v2(&bin, &home, &vault_path);
+    std::fs::write(
+        &metadata_path,
+        r#"{
+  "id": "prod-kms",
+  "backend": "cloud-kms",
+  "label": "prod",
+  "params": { "key": "alias/sshenv-prod" }
+}"#,
+    )
+    .unwrap();
+
+    let import_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .args(["security", "remote", "import"])
+        .arg(&metadata_path)
+        .arg("--json")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run remote import");
+    assert!(
+        import_out.status.success(),
+        "remote import failed: {}",
+        String::from_utf8_lossy(&import_out.stderr)
+    );
+    let import_json: serde_json::Value = serde_json::from_slice(&import_out.stdout).unwrap();
+    assert_eq!(import_json["imported"], "prod-kms");
+    assert_eq!(import_json["replaced"], false);
+
+    let list_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .args(["security", "remote", "list", "--json"])
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run remote list");
+    assert!(
+        list_out.status.success(),
+        "remote list failed: {}",
+        String::from_utf8_lossy(&list_out.stderr)
+    );
+    let list_json: serde_json::Value = serde_json::from_slice(&list_out.stdout).unwrap();
+    assert_eq!(list_json.as_array().unwrap().len(), 1);
+    assert_eq!(list_json[0]["id"], "prod-kms");
+
+    let remove_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .args(["security", "remote", "remove", "prod-kms"])
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run remote remove");
+    assert!(
+        remove_out.status.success(),
+        "remote remove failed: {}",
+        String::from_utf8_lossy(&remove_out.stderr)
+    );
 }
 
 /// When `sshenv init` is run non-interactively without --recipient-key,
@@ -2081,20 +2264,7 @@ fn binary_rollback_protection_rejects_older_v2_generation() {
     let home = dir.path().join("home");
     let vault_path = dir.path().join("vault");
     init_vault_with_profile(&bin, &home, &vault_path, "myprofile");
-
-    let migrate_out = Command::new(&bin)
-        .arg("--vault")
-        .arg(&vault_path)
-        .arg("migrate-vault")
-        .arg("--to")
-        .arg("v2")
-        .arg("--recipient-key")
-        .arg(home.join(".ssh").join("id_ed25519.pub"))
-        .env("HOME", &home)
-        .env_remove("SSHENV_VAULT")
-        .output()
-        .expect("run migrate-vault");
-    assert!(migrate_out.status.success());
+    migrate_vault_to_v2(&bin, &home, &vault_path);
 
     let old_vault = dir.path().join("old-vault");
     std::fs::copy(&vault_path, &old_vault).unwrap();
