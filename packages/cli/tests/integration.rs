@@ -308,20 +308,29 @@ fn binary_recovery_split_validate_and_combine_roundtrip() {
         return;
     }
 
+    let dir = tempfile::tempdir().unwrap();
+    let metadata_path = dir.path().join("recovery.json");
+    std::fs::write(
+        &metadata_path,
+        r#"{
+  "id": "ops-break-glass",
+  "label": "ops break glass",
+  "threshold": 2,
+  "shares": [
+    { "id": "share-a", "label": "A", "holder": "alice", "public_identifier": "alice-pub" },
+    { "id": "share-b", "label": "B", "holder": "bob", "public_identifier": "bob-pub" },
+    { "id": "share-c", "label": "C", "holder": "carol", "public_identifier": "carol-pub" }
+  ],
+  "shamir": { "threshold": 2, "share_count": 3 }
+}"#,
+    )
+    .unwrap();
+
     let mut child = Command::new(&bin)
-        .args([
-            "security",
-            "recovery",
-            "split",
-            "--set-id",
-            "ops-break-glass",
-            "--threshold",
-            "2",
-            "--share-count",
-            "3",
-            "--secret-hex-stdin",
-            "--json",
-        ])
+        .args(["security", "recovery", "split"])
+        .arg("--metadata")
+        .arg(&metadata_path)
+        .args(["--secret-hex-stdin", "--json"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -342,27 +351,12 @@ fn binary_recovery_split_validate_and_combine_roundtrip() {
     let shares = split_json["shares"].as_array().unwrap();
     assert_eq!(shares.len(), 3);
 
-    let dir = tempfile::tempdir().unwrap();
+    assert_eq!(split_json["metadata_verified"], true);
+
     let share_a = dir.path().join("share-a.txt");
     let share_b = dir.path().join("share-b.txt");
-    let metadata_path = dir.path().join("recovery.json");
     std::fs::write(&share_a, shares[0].as_str().unwrap()).unwrap();
     std::fs::write(&share_b, shares[1].as_str().unwrap()).unwrap();
-    std::fs::write(
-        &metadata_path,
-        r#"{
-  "id": "ops-break-glass",
-  "label": "ops break glass",
-  "threshold": 2,
-  "shares": [
-    { "id": "share-a", "label": "A", "holder": "alice", "public_identifier": "alice-pub" },
-    { "id": "share-b", "label": "B", "holder": "bob", "public_identifier": "bob-pub" },
-    { "id": "share-c", "label": "C", "holder": "carol", "public_identifier": "carol-pub" }
-  ],
-  "shamir": { "threshold": 2, "share_count": 3 }
-}"#,
-    )
-    .unwrap();
 
     let validate_out = Command::new(&bin)
         .args(["security", "recovery", "validate-share"])

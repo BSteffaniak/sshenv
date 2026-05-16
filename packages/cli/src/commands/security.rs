@@ -978,6 +978,7 @@ pub fn recovery_split(args: RecoverySplitArgs) -> Result<()> {
     if !args.secret_hex_stdin {
         anyhow::bail!("recovery split requires --secret-hex-stdin to avoid shell-history exposure");
     }
+    let config = recovery_split_config(&args)?;
     let mut input = String::new();
     std::io::stdin()
         .read_to_string(&mut input)
@@ -987,14 +988,14 @@ pub fn recovery_split(args: RecoverySplitArgs) -> Result<()> {
     );
     let shares = sshenv_vault::recovery::split_secret_shamir(
         secret.as_slice(),
-        args.threshold,
-        args.share_count,
+        config.threshold,
+        config.share_count,
     )?;
     let envelopes = shares
         .into_iter()
         .map(|share| sshenv_vault::recovery::RecoveryShareEnvelope {
-            set_id: args.set_id.clone(),
-            threshold: args.threshold,
+            set_id: config.set_id.clone(),
+            threshold: config.threshold,
             share,
         })
         .collect::<Vec<_>>();
@@ -1006,9 +1007,10 @@ pub fn recovery_split(args: RecoverySplitArgs) -> Result<()> {
         println!(
             "{}",
             serde_json::json!({
-                "set_id": args.set_id,
-                "threshold": args.threshold,
+                "set_id": config.set_id,
+                "threshold": config.threshold,
                 "share_count": encoded.len(),
+                "metadata_verified": config.metadata_verified,
                 "shares": encoded,
             })
         );
@@ -1016,9 +1018,72 @@ pub fn recovery_split(args: RecoverySplitArgs) -> Result<()> {
         eprintln!(
             "warning: recovery share envelopes contain secret material; distribute them separately"
         );
+        eprintln!("metadata verified: {}", yes_no(config.metadata_verified));
         for share in encoded {
             println!("{share}");
         }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "shamir-sharing")]
+struct RecoverySplitConfig {
+    set_id: String,
+    threshold: u8,
+    share_count: u8,
+    metadata_verified: bool,
+}
+
+#[cfg(feature = "shamir-sharing")]
+fn recovery_split_config(args: &RecoverySplitArgs) -> Result<RecoverySplitConfig> {
+    let mut set_id = args.set_id.clone();
+    let mut threshold = args.threshold;
+    let mut share_count = args.share_count;
+    let metadata_verified = if let Some(metadata_path) = args.metadata.as_ref() {
+        let metadata = load_recovery_share_metadata(metadata_path)?;
+        sshenv_vault::recovery::validate_recovery_share_set_metadata(&metadata)?;
+        ensure_optional_match("set-id", set_id.as_deref(), metadata.id.as_str())?;
+        ensure_optional_match_u8("threshold", threshold, metadata.threshold)?;
+        let metadata_share_count = metadata
+            .shamir
+            .map_or_else(
+                || u8::try_from(metadata.shares.len()),
+                |shamir| Ok(shamir.share_count),
+            )
+            .context("recovery metadata share count exceeds 255")?;
+        ensure_optional_match_u8("share-count", share_count, metadata_share_count)?;
+        set_id = Some(metadata.id);
+        threshold = Some(metadata.threshold);
+        share_count = Some(metadata_share_count);
+        true
+    } else {
+        false
+    };
+
+    Ok(RecoverySplitConfig {
+        set_id: set_id
+            .ok_or_else(|| anyhow::anyhow!("recovery split requires --set-id or --metadata"))?,
+        threshold: threshold
+            .ok_or_else(|| anyhow::anyhow!("recovery split requires --threshold or --metadata"))?,
+        share_count: share_count.ok_or_else(|| {
+            anyhow::anyhow!("recovery split requires --share-count or --metadata")
+        })?,
+        metadata_verified,
+    })
+}
+
+#[cfg(feature = "shamir-sharing")]
+fn ensure_optional_match(name: &str, provided: Option<&str>, expected: &str) -> Result<()> {
+    if provided.is_some_and(|value| value != expected) {
+        anyhow::bail!("recovery split --{name} does not match metadata value '{expected}'");
+    }
+    Ok(())
+}
+
+#[cfg(feature = "shamir-sharing")]
+fn ensure_optional_match_u8(name: &str, provided: Option<u8>, expected: u8) -> Result<()> {
+    if provided.is_some_and(|value| value != expected) {
+        anyhow::bail!("recovery split --{name} does not match metadata value {expected}");
     }
     Ok(())
 }

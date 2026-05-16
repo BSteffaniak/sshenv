@@ -444,15 +444,18 @@ pub struct RecoveryShareFileArgs {
 
 #[derive(Debug, clap::Args)]
 pub struct RecoverySplitArgs {
+    /// Recovery metadata JSON to derive set id, threshold, and share count.
+    #[arg(long)]
+    pub metadata: Option<PathBuf>,
     /// Recovery-share set id to embed in the envelopes.
     #[arg(long)]
-    pub set_id: String,
+    pub set_id: Option<String>,
     /// Number of shares required to recover.
     #[arg(long)]
-    pub threshold: u8,
+    pub threshold: Option<u8>,
     /// Total shares to generate.
     #[arg(long)]
-    pub share_count: u8,
+    pub share_count: Option<u8>,
     /// Read the secret as hex from stdin.
     #[arg(long)]
     pub secret_hex_stdin: bool,
