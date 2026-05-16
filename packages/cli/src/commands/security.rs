@@ -265,6 +265,7 @@ pub fn rollback_status(ctx: &CmdContext, args: RollbackStatusArgs) -> Result<()>
             "explicit restore updates the local baseline".to_string(),
             "set SSHENV_ROLLBACK_SYNC to a trusted synced state file for opt-in multi-device rollback observations".to_string(),
             "signed remote checkpoints require SSHENV_ROLLBACK_CHECKPOINT or SSHENV_ROLLBACK_CHECKPOINT_COMMAND for runtime enforcement".to_string(),
+            "TPM/monotonic adapters can enforce SSHENV_ROLLBACK_MONOTONIC_COMMAND for check/record operations".to_string(),
         ],
     };
     if args.json {
@@ -506,6 +507,7 @@ fn rollback_required_metadata(backend: RollbackBackendArg) -> Vec<String> {
             "TPM public name / NV index identifier".to_string(),
             "counter policy and PCR binding, if used".to_string(),
             "last accepted vault generation".to_string(),
+            "optional SSHENV_ROLLBACK_MONOTONIC_COMMAND adapter path".to_string(),
         ],
         RollbackBackendArg::RemoteCheckpoint => vec![
             "checkpoint service URL/command adapter and public verification key".to_string(),
@@ -523,7 +525,7 @@ fn rollback_required_metadata(backend: RollbackBackendArg) -> Vec<String> {
 fn rollback_write_path(backend: RollbackBackendArg) -> Vec<String> {
     match backend {
         RollbackBackendArg::TpmMonotonic => vec![
-            "after successful vault save, increment TPM monotonic state".to_string(),
+            "after successful vault save, invoke SSHENV_ROLLBACK_MONOTONIC_COMMAND with operation=record".to_string(),
             "record the generation accepted by TPM state".to_string(),
         ],
         RollbackBackendArg::RemoteCheckpoint => vec![
@@ -541,7 +543,7 @@ fn rollback_write_path(backend: RollbackBackendArg) -> Vec<String> {
 fn rollback_read_path(backend: RollbackBackendArg) -> Vec<String> {
     match backend {
         RollbackBackendArg::TpmMonotonic => vec![
-            "before unlock, compare vault generation with TPM monotonic state".to_string(),
+            "before unlock, invoke SSHENV_ROLLBACK_MONOTONIC_COMMAND with operation=check".to_string(),
             "refuse older generations unless explicit restore updates the baseline".to_string(),
         ],
         RollbackBackendArg::RemoteCheckpoint => vec![
