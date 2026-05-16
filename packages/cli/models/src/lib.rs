@@ -127,6 +127,8 @@ pub enum ProfilePolicyCommand {
     List,
     /// Show effective security posture for one profile.
     Status(ProfilePolicyStatusArgs),
+    /// Validate policy consistency across all profiles.
+    Check(ProfilePolicyCheckArgs),
     /// Store profiles as independently encrypted v2 payload entries.
     Migrate,
     /// Rotate one profile's per-profile data key.
@@ -157,6 +159,16 @@ pub struct ProfilePolicyStatusArgs {
     /// Print machine-readable JSON.
     #[arg(long)]
     pub json: bool,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct ProfilePolicyCheckArgs {
+    /// Print machine-readable JSON.
+    #[arg(long)]
+    pub json: bool,
+    /// Exit nonzero when warnings are present, not only errors.
+    #[arg(long)]
+    pub strict: bool,
 }
 
 #[derive(Debug, clap::Args)]

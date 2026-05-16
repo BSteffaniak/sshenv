@@ -830,6 +830,70 @@ fn binary_profile_policy_repair_enforces_advisory_portable() {
         "{advisory_json}"
     );
 
+    let check_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("security")
+        .arg("profile-policy")
+        .arg("check")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run advisory profile-policy check");
+    assert!(check_out.status.success());
+    let check_stdout = String::from_utf8_lossy(&check_out.stdout);
+    assert!(
+        check_stdout.contains("profiles checked: 1"),
+        "{check_stdout}"
+    );
+    assert!(check_stdout.contains("warnings: 1"), "{check_stdout}");
+    assert!(
+        check_stdout.contains(
+            "repair: sshenv security profile-policy repair myprofile --passphrase <value>"
+        ),
+        "{check_stdout}"
+    );
+
+    let strict_check_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("security")
+        .arg("profile-policy")
+        .arg("check")
+        .arg("--strict")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run strict advisory profile-policy check");
+    assert!(!strict_check_out.status.success());
+    assert!(
+        String::from_utf8_lossy(&strict_check_out.stderr)
+            .contains("profile policy check failed with 1 warning(s) in strict mode")
+    );
+
+    let check_json_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("security")
+        .arg("profile-policy")
+        .arg("check")
+        .arg("--json")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run advisory profile-policy check json");
+    assert!(check_json_out.status.success());
+    let check_json = String::from_utf8_lossy(&check_json_out.stdout);
+    assert!(
+        check_json.contains("\"profiles_checked\": 1"),
+        "{check_json}"
+    );
+    assert!(check_json.contains("\"warnings\": 1"), "{check_json}");
+    assert!(
+        check_json.contains("\"repairable_profiles\": [\n    \"myprofile\"\n  ]"),
+        "{check_json}"
+    );
+
     let repair_out = Command::new(&bin)
         .arg("--vault")
         .arg(&vault_path)
@@ -869,6 +933,32 @@ fn binary_profile_policy_repair_enforces_advisory_portable() {
         "{stdout}"
     );
     assert!(stdout.contains("warnings: none"), "{stdout}");
+
+    let clean_check_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("security")
+        .arg("profile-policy")
+        .arg("check")
+        .arg("--strict")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run strict profile-policy check after repair");
+    assert!(
+        clean_check_out.status.success(),
+        "strict check failed after repair: {}",
+        String::from_utf8_lossy(&clean_check_out.stderr)
+    );
+    let clean_check_stdout = String::from_utf8_lossy(&clean_check_out.stdout);
+    assert!(
+        clean_check_stdout.contains("warnings: 0"),
+        "{clean_check_stdout}"
+    );
+    assert!(
+        clean_check_stdout.contains("errors: 0"),
+        "{clean_check_stdout}"
+    );
 
     let show_out = Command::new(&bin)
         .arg("--vault")

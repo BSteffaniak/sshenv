@@ -7,9 +7,10 @@ use anyhow::Result;
 use serde::Serialize;
 use sshenv_cli_models::{
     ChangePassphraseArgs, DisablePassphraseArgs, EnablePassphraseArgs, ProfilePolicyApplyArgs,
-    ProfilePolicyChangePassphraseArgs, ProfilePolicyDisablePassphraseArgs, ProfilePolicyRepairArgs,
-    ProfilePolicyRequirePassphraseArgs, ProfilePolicyRequirementArgs, ProfilePolicyRotateKeyArgs,
-    ProfilePolicySetArgs, ProfilePolicyStatusArgs, SecurityPresetArg, SecurityPresetArgs,
+    ProfilePolicyChangePassphraseArgs, ProfilePolicyCheckArgs, ProfilePolicyDisablePassphraseArgs,
+    ProfilePolicyRepairArgs, ProfilePolicyRequirePassphraseArgs, ProfilePolicyRequirementArgs,
+    ProfilePolicyRotateKeyArgs, ProfilePolicySetArgs, ProfilePolicyStatusArgs, SecurityPresetArg,
+    SecurityPresetArgs,
 };
 use sshenv_vault::models::{
     ProfileFactorRequirement, ProfilePolicy, ProfilePolicyPreset, UnlockFactorKindV2, VERSION,
@@ -137,6 +138,36 @@ pub fn profile_policy_status(ctx: &CmdContext, args: ProfilePolicyStatusArgs) ->
         return Ok(());
     }
 
+    print_profile_policy_status(&status);
+    Ok(())
+}
+
+pub fn profile_policy_check(ctx: &CmdContext, args: ProfilePolicyCheckArgs) -> Result<()> {
+    let (vault, _key) = load_and_unlock_metadata(&ctx.vault_path)?;
+    let output = build_profile_policy_check(&vault)?;
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        print_profile_policy_check(&output);
+    }
+
+    if output.errors > 0 {
+        anyhow::bail!(
+            "profile policy check failed with {} error(s)",
+            output.errors
+        );
+    }
+    if args.strict && output.warnings > 0 {
+        anyhow::bail!(
+            "profile policy check failed with {} warning(s) in strict mode",
+            output.warnings
+        );
+    }
+    Ok(())
+}
+
+fn print_profile_policy_status(status: &ProfilePolicyStatusOutput) {
     println!("profile: {}", status.profile);
     println!("exists: {}", yes_no(status.exists));
     println!(
@@ -188,7 +219,6 @@ pub fn profile_policy_status(ctx: &CmdContext, args: ProfilePolicyStatusArgs) ->
     if let Some(hint) = &status.repair_hint {
         println!("repair: {hint}");
     }
-    Ok(())
 }
 
 #[derive(Debug, Serialize)]
@@ -213,6 +243,16 @@ struct ProfilePolicyStatusOutput {
 }
 
 #[derive(Debug, Serialize)]
+struct ProfilePolicyCheckOutput {
+    profiles_checked: usize,
+    warnings: usize,
+    errors: usize,
+    repair_recommended: usize,
+    repairable_profiles: Vec<String>,
+    profiles: Vec<ProfilePolicyStatusOutput>,
+}
+
+#[derive(Debug, Serialize)]
 struct ProfileFactorMetadataStatus {
     passphrase: bool,
     device_seal: bool,
@@ -223,6 +263,70 @@ struct ProfileFactorMetadataStatus {
 struct ProfileRequirementStatus {
     factor: &'static str,
     source: String,
+}
+
+fn build_profile_policy_check(vault: &Vault) -> Result<ProfilePolicyCheckOutput> {
+    let profiles = profile_policy_check_names(vault)
+        .into_iter()
+        .map(|profile| build_profile_policy_status(vault, &profile))
+        .collect::<Result<Vec<_>>>()?;
+    let warnings = profiles.iter().map(|profile| profile.warnings.len()).sum();
+    let errors = profiles.iter().map(|profile| profile.errors.len()).sum();
+    let repairable_profiles = profiles
+        .iter()
+        .filter(|profile| profile.repair_recommended)
+        .map(|profile| profile.profile.clone())
+        .collect::<Vec<_>>();
+
+    Ok(ProfilePolicyCheckOutput {
+        profiles_checked: profiles.len(),
+        warnings,
+        errors,
+        repair_recommended: repairable_profiles.len(),
+        repairable_profiles,
+        profiles,
+    })
+}
+
+fn print_profile_policy_check(output: &ProfilePolicyCheckOutput) {
+    println!("profile policy check");
+    println!("====================");
+    println!("profiles checked: {}", output.profiles_checked);
+    println!("warnings: {}", output.warnings);
+    println!("errors: {}", output.errors);
+    println!("repair recommended: {}", output.repair_recommended);
+
+    for profile in &output.profiles {
+        if profile.warnings.is_empty() && profile.errors.is_empty() {
+            continue;
+        }
+        println!();
+        println!("profile: {}", profile.profile);
+        for warning in &profile.warnings {
+            println!("warning: {warning}");
+        }
+        for error in &profile.errors {
+            println!("error: {error}");
+        }
+        if let Some(hint) = &profile.repair_hint {
+            println!("repair: {hint}");
+        }
+    }
+}
+
+fn profile_policy_check_names(vault: &Vault) -> Vec<String> {
+    let mut profiles: Vec<_> = vault
+        .profiles
+        .profiles
+        .keys()
+        .chain(vault.profiles.profile_entries.keys())
+        .chain(vault.profiles.profile_policies.keys())
+        .cloned()
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    profiles.sort();
+    profiles
 }
 
 fn build_profile_policy_status(vault: &Vault, profile: &str) -> Result<ProfilePolicyStatusOutput> {
@@ -517,18 +621,7 @@ fn save_all_profile_policy_vaults(
     vault: &mut Vault,
     data_key: &DataKey,
 ) -> Result<()> {
-    let mut profiles: Vec<_> = vault
-        .profiles
-        .profiles
-        .keys()
-        .chain(vault.profiles.profile_entries.keys())
-        .chain(vault.profiles.profile_policies.keys())
-        .cloned()
-        .collect::<HashSet<_>>()
-        .into_iter()
-        .collect();
-    profiles.sort();
-    for profile in profiles {
+    for profile in profile_policy_check_names(vault) {
         validate_profile_policy_for_save(vault, &profile)?;
     }
     save_vault(ctx, vault, data_key)
