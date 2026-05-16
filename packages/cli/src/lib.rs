@@ -6,6 +6,7 @@
 pub mod commands;
 pub mod config;
 pub mod identity;
+pub mod passphrase_cache;
 pub mod picker;
 pub mod process;
 pub mod pubkey;
@@ -57,7 +58,7 @@ pub fn run(cli: Cli) -> Result<()> {
                 PassphraseCacheCommand::Plan(args) => {
                     commands::security::passphrase_cache_plan(args)
                 }
-                PassphraseCacheCommand::Clear => commands::security::passphrase_cache_clear(),
+                PassphraseCacheCommand::Clear => commands::security::passphrase_cache_clear(&ctx),
             },
             SecurityCommand::Rollback(sub) => match sub {
                 RollbackCommand::Status(args) => commands::security::rollback_status(&ctx, args),

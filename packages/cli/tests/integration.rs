@@ -182,8 +182,8 @@ fn binary_security_planning_commands_emit_json() {
     let cases: &[(&[&str], &str, &str)] = &[
         (
             &["security", "passphrase-cache", "plan", "--json"],
-            "available",
-            "not implemented",
+            "enabled",
+            "macos-keychain",
         ),
         (
             &["security", "device", "plan", "--backend", "tpm", "--json"],

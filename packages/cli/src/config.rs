@@ -25,16 +25,46 @@ impl UnencryptedSshKeysPolicy {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PassphraseCacheBackend {
+    #[default]
+    Auto,
+    MacosKeychain,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PassphraseCacheConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub backend: PassphraseCacheBackend,
+    pub ttl_seconds: Option<u64>,
+}
+
+impl Default for PassphraseCacheConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            backend: PassphraseCacheBackend::Auto,
+            ttl_seconds: Some(300),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct SecurityConfig {
     #[serde(default)]
     pub unencrypted_ssh_keys: UnencryptedSshKeysPolicy,
+    #[serde(default)]
+    pub passphrase_cache: PassphraseCacheConfig,
 }
 
 impl Default for SecurityConfig {
     fn default() -> Self {
         Self {
             unencrypted_ssh_keys: UnencryptedSshKeysPolicy::Warn,
+            passphrase_cache: PassphraseCacheConfig::default(),
         }
     }
 }

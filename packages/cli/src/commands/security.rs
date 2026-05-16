@@ -111,7 +111,9 @@ pub fn disable_passphrase(_ctx: &CmdContext, _args: DisablePassphraseArgs) -> Re
 #[derive(Debug, Serialize)]
 struct PassphraseCacheOutput {
     available: bool,
+    enabled: bool,
     backend: &'static str,
+    ttl_seconds: u64,
     opt_in_required: bool,
     expiry_controls: Vec<String>,
     threat_model: Vec<String>,
@@ -125,7 +127,9 @@ pub fn passphrase_cache_status(args: PassphraseCacheStatusArgs) -> Result<()> {
         println!("passphrase cache status");
         println!("=======================");
         println!("available: {}", yes_no(output.available));
+        println!("enabled: {}", yes_no(output.enabled));
         println!("backend: {}", output.backend);
+        println!("ttl seconds: {}", output.ttl_seconds);
         println!("opt-in required: {}", yes_no(output.opt_in_required));
     }
     Ok(())
@@ -151,15 +155,35 @@ pub fn passphrase_cache_plan(args: PassphraseCacheStatusArgs) -> Result<()> {
     Ok(())
 }
 
-pub fn passphrase_cache_clear() -> Result<()> {
-    eprintln!("No passphrase cache backend is implemented; nothing to clear.");
+pub fn passphrase_cache_clear(ctx: &CmdContext) -> Result<()> {
+    if crate::passphrase_cache::clear_vault_passphrase(&ctx.vault_path)? {
+        eprintln!(
+            "Cleared cached vault passphrase for {}.",
+            ctx.vault_path.display()
+        );
+    } else {
+        eprintln!(
+            "No cached vault passphrase was found for {}.",
+            ctx.vault_path.display()
+        );
+    }
     Ok(())
 }
 
 fn passphrase_cache_output() -> PassphraseCacheOutput {
+    let status = crate::passphrase_cache::status().unwrap_or(
+        crate::passphrase_cache::PassphraseCacheStatus {
+            enabled: false,
+            backend: "unavailable",
+            backend_available: false,
+            ttl_seconds: 300,
+        },
+    );
     PassphraseCacheOutput {
-        available: false,
-        backend: "not implemented",
+        available: status.backend_available,
+        enabled: status.enabled,
+        backend: status.backend,
+        ttl_seconds: status.ttl_seconds,
         opt_in_required: true,
         expiry_controls: vec![
             "cache entries must have explicit TTLs".to_string(),
@@ -171,7 +195,7 @@ fn passphrase_cache_output() -> PassphraseCacheOutput {
             "improves repeated command ergonomics but increases risk on an unlocked local account"
                 .to_string(),
             "must never write plaintext passphrases to the vault or logs".to_string(),
-            "OS-backed storage should require local user/session access and support expiry"
+            "macOS Keychain backend requires local user/session access and supports TTL expiry"
                 .to_string(),
         ],
     }

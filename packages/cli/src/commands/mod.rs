@@ -69,8 +69,8 @@ pub fn load_and_unlock(vault_path: &Path) -> Result<(Vault, DataKey)> {
         ));
     }
     let requires_extra_factor = ciphertext_requires_extra_factor(&ciphertext);
-    let passphrase = passphrase_for_ciphertext(&ciphertext, None)?;
-    Vault::unlock_with_passphrase(
+    let passphrase = passphrase_for_ciphertext(vault_path, &ciphertext, None)?;
+    let unlocked = Vault::unlock_with_passphrase(
         ciphertext,
         &identities,
         passphrase.as_ref().map(|p| p.as_str()),
@@ -81,11 +81,10 @@ pub fn load_and_unlock(vault_path: &Path) -> Result<(Vault, DataKey)> {
         } else {
             error_no_identity_unlocked_detailed(&discover_private_key_paths(), &fps)
         }
-    })
-    .and_then(|unlocked| {
-        record_rollback(vault_path, generation)?;
-        Ok(unlocked)
-    })
+    })?;
+    cache_vault_passphrase_if_present(vault_path, passphrase.as_ref());
+    record_rollback(vault_path, generation)?;
+    Ok(unlocked)
 }
 
 /// Load the vault and decrypt only the outer profile-entry container. Profile
@@ -112,7 +111,7 @@ pub fn load_and_unlock_metadata(vault_path: &Path) -> Result<(Vault, DataKey)> {
         ));
     }
     let requires_extra_factor = ciphertext_requires_extra_factor(&ciphertext);
-    let passphrase = passphrase_for_ciphertext(&ciphertext, None)?;
+    let passphrase = passphrase_for_ciphertext(vault_path, &ciphertext, None)?;
     let unlocked = Vault::unlock_metadata_with_passphrase(
         ciphertext,
         &identities,
@@ -125,6 +124,7 @@ pub fn load_and_unlock_metadata(vault_path: &Path) -> Result<(Vault, DataKey)> {
             error_no_identity_unlocked_detailed(&discover_private_key_paths(), &fps)
         }
     })?;
+    cache_vault_passphrase_if_present(vault_path, passphrase.as_ref());
     record_rollback(vault_path, generation)?;
     Ok(unlocked)
 }
@@ -168,7 +168,7 @@ pub fn load_and_unlock_profile_with_passphrase(
         ));
     }
     let requires_extra_factor = ciphertext_requires_extra_factor(&ciphertext);
-    let passphrase = passphrase_for_ciphertext(&ciphertext, None)?;
+    let passphrase = passphrase_for_ciphertext(vault_path, &ciphertext, None)?;
     let (mut vault, data_key) = Vault::unlock_metadata_with_passphrase(
         ciphertext,
         &identities,
@@ -181,6 +181,7 @@ pub fn load_and_unlock_profile_with_passphrase(
             error_no_identity_unlocked_detailed(&discover_private_key_paths(), &fps)
         }
     })?;
+    cache_vault_passphrase_if_present(vault_path, passphrase.as_ref());
     if vault.profiles.get(profile).is_none() && vault.profiles.profile_entries.contains_key(profile)
     {
         let profile_passphrase =
@@ -249,7 +250,7 @@ pub fn unlock_ciphertext_with_passphrase(
         ));
     }
     let requires_extra_factor = ciphertext_requires_extra_factor(&ciphertext);
-    let passphrase = passphrase_for_ciphertext(&ciphertext, explicit_passphrase)?;
+    let passphrase = passphrase_for_ciphertext(Path::new(""), &ciphertext, explicit_passphrase)?;
     Vault::unlock_with_passphrase(
         ciphertext,
         &identities,
@@ -381,7 +382,18 @@ pub(crate) fn set_rollback(_vault_path: &Path, _generation: Option<u64>) -> Resu
     Ok(())
 }
 
+fn cache_vault_passphrase_if_present(vault_path: &Path, passphrase: Option<&Zeroizing<String>>) {
+    if let Some(passphrase) = passphrase {
+        if let Err(error) =
+            crate::passphrase_cache::put_vault_passphrase(vault_path, passphrase.as_str())
+        {
+            eprintln!("warning: failed to update passphrase cache: {error}");
+        }
+    }
+}
+
 fn passphrase_for_ciphertext(
+    vault_path: &Path,
     ciphertext: &CiphertextVault,
     explicit_passphrase: Option<&str>,
 ) -> Result<Option<Zeroizing<String>>> {
@@ -396,6 +408,12 @@ fn passphrase_for_ciphertext(
     if let Ok(value) = std::env::var("SSHENV_PASSPHRASE") {
         if !value.is_empty() {
             return Ok(Some(Zeroizing::new(value)));
+        }
+    }
+
+    if !vault_path.as_os_str().is_empty() {
+        if let Some(value) = crate::passphrase_cache::get_vault_passphrase(vault_path)? {
+            return Ok(Some(value));
         }
     }
 
