@@ -237,6 +237,10 @@ pub struct ProfilePolicyApplyArgs {
 }
 
 #[derive(Debug, clap::Args)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "CLI flag structs mirror independent command-line switches"
+)]
 pub struct ProfilePolicyApplyAllArgs {
     /// Preset to apply as concrete profile-specific enforcement.
     #[arg(long, value_enum)]
@@ -248,6 +252,9 @@ pub struct ProfilePolicyApplyAllArgs {
     /// New profile passphrase for presets that require one. If omitted, read from a hidden prompt.
     #[arg(long)]
     pub passphrase: Option<String>,
+    /// Copy the current vault to a timestamped backup before mutating all profiles.
+    #[arg(long)]
+    pub backup: bool,
     /// Show the bulk apply plan without changing the vault.
     #[arg(long)]
     pub dry_run: bool,
@@ -260,6 +267,10 @@ pub struct ProfilePolicyApplyAllArgs {
 }
 
 #[derive(Debug, clap::Args)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "CLI flag structs mirror independent command-line switches"
+)]
 pub struct ProfilePolicyRepairAllArgs {
     /// Public key for a current recipient when v1-to-v2 migration cannot discover it.
     /// Repeat as needed.
@@ -269,6 +280,9 @@ pub struct ProfilePolicyRepairAllArgs {
     /// If omitted and needed, read from a hidden prompt.
     #[arg(long)]
     pub passphrase: Option<String>,
+    /// Copy the current vault to a timestamped backup before mutating all profiles.
+    #[arg(long)]
+    pub backup: bool,
     /// Show the bulk repair plan without changing the vault.
     #[arg(long)]
     pub dry_run: bool,

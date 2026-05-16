@@ -1932,6 +1932,7 @@ fn binary_profile_policy_repair_all_enforces_advisory_portable() {
         .arg("repair-all")
         .arg("--passphrase")
         .arg("bulk-passphrase")
+        .arg("--backup")
         .env("HOME", &home)
         .env_remove("SSHENV_PROFILE_PASSPHRASE")
         .env_remove("SSHENV_VAULT")
@@ -1941,6 +1942,29 @@ fn binary_profile_policy_repair_all_enforces_advisory_portable() {
         repair_all_out.status.success(),
         "profile-policy repair-all failed: {}",
         String::from_utf8_lossy(&repair_all_out.stderr)
+    );
+    let repair_stderr = String::from_utf8_lossy(&repair_all_out.stderr);
+    let backup_path = repair_stderr
+        .lines()
+        .find_map(|line| line.strip_prefix("Backup written to "))
+        .map(PathBuf::from)
+        .expect("backup path in repair-all stderr");
+    assert!(backup_path.exists(), "missing backup at {backup_path:?}");
+
+    let backup_show_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&backup_path)
+        .arg("show")
+        .arg("myprofile")
+        .env("HOME", &home)
+        .env_remove("SSHENV_PROFILE_PASSPHRASE")
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run show against backup vault");
+    assert!(
+        backup_show_out.status.success(),
+        "show against backup failed: {}",
+        String::from_utf8_lossy(&backup_show_out.stderr)
     );
 
     for profile in ["myprofile", "otherprofile"] {

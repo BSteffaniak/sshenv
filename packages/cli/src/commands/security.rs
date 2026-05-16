@@ -1,6 +1,8 @@
 use std::collections::HashSet;
+use std::fs;
 use std::io::IsTerminal;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(feature = "passphrase-factor")]
 use anyhow::Context as AnyhowContext;
@@ -1320,6 +1322,7 @@ pub fn profile_policy_apply_all(ctx: &CmdContext, args: ProfilePolicyApplyAllArg
     }
     ensure_profile_policy_apply_all_inputs_available(&output, &args)?;
     let bulk_passphrase = bulk_apply_all_passphrase(&output, args.passphrase)?;
+    create_bulk_profile_policy_backup_if_requested(ctx, args.backup)?;
     let mut changed = false;
     let mut applied = Vec::new();
 
@@ -1397,6 +1400,7 @@ pub fn profile_policy_repair_all(ctx: &CmdContext, args: ProfilePolicyRepairAllA
     }
     ensure_profile_policy_repair_all_inputs_available(&output, &args)?;
     let bulk_passphrase = bulk_repair_all_passphrase(&output, args.passphrase)?;
+    create_bulk_profile_policy_backup_if_requested(ctx, args.backup)?;
     let mut changed = false;
     let mut applied = Vec::new();
 
@@ -1480,6 +1484,34 @@ pub fn profile_policy_repair(ctx: &CmdContext, args: ProfilePolicyRepairArgs) ->
         );
     }
     Ok(())
+}
+
+fn create_bulk_profile_policy_backup_if_requested(
+    ctx: &CmdContext,
+    enabled: bool,
+) -> Result<Option<PathBuf>> {
+    if !enabled {
+        return Ok(None);
+    }
+    let backup_path = timestamped_vault_backup_path(&ctx.vault_path)?;
+    if let Some(parent) = backup_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::copy(&ctx.vault_path, &backup_path)?;
+    eprintln!("Backup written to {}", backup_path.display());
+    Ok(Some(backup_path))
+}
+
+fn timestamped_vault_backup_path(vault_path: &Path) -> Result<PathBuf> {
+    let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?;
+    let file_name = vault_path
+        .file_name()
+        .map_or_else(|| "vault".into(), |name| name.to_string_lossy());
+    Ok(vault_path.with_file_name(format!(
+        "{file_name}.bak.{}.{:09}",
+        timestamp.as_secs(),
+        timestamp.subsec_nanos()
+    )))
 }
 
 fn ensure_profile_policy_repair_all_inputs_available(
