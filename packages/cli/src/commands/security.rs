@@ -5,7 +5,9 @@ use std::fs;
 use std::io::IsTerminal;
 #[cfg(any(feature = "remote-factor", feature = "shamir-sharing"))]
 use std::io::Read;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[allow(
@@ -14,21 +16,22 @@ use std::time::{SystemTime, UNIX_EPOCH};
 )]
 use anyhow::Context as AnyhowContext;
 use anyhow::Result;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sshenv_cli_models::{
     ChangePassphraseArgs, DeviceBackendArg, DevicePlanArgs, DisablePassphraseArgs,
-    EnablePassphraseArgs, HardenArgs, HardwareKindArg, HardwarePlanArgs, HardwareStatusArgs,
-    HardwareValidateRecipientArgs, PassphraseCacheStatusArgs, ProfilePolicyApplyAllArgs,
-    ProfilePolicyApplyArgs, ProfilePolicyBackupsArgs, ProfilePolicyChangePassphraseArgs,
-    ProfilePolicyCheckArgs, ProfilePolicyDisablePassphraseArgs, ProfilePolicyPruneBackupsArgs,
-    ProfilePolicyRepairAllArgs, ProfilePolicyRepairArgs, ProfilePolicyRequirePassphraseArgs,
-    ProfilePolicyRequirementArgs, ProfilePolicyRestoreBackupArgs, ProfilePolicyRotateKeyArgs,
-    ProfilePolicySetArgs, ProfilePolicyStatusArgs, ProfilePolicyVerifyBackupArgs,
-    RecoveryCombineArgs, RecoveryListArgs, RecoveryMetadataArgs, RecoveryPlanArgs,
-    RecoveryRecoverRecipientArgs, RecoveryRemoveArgs, RecoveryShareFileArgs, RecoverySplitArgs,
-    RecoveryVaultKeySplitArgs, RemoteBackendArg, RemoteCommandUnwrapArgs, RemoteCommandWrapArgs,
-    RemoteEnableCommandArgs, RemoteListArgs, RemoteMetadataArgs, RemotePlanArgs, RemoteRemoveArgs,
-    RemoteRequestArgs, RemoteRequestTemplateArgs, RollbackBackendArg, RollbackCheckpointArgs,
+    EnablePassphraseArgs, HardenArgs, HardwareDiscoverArgs, HardwareEnrollArgs, HardwareKindArg,
+    HardwarePlanArgs, HardwareStatusArgs, HardwareValidateRecipientArgs, PassphraseCacheStatusArgs,
+    ProfilePolicyApplyAllArgs, ProfilePolicyApplyArgs, ProfilePolicyBackupsArgs,
+    ProfilePolicyChangePassphraseArgs, ProfilePolicyCheckArgs, ProfilePolicyDisablePassphraseArgs,
+    ProfilePolicyPruneBackupsArgs, ProfilePolicyRepairAllArgs, ProfilePolicyRepairArgs,
+    ProfilePolicyRequirePassphraseArgs, ProfilePolicyRequirementArgs,
+    ProfilePolicyRestoreBackupArgs, ProfilePolicyRotateKeyArgs, ProfilePolicySetArgs,
+    ProfilePolicyStatusArgs, ProfilePolicyVerifyBackupArgs, RecoveryCombineArgs, RecoveryListArgs,
+    RecoveryMetadataArgs, RecoveryPlanArgs, RecoveryRecoverRecipientArgs, RecoveryRemoveArgs,
+    RecoveryShareFileArgs, RecoverySplitArgs, RecoveryVaultKeySplitArgs, RemoteBackendArg,
+    RemoteCommandUnwrapArgs, RemoteCommandWrapArgs, RemoteEnableCommandArgs, RemoteListArgs,
+    RemoteMetadataArgs, RemotePlanArgs, RemoteRemoveArgs, RemoteRequestArgs,
+    RemoteRequestTemplateArgs, RollbackBackendArg, RollbackCheckpointArgs,
     RollbackCheckpointTemplateArgs, RollbackPlanArgs, RollbackStatusArgs, SecurityPresetArg,
     SecurityPresetArgs,
 };
@@ -803,6 +806,46 @@ struct HardwareValidateRecipientOutput {
     hardware_recipient: bool,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "kebab-case")]
+struct HardwareAdapterRequest<'a> {
+    operation: &'a str,
+    kind: &'a str,
+    plugin: Option<&'a str>,
+    id: Option<&'a str>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+struct HardwareAdapterRecipient {
+    id: String,
+    label: Option<String>,
+    kind: Option<String>,
+    #[serde(alias = "public_descriptor")]
+    public_descriptor: String,
+}
+
+#[derive(Debug, Serialize)]
+struct HardwareDiscoverOutput {
+    command: String,
+    kind: String,
+    plugin: Option<String>,
+    recipients: Vec<HardwareRecipientOutput>,
+}
+
+#[derive(Debug, Serialize)]
+struct HardwareRecipientOutput {
+    id: String,
+    label: Option<String>,
+    kind: Option<String>,
+    public_descriptor: String,
+    valid: bool,
+    fingerprint: Option<String>,
+    descriptor_kind: Option<String>,
+    error: Option<String>,
+    add_recipient_example: Option<String>,
+}
+
 pub fn hardware_status(args: HardwareStatusArgs) -> Result<()> {
     let age_plugin_identity_files = inspect_age_plugin_identity_files();
     let output = HardwareStatusOutput {
@@ -990,6 +1033,172 @@ fn inspect_age_plugin_identity_file(path: &Path) -> AgePluginIdentityFileOutput 
         identity_count,
         plugins,
         invalid_lines,
+    }
+}
+
+pub fn hardware_discover(args: HardwareDiscoverArgs) -> Result<()> {
+    let kind = hardware_kind_label(args.kind).to_string();
+    let request = HardwareAdapterRequest {
+        operation: "list",
+        kind: &kind,
+        plugin: args.plugin.as_deref(),
+        id: None,
+    };
+    let recipients: Vec<HardwareAdapterRecipient> =
+        invoke_hardware_adapter(&args.command, &request)?;
+    let output = HardwareDiscoverOutput {
+        command: args.command,
+        kind,
+        plugin: args.plugin,
+        recipients: recipients
+            .into_iter()
+            .map(hardware_adapter_recipient_output)
+            .collect(),
+    };
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else if output.recipients.is_empty() {
+        println!("no hardware recipients discovered");
+    } else {
+        println!("hardware recipients discovered");
+        println!("==============================");
+        for recipient in &output.recipients {
+            println!("id: {}", recipient.id);
+            if let Some(label) = &recipient.label {
+                println!("label: {label}");
+            }
+            println!("descriptor: {}", recipient.public_descriptor);
+            if let Some(fingerprint) = &recipient.fingerprint {
+                println!("fingerprint: {fingerprint}");
+            }
+            if let Some(example) = &recipient.add_recipient_example {
+                println!("add recipient: {example}");
+            }
+            if let Some(error) = &recipient.error {
+                println!("error: {error}");
+            }
+            println!();
+        }
+    }
+    Ok(())
+}
+
+pub fn hardware_enroll(args: HardwareEnrollArgs) -> Result<()> {
+    let kind = hardware_kind_label(args.kind).to_string();
+    let request = HardwareAdapterRequest {
+        operation: "recipient",
+        kind: &kind,
+        plugin: args.plugin.as_deref(),
+        id: Some(&args.id),
+    };
+    let recipient: HardwareAdapterRecipient = invoke_hardware_adapter(&args.command, &request)?;
+    let output = hardware_adapter_recipient_output(recipient);
+    if !output.valid {
+        anyhow::bail!(
+            "hardware adapter returned invalid recipient descriptor for {}: {}",
+            output.id,
+            output
+                .error
+                .as_deref()
+                .unwrap_or("unknown validation error")
+        );
+    }
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        println!("hardware recipient enrolled");
+        println!("===========================");
+        println!("id: {}", output.id);
+        if let Some(label) = &output.label {
+            println!("label: {label}");
+        }
+        println!("descriptor: {}", output.public_descriptor);
+        if let Some(fingerprint) = &output.fingerprint {
+            println!("fingerprint: {fingerprint}");
+        }
+        if let Some(example) = &output.add_recipient_example {
+            println!("add recipient: {example}");
+        }
+    }
+    Ok(())
+}
+
+fn invoke_hardware_adapter<T: for<'de> Deserialize<'de>>(
+    command_path: &str,
+    request: &HardwareAdapterRequest<'_>,
+) -> Result<T> {
+    let input =
+        serde_json::to_vec(request).context("failed to serialize hardware adapter request")?;
+    let mut child = Command::new(command_path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .with_context(|| format!("failed to invoke hardware adapter '{command_path}'"))?;
+    {
+        let stdin = child
+            .stdin
+            .as_mut()
+            .context("failed to open hardware adapter stdin")?;
+        stdin
+            .write_all(&input)
+            .context("failed to write hardware adapter request")?;
+    }
+    let output = child
+        .wait_with_output()
+        .context("failed to wait for hardware adapter")?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "hardware adapter exited unsuccessfully: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    serde_json::from_slice(&output.stdout).context("hardware adapter returned invalid JSON")
+}
+
+fn hardware_adapter_recipient_output(
+    recipient: HardwareAdapterRecipient,
+) -> HardwareRecipientOutput {
+    match sshenv_vault::recipient::fingerprint_from_recipient_descriptor(
+        &recipient.public_descriptor,
+    ) {
+        Ok(fingerprint) => {
+            let descriptor_kind =
+                sshenv_vault::recipient::recipient_descriptor_kind(&recipient.public_descriptor);
+            let add_recipient_example = format!(
+                "sshenv add-recipient --hardware --key '{}'",
+                recipient.public_descriptor
+            );
+            HardwareRecipientOutput {
+                id: recipient.id,
+                label: recipient.label,
+                kind: recipient.kind,
+                public_descriptor: recipient.public_descriptor,
+                valid: true,
+                fingerprint: Some(fingerprint),
+                descriptor_kind: Some(format!("{descriptor_kind:?}")),
+                error: None,
+                add_recipient_example: Some(add_recipient_example),
+            }
+        }
+        Err(error) => HardwareRecipientOutput {
+            id: recipient.id,
+            label: recipient.label,
+            kind: recipient.kind,
+            public_descriptor: recipient.public_descriptor,
+            valid: false,
+            fingerprint: None,
+            descriptor_kind: None,
+            error: Some(error.to_string()),
+            add_recipient_example: None,
+        },
+    }
+}
+
+const fn hardware_kind_label(kind: HardwareKindArg) -> &'static str {
+    match kind {
+        HardwareKindArg::AgePlugin => "age-plugin",
+        HardwareKindArg::YubiKeyPiv => "yubi-key-piv",
+        HardwareKindArg::FidoSecurityKey => "fido-security-key",
     }
 }
 

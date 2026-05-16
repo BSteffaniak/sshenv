@@ -264,6 +264,10 @@ pub enum HardwareCommand {
     Status(HardwareStatusArgs),
     /// Print an actionable setup plan for a hardware recipient family.
     Plan(HardwarePlanArgs),
+    /// Discover hardware recipients via a command-backed provider adapter.
+    Discover(HardwareDiscoverArgs),
+    /// Resolve one hardware recipient via a command-backed provider adapter.
+    Enroll(HardwareEnrollArgs),
     /// Validate a public recipient descriptor and show its stable fingerprint.
     ValidateRecipient(HardwareValidateRecipientArgs),
 }
@@ -281,6 +285,41 @@ pub struct HardwarePlanArgs {
     #[arg(long, value_enum)]
     pub kind: HardwareKindArg,
     /// age plugin name, without `age-plugin-` prefix.
+    #[arg(long)]
+    pub plugin: Option<String>,
+    /// Print machine-readable JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct HardwareDiscoverArgs {
+    /// Provider adapter executable. It receives non-secret JSON on stdin and returns JSON on stdout.
+    #[arg(long)]
+    pub command: String,
+    /// Hardware recipient family to request from the adapter.
+    #[arg(long, value_enum, default_value_t = HardwareKindArg::AgePlugin)]
+    pub kind: HardwareKindArg,
+    /// Optional plugin/provider name hint.
+    #[arg(long)]
+    pub plugin: Option<String>,
+    /// Print machine-readable JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct HardwareEnrollArgs {
+    /// Provider adapter executable. It receives non-secret JSON on stdin and returns JSON on stdout.
+    #[arg(long)]
+    pub command: String,
+    /// Hardware recipient id to resolve.
+    #[arg(long)]
+    pub id: String,
+    /// Hardware recipient family to request from the adapter.
+    #[arg(long, value_enum, default_value_t = HardwareKindArg::AgePlugin)]
+    pub kind: HardwareKindArg,
+    /// Optional plugin/provider name hint.
     #[arg(long)]
     pub plugin: Option<String>,
     /// Print machine-readable JSON.

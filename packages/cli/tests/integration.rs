@@ -243,6 +243,100 @@ fn binary_security_planning_commands_emit_json() {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn binary_hardware_command_adapter_discovers_and_enrolls() {
+    let bin = cargo_bin();
+    if !bin.exists() {
+        eprintln!("skipping: {} does not exist", bin.display());
+        return;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let (_priv_path, pub_line) = write_named_keypair(dir.path(), "id_ed25519");
+    let command_path = dir.path().join("hardware-adapter.sh");
+    std::fs::write(
+        &command_path,
+        format!(
+            r#"#!/bin/sh
+input=$(cat)
+case "$input" in
+  *'"operation":"list"'*|*'"operation": "list"'*)
+    printf '[{{"id":"slot-9c","label":"test token","kind":"yubi-key-piv","public_descriptor":"{pub_line}"}}]\n'
+    ;;
+  *'"operation":"recipient"'*|*'"operation": "recipient"'*)
+    printf '{{"id":"slot-9c","label":"test token","kind":"yubi-key-piv","public_descriptor":"{pub_line}"}}\n'
+    ;;
+  *) echo 'unknown operation' >&2; exit 1 ;;
+esac
+"#
+        ),
+    )
+    .unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&command_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let discover_out = Command::new(&bin)
+        .args([
+            "security",
+            "hardware",
+            "discover",
+            "--kind",
+            "yubi-key-piv",
+            "--command",
+        ])
+        .arg(&command_path)
+        .arg("--json")
+        .output()
+        .expect("run hardware discover");
+    assert!(
+        discover_out.status.success(),
+        "hardware discover failed: {}",
+        String::from_utf8_lossy(&discover_out.stderr)
+    );
+    let discover_json: serde_json::Value = serde_json::from_slice(&discover_out.stdout).unwrap();
+    assert_eq!(discover_json["recipients"][0]["id"], "slot-9c");
+    assert_eq!(discover_json["recipients"][0]["valid"], true);
+    assert!(
+        discover_json["recipients"][0]["add_recipient_example"]
+            .as_str()
+            .unwrap()
+            .contains("add-recipient --hardware")
+    );
+
+    let enroll_out = Command::new(&bin)
+        .args([
+            "security",
+            "hardware",
+            "enroll",
+            "--kind",
+            "yubi-key-piv",
+            "--id",
+            "slot-9c",
+            "--command",
+        ])
+        .arg(&command_path)
+        .arg("--json")
+        .output()
+        .expect("run hardware enroll");
+    assert!(
+        enroll_out.status.success(),
+        "hardware enroll failed: {}",
+        String::from_utf8_lossy(&enroll_out.stderr)
+    );
+    let enroll_json: serde_json::Value = serde_json::from_slice(&enroll_out.stdout).unwrap();
+    assert_eq!(enroll_json["id"], "slot-9c");
+    assert_eq!(enroll_json["valid"], true);
+    assert!(
+        enroll_json["fingerprint"]
+            .as_str()
+            .unwrap()
+            .starts_with("SHA256:")
+    );
+}
+
 #[test]
 fn binary_hardware_validate_recipient_reports_fingerprint() {
     let bin = cargo_bin();
