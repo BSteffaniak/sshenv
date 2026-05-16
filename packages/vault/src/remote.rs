@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use sshenv_vault_models::{RemoteFactorBackendKindV2, RemoteFactorMetadataV2};
@@ -50,6 +51,17 @@ pub fn validate_remote_factor_request(
     metadata: &RemoteFactorMetadataV2,
     request: &RemoteFactorRequest,
 ) -> Result<(), RemoteFactorError> {
+    let now_unix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs());
+    validate_remote_factor_request_at(metadata, request, now_unix)
+}
+
+pub fn validate_remote_factor_request_at(
+    metadata: &RemoteFactorMetadataV2,
+    request: &RemoteFactorRequest,
+    now_unix: u64,
+) -> Result<(), RemoteFactorError> {
     if request.factor_id != metadata.id {
         return Err(RemoteFactorError::InvalidRequest(format!(
             "request factor id '{}' does not match metadata id '{}'",
@@ -59,7 +71,12 @@ pub fn validate_remote_factor_request(
     require_context(&request.context, "vault-id")?;
     require_context(&request.context, "request-id")?;
     require_u64_context(&request.context, "generation")?;
-    require_u64_context(&request.context, "expires-unix")?;
+    let expires_unix = require_u64_context(&request.context, "expires-unix")?;
+    if expires_unix <= now_unix {
+        return Err(RemoteFactorError::InvalidRequest(format!(
+            "request expired at {expires_unix}; current time is {now_unix}"
+        )));
+    }
 
     match metadata.backend {
         RemoteFactorBackendKindV2::SelfHosted => {
@@ -110,18 +127,38 @@ pub fn validate_remote_factor_metadata(metadata: &RemoteFactorMetadataV2) -> Res
 
     match metadata.backend {
         RemoteFactorBackendKindV2::SelfHosted | RemoteFactorBackendKindV2::OidcApproval => {
-            if !metadata.params.contains_key("url") {
-                return Err("remote factor requires non-secret `url` param".to_string());
+            let url = require_non_empty_metadata_param(metadata, "url")?;
+            if !(url.starts_with("https://") || url.starts_with("http://")) {
+                return Err(
+                    "remote factor `url` param must start with http:// or https://".to_string(),
+                );
             }
         }
         RemoteFactorBackendKindV2::CloudKms => {
-            if !metadata.params.contains_key("key") {
-                return Err("cloud KMS factor requires non-secret `key` param".to_string());
-            }
+            require_non_empty_metadata_param(metadata, "key")?;
         }
     }
 
     Ok(())
+}
+
+fn require_non_empty_metadata_param<'a>(
+    metadata: &'a RemoteFactorMetadataV2,
+    key: &str,
+) -> Result<&'a str, String> {
+    let Some(value) = metadata.params.get(key) else {
+        return match metadata.backend {
+            RemoteFactorBackendKindV2::CloudKms if key == "key" => {
+                Err("cloud KMS factor requires non-secret `key` param".to_string())
+            }
+            _ => Err(format!("remote factor requires non-secret `{key}` param")),
+        };
+    };
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(format!("remote factor `{key}` param must not be empty"));
+    }
+    Ok(trimmed)
 }
 
 #[cfg(test)]
@@ -132,7 +169,7 @@ mod tests {
 
     use super::{
         RemoteFactorError, RemoteFactorRequest, validate_remote_factor_metadata,
-        validate_remote_factor_request,
+        validate_remote_factor_request, validate_remote_factor_request_at,
     };
 
     #[test]
@@ -169,7 +206,33 @@ mod tests {
                 ("audience".to_string(), "sshenv".to_string()),
             ]),
         };
-        validate_remote_factor_request(&metadata, &request).unwrap();
+        validate_remote_factor_request_at(&metadata, &request, 100).unwrap();
+    }
+
+    #[test]
+    fn rejects_expired_request_context() {
+        let mut params = BTreeMap::new();
+        params.insert("key".to_string(), "alias/sshenv".to_string());
+        let metadata = RemoteFactorMetadataV2 {
+            id: "kms".to_string(),
+            backend: RemoteFactorBackendKindV2::CloudKms,
+            label: None,
+            params,
+        };
+        let request = RemoteFactorRequest {
+            factor_id: "kms".to_string(),
+            context: BTreeMap::from([
+                ("vault-id".to_string(), "vault".to_string()),
+                ("request-id".to_string(), "req".to_string()),
+                ("generation".to_string(), "7".to_string()),
+                ("expires-unix".to_string(), "123".to_string()),
+                ("encryption-context".to_string(), "sshenv:vault".to_string()),
+            ]),
+        };
+        assert!(matches!(
+            validate_remote_factor_request_at(&metadata, &request, 123),
+            Err(RemoteFactorError::InvalidRequest(message)) if message.contains("expired")
+        ));
     }
 
     #[test]
@@ -217,6 +280,38 @@ mod tests {
             Err(RemoteFactorError::InvalidRequest(message))
                 if message.contains("generation") && message.contains("unsigned integer")
         ));
+    }
+
+    #[test]
+    fn rejects_empty_url_param() {
+        let mut params = BTreeMap::new();
+        params.insert("url".to_string(), "  ".to_string());
+        let metadata = RemoteFactorMetadataV2 {
+            id: "remote".to_string(),
+            backend: RemoteFactorBackendKindV2::SelfHosted,
+            label: None,
+            params,
+        };
+        assert_eq!(
+            validate_remote_factor_metadata(&metadata),
+            Err("remote factor `url` param must not be empty".to_string())
+        );
+    }
+
+    #[test]
+    fn rejects_non_http_url_param() {
+        let mut params = BTreeMap::new();
+        params.insert("url".to_string(), "unlock.example".to_string());
+        let metadata = RemoteFactorMetadataV2 {
+            id: "remote".to_string(),
+            backend: RemoteFactorBackendKindV2::OidcApproval,
+            label: None,
+            params,
+        };
+        assert_eq!(
+            validate_remote_factor_metadata(&metadata),
+            Err("remote factor `url` param must start with http:// or https://".to_string())
+        );
     }
 
     #[test]

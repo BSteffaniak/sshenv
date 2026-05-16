@@ -480,7 +480,7 @@ fn binary_remote_request_template_validates_roundtrip() {
             "--generation",
             "7",
             "--expires-unix",
-            "12345",
+            "4102444800",
             "--request-id",
             "req-1",
             "--encryption-context",
@@ -511,6 +511,55 @@ fn binary_remote_request_template_validates_roundtrip() {
         serde_json::from_slice(&validate_request_out.stdout).unwrap();
     assert_eq!(request_json["valid"], true);
     assert_eq!(request_json["factor_id"], "prod-kms");
+}
+
+#[cfg(feature = "remote-factor")]
+#[test]
+fn binary_remote_validate_request_rejects_expired_context() {
+    let bin = cargo_bin();
+    if !bin.exists() {
+        eprintln!("skipping: {} does not exist", bin.display());
+        return;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let metadata_path = dir.path().join("remote.json");
+    let request_path = dir.path().join("request.json");
+    std::fs::write(
+        &metadata_path,
+        r#"{
+  "id": "prod-kms",
+  "backend": "cloud-kms",
+  "label": "prod",
+  "params": { "key": "alias/sshenv-prod" }
+}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        &request_path,
+        r#"{
+  "factor_id": "prod-kms",
+  "context": {
+    "vault-id": "vault-prod",
+    "request-id": "req-expired",
+    "generation": "7",
+    "expires-unix": "1",
+    "encryption-context": "sshenv:prod"
+  }
+}"#,
+    )
+    .unwrap();
+
+    let output = Command::new(&bin)
+        .args(["security", "remote", "validate-request"])
+        .arg(&metadata_path)
+        .arg(&request_path)
+        .arg("--json")
+        .output()
+        .expect("run remote validate-request");
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("expired"), "{stderr}");
 }
 
 #[cfg(feature = "remote-factor")]
