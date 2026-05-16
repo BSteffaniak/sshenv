@@ -8,6 +8,9 @@ use rand_core::OsRng;
 use ssh_key::{Algorithm, LineEnding, PrivateKey};
 
 fn cargo_bin() -> PathBuf {
+    if let Some(path) = option_env!("CARGO_BIN_EXE_sshenv") {
+        return PathBuf::from(path);
+    }
     let dir = env!("CARGO_MANIFEST_DIR");
     let target = PathBuf::from(dir).join("../../target");
     // Prefer debug build.
@@ -370,6 +373,105 @@ fn binary_migrate_vault_to_v2_preserves_secret_access() {
         String::from_utf8_lossy(&show_out.stderr)
     );
     assert!(String::from_utf8_lossy(&show_out.stdout).contains("DUMMY=value"));
+}
+
+#[cfg(all(feature = "device-seal-file", not(feature = "macos-keychain")))]
+#[test]
+fn binary_profile_policy_apply_all_recommended_binds_device_seal() {
+    let bin = cargo_bin();
+    if !bin.exists() {
+        eprintln!("skipping: {} does not exist", bin.display());
+        return;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let vault_path = dir.path().join("vault");
+    init_vault_with_profile(&bin, &home, &vault_path, "myprofile");
+
+    let set_other_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("set")
+        .arg("otherprofile")
+        .arg("DUMMY")
+        .arg("--value")
+        .arg("other")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run set other profile");
+    assert!(
+        set_other_out.status.success(),
+        "set other profile failed: {}",
+        String::from_utf8_lossy(&set_other_out.stderr)
+    );
+
+    let apply_all_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("security")
+        .arg("profile-policy")
+        .arg("apply-all")
+        .arg("--preset")
+        .arg("recommended")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run profile-policy apply-all recommended");
+    assert!(
+        apply_all_out.status.success(),
+        "profile-policy apply-all recommended failed: {}",
+        String::from_utf8_lossy(&apply_all_out.stderr)
+    );
+
+    for profile in ["myprofile", "otherprofile"] {
+        let status_out = Command::new(&bin)
+            .arg("--vault")
+            .arg(&vault_path)
+            .arg("security")
+            .arg("profile-policy")
+            .arg("status")
+            .arg(profile)
+            .env("HOME", &home)
+            .env_remove("SSHENV_VAULT")
+            .output()
+            .expect("run profile-policy status");
+        assert!(status_out.status.success());
+        let stdout = String::from_utf8_lossy(&status_out.stdout);
+        assert!(stdout.contains("preset: Recommended"), "{stdout}");
+        assert!(
+            stdout.contains("requirement device-seal: profile-specific cryptographic binding"),
+            "{stdout}"
+        );
+
+        let show_out = Command::new(&bin)
+            .arg("--vault")
+            .arg(&vault_path)
+            .arg("show")
+            .arg(profile)
+            .env("HOME", &home)
+            .env_remove("SSHENV_VAULT")
+            .output()
+            .expect("run show with device seal");
+        assert!(
+            show_out.status.success(),
+            "show {profile} with device seal failed: {}",
+            String::from_utf8_lossy(&show_out.stderr)
+        );
+    }
+
+    std::fs::remove_file(home.join(".sshenv").join("device-seal")).unwrap();
+    let missing_seal_show_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("show")
+        .arg("myprofile")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run show without device seal");
+    assert!(!missing_seal_show_out.status.success());
 }
 
 #[test]

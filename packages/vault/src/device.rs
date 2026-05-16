@@ -29,7 +29,9 @@ const BACKEND: &str = "backend";
 const BACKEND_LOCAL_FILE: &str = "local-file";
 const BACKEND_MACOS_KEYCHAIN: &str = "macos-keychain";
 const KEY_LEN: usize = 32;
+#[cfg(all(feature = "macos-keychain", target_os = "macos"))]
 const MACOS_KEYCHAIN_SERVICE: &str = "sshenv device seal";
+#[cfg(all(feature = "macos-keychain", target_os = "macos"))]
 const MACOS_KEYCHAIN_ACCOUNT: &str = "default";
 
 /// Create metadata for a device-seal factor and return the device factor key.

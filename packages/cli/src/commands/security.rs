@@ -1221,12 +1221,15 @@ pub fn profile_policy_apply_all(ctx: &CmdContext, args: ProfilePolicyApplyAllArg
 
     if !matches!(
         preset,
-        ProfilePolicyPreset::Standard | ProfilePolicyPreset::Portable
+        ProfilePolicyPreset::Standard
+            | ProfilePolicyPreset::Portable
+            | ProfilePolicyPreset::Recommended
     ) {
         anyhow::bail!(
-            "profile-policy apply-all without --dry-run currently supports --preset standard or portable only"
+            "profile-policy apply-all without --dry-run currently supports --preset standard, portable, or recommended only"
         );
     }
+    ensure_profile_policy_apply_all_preset_supported(preset)?;
     let (mut vault, data_key) = crate::commands::load_and_unlock(&ctx.vault_path)?;
     let output = build_profile_policy_apply_all_plan(&vault, preset)?;
     if output.unrepairable_count > 0 {
@@ -1329,6 +1332,15 @@ pub fn profile_policy_repair(ctx: &CmdContext, args: ProfilePolicyRepairArgs) ->
         eprintln!(
             "Profile policy for {} was already consistent.",
             args.profile
+        );
+    }
+    Ok(())
+}
+
+fn ensure_profile_policy_apply_all_preset_supported(preset: ProfilePolicyPreset) -> Result<()> {
+    if preset == ProfilePolicyPreset::Recommended && device_seal_backend_status() == "none" {
+        anyhow::bail!(
+            "profile-policy apply-all --preset recommended requires an available device-seal backend"
         );
     }
     Ok(())
