@@ -8,6 +8,7 @@ pub struct RecoveryUnlockPlan {
     pub set_id: String,
     pub threshold: u8,
     pub provided_share_ids: Vec<String>,
+    pub ignored_share_ids: Vec<String>,
     pub missing_share_count: usize,
     pub ready: bool,
 }
@@ -140,14 +141,17 @@ pub fn plan_m_of_n_unlock(
         .iter()
         .map(|share| share.id.as_str())
         .collect::<BTreeSet<_>>();
-    let mut unique_provided = provided_share_ids
-        .iter()
-        .filter(|id| valid_share_ids.contains(id.as_str()))
-        .cloned()
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect::<Vec<_>>();
-    unique_provided.sort();
+    let mut unique_provided = BTreeSet::new();
+    let mut ignored_share_ids = BTreeSet::new();
+    for id in provided_share_ids {
+        if valid_share_ids.contains(id.as_str()) {
+            unique_provided.insert(id.clone());
+        } else {
+            ignored_share_ids.insert(id.clone());
+        }
+    }
+    let unique_provided = unique_provided.into_iter().collect::<Vec<_>>();
+    let ignored_share_ids = ignored_share_ids.into_iter().collect::<Vec<_>>();
 
     let provided_count = unique_provided.len();
     let threshold = usize::from(set.threshold);
@@ -157,6 +161,7 @@ pub fn plan_m_of_n_unlock(
         set_id: set.id.clone(),
         threshold: set.threshold,
         provided_share_ids: unique_provided,
+        ignored_share_ids,
         missing_share_count,
         ready: missing_share_count == 0,
     })
@@ -408,14 +413,22 @@ pub fn plan_break_glass_recovery(
         ));
     }
 
+    let mut warnings = vec![
+        "break-glass recovery should be treated as emergency access".to_string(),
+        "all recovered material must be rotated after use".to_string(),
+    ];
+    if !unlock.ignored_share_ids.is_empty() {
+        warnings.push(format!(
+            "ignored unknown recovery share id(s): {}",
+            unlock.ignored_share_ids.join(", ")
+        ));
+    }
+
     Ok(BreakGlassRecoveryPlan {
         set_id: unlock.set_id,
         ready: unlock.ready,
         steps,
-        warnings: vec![
-            "break-glass recovery should be treated as emergency access".to_string(),
-            "all recovered material must be rotated after use".to_string(),
-        ],
+        warnings,
     })
 }
 
@@ -480,6 +493,7 @@ mod tests {
         assert!(!plan.ready);
         assert_eq!(plan.missing_share_count, 1);
         assert_eq!(plan.provided_share_ids, vec!["alice"]);
+        assert_eq!(plan.ignored_share_ids, vec!["unknown"]);
     }
 
     #[test]

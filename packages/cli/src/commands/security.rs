@@ -1137,6 +1137,10 @@ pub fn recovery_plan(args: RecoveryPlanArgs) -> Result<()> {
             println!("set id: {}", plan.set_id);
             println!("threshold: {}", plan.threshold);
             println!("provided valid shares: {}", plan.provided_share_ids.len());
+            println!("ignored unknown shares: {}", plan.ignored_share_ids.len());
+            for share_id in &plan.ignored_share_ids {
+                println!("- {share_id}");
+            }
             println!("missing shares: {}", plan.missing_share_count);
             println!("ready: {}", yes_no(plan.ready));
         }

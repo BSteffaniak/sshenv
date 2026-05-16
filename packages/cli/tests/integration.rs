@@ -421,6 +421,34 @@ fn binary_recovery_metadata_import_list_remove_roundtrip() {
     assert_eq!(list_json.as_array().unwrap().len(), 1);
     assert_eq!(list_json[0]["id"], "ops-break-glass");
 
+    let plan_out = Command::new(&bin)
+        .args(["security", "recovery", "plan"])
+        .arg(&metadata_path)
+        .args([
+            "--share-id",
+            "share-a",
+            "--share-id",
+            "not-a-share",
+            "--json",
+        ])
+        .output()
+        .expect("run recovery plan");
+    assert!(
+        plan_out.status.success(),
+        "recovery plan failed: {}",
+        String::from_utf8_lossy(&plan_out.stderr)
+    );
+    let plan_json: serde_json::Value = serde_json::from_slice(&plan_out.stdout).unwrap();
+    assert_eq!(
+        plan_json["provided_share_ids"],
+        serde_json::json!(["share-a"])
+    );
+    assert_eq!(
+        plan_json["ignored_share_ids"],
+        serde_json::json!(["not-a-share"])
+    );
+    assert_eq!(plan_json["missing_share_count"], 1);
+
     let remove_out = Command::new(&bin)
         .arg("--vault")
         .arg(&vault_path)
