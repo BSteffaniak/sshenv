@@ -635,7 +635,7 @@ pub fn device_plan(args: DevicePlanArgs) -> Result<()> {
         threat_model: device_backend_threat_model(args.backend),
         implementation_notes: device_backend_implementation_notes(args.backend),
         user_flow: vec![
-            "build sshenv with the backend feature once implemented".to_string(),
+            "build sshenv with the desired device-seal backend feature".to_string(),
             "run `sshenv security device authorize` on each trusted device".to_string(),
             "use `sshenv security profile-policy apply ... --preset recommended` or paranoid for profile binding".to_string(),
             "remove lost devices with `sshenv security device remove` and rotate affected keys".to_string(),
@@ -698,14 +698,16 @@ fn device_backend_threat_model(backend: DeviceBackendArg) -> Vec<String> {
 fn device_backend_implementation_notes(backend: DeviceBackendArg) -> Vec<String> {
     match backend {
         DeviceBackendArg::WindowsDpapi => vec![
-            "wrap profile/vault factor bytes with CryptProtectData".to_string(),
-            "store only DPAPI ciphertext and non-secret metadata in v2 policy metadata".to_string(),
-            "support explicit reauthorize after Windows profile migration".to_string(),
+            "available with the `windows-dpapi` feature on Windows".to_string(),
+            "wraps factor bytes with CurrentUser DPAPI via PowerShell ProtectedData".to_string(),
+            "stores only DPAPI ciphertext on disk and the backend label in v2 policy metadata".to_string(),
+            "requires reauthorization after Windows profile migration or credential loss".to_string(),
         ],
         DeviceBackendArg::LinuxSecretService => vec![
-            "store factor bytes in a named Secret Service item".to_string(),
-            "persist item lookup attributes, not plaintext, in policy metadata".to_string(),
-            "detect locked/unavailable collections with actionable CLI errors".to_string(),
+            "available with the `linux-secret-service` feature on Linux".to_string(),
+            "stores factor bytes in a named Secret Service item via `secret-tool`".to_string(),
+            "persists only the backend label in v2 policy metadata".to_string(),
+            "detects missing `secret-tool` or locked/unavailable collections with actionable CLI errors".to_string(),
         ],
         DeviceBackendArg::Tpm => vec![
             "seal factor bytes under TPM storage hierarchy".to_string(),
