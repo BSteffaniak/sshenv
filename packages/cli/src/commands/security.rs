@@ -1,6 +1,8 @@
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::io::IsTerminal;
+#[cfg(feature = "shamir-sharing")]
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -21,8 +23,9 @@ use sshenv_cli_models::{
     ProfilePolicyRestoreBackupArgs, ProfilePolicyRotateKeyArgs, ProfilePolicySetArgs,
     ProfilePolicyStatusArgs, ProfilePolicyVerifyBackupArgs, RecoveryCombineArgs, RecoveryListArgs,
     RecoveryMetadataArgs, RecoveryPlanArgs, RecoveryRemoveArgs, RecoveryShareFileArgs,
-    RemoteBackendArg, RemoteListArgs, RemoteMetadataArgs, RemotePlanArgs, RemoteRemoveArgs,
-    RemoteRequestArgs, SecurityPresetArg, SecurityPresetArgs,
+    RecoverySplitArgs, RemoteBackendArg, RemoteListArgs, RemoteMetadataArgs, RemotePlanArgs,
+    RemoteRemoveArgs, RemoteRequestArgs, RemoteRequestTemplateArgs, SecurityPresetArg,
+    SecurityPresetArgs,
 };
 use sshenv_vault::models::{
     ProfileFactorRequirement, ProfilePolicy, ProfilePolicyFinding, ProfilePolicyFindingCode,
@@ -431,6 +434,61 @@ pub fn recovery_remove(_ctx: &CmdContext, _args: RecoveryRemoveArgs) -> Result<(
 }
 
 #[cfg(feature = "shamir-sharing")]
+pub fn recovery_split(args: RecoverySplitArgs) -> Result<()> {
+    if !args.secret_hex_stdin {
+        anyhow::bail!("recovery split requires --secret-hex-stdin to avoid shell-history exposure");
+    }
+    let mut input = String::new();
+    std::io::stdin()
+        .read_to_string(&mut input)
+        .context("failed to read hex secret from stdin")?;
+    let secret = zeroize::Zeroizing::new(
+        hex::decode(input.trim()).context("failed to decode hex secret from stdin")?,
+    );
+    let shares = sshenv_vault::recovery::split_secret_shamir(
+        secret.as_slice(),
+        args.threshold,
+        args.share_count,
+    )?;
+    let envelopes = shares
+        .into_iter()
+        .map(|share| sshenv_vault::recovery::RecoveryShareEnvelope {
+            set_id: args.set_id.clone(),
+            threshold: args.threshold,
+            share,
+        })
+        .collect::<Vec<_>>();
+    let encoded = envelopes
+        .iter()
+        .map(sshenv_vault::recovery::encode_recovery_share_envelope)
+        .collect::<Vec<_>>();
+    if args.json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "set_id": args.set_id,
+                "threshold": args.threshold,
+                "share_count": encoded.len(),
+                "shares": encoded,
+            })
+        );
+    } else {
+        eprintln!(
+            "warning: recovery share envelopes contain secret material; distribute them separately"
+        );
+        for share in encoded {
+            println!("{share}");
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "shamir-sharing"))]
+pub fn recovery_split(_args: RecoverySplitArgs) -> Result<()> {
+    anyhow::bail!("this sshenv build was compiled without shamir-sharing support")
+}
+
+#[cfg(feature = "shamir-sharing")]
 pub fn recovery_validate_share(args: RecoveryShareFileArgs) -> Result<()> {
     let encoded = fs::read_to_string(&args.share_file).with_context(|| {
         format!(
@@ -818,6 +876,64 @@ pub fn remote_validate(args: RemoteMetadataArgs) -> Result<()> {
 
 #[cfg(not(feature = "remote-factor"))]
 pub fn remote_validate(_args: RemoteMetadataArgs) -> Result<()> {
+    anyhow::bail!("this sshenv build was compiled without remote-factor support")
+}
+
+#[cfg(feature = "remote-factor")]
+pub fn remote_request_template(args: RemoteRequestTemplateArgs) -> Result<()> {
+    let metadata = load_remote_factor_metadata(&args.metadata_path)?;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs());
+    let mut context = BTreeMap::from([
+        ("vault-id".to_string(), args.vault_id),
+        (
+            "request-id".to_string(),
+            args.request_id.unwrap_or_else(|| format!("req-{now}")),
+        ),
+        ("generation".to_string(), args.generation.to_string()),
+        (
+            "expires-unix".to_string(),
+            args.expires_unix.unwrap_or(now + 300).to_string(),
+        ),
+    ]);
+    match metadata.backend {
+        RemoteFactorBackendKindV2::SelfHosted => {
+            context.insert(
+                "client-id".to_string(),
+                args.client_id
+                    .unwrap_or_else(|| "sshenv-client".to_string()),
+            );
+        }
+        RemoteFactorBackendKindV2::CloudKms => {
+            context.insert(
+                "encryption-context".to_string(),
+                args.encryption_context
+                    .unwrap_or_else(|| "sshenv:vault".to_string()),
+            );
+        }
+        RemoteFactorBackendKindV2::OidcApproval => {
+            context.insert(
+                "subject".to_string(),
+                args.subject
+                    .unwrap_or_else(|| "user@example.com".to_string()),
+            );
+            context.insert(
+                "audience".to_string(),
+                args.audience.unwrap_or_else(|| "sshenv".to_string()),
+            );
+        }
+    }
+    let request = sshenv_vault::remote::RemoteFactorRequest {
+        factor_id: metadata.id,
+        context,
+    };
+    println!("{}", serde_json::to_string_pretty(&request)?);
+    Ok(())
+}
+
+#[cfg(not(feature = "remote-factor"))]
+pub fn remote_request_template(_args: RemoteRequestTemplateArgs) -> Result<()> {
     anyhow::bail!("this sshenv build was compiled without remote-factor support")
 }
 

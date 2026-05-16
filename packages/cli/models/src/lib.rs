@@ -203,6 +203,8 @@ pub enum RecoveryCommand {
     Import(RecoveryMetadataArgs),
     /// Remove a recovery-share metadata set from the current v2 vault.
     Remove(RecoveryRemoveArgs),
+    /// Split a hex secret from stdin into encoded Shamir recovery-share envelopes.
+    Split(RecoverySplitArgs),
     /// Validate one encoded Shamir recovery-share envelope file.
     ValidateShare(RecoveryShareFileArgs),
     /// Combine encoded Shamir recovery-share envelope files and print the recovered secret as hex.
@@ -223,6 +225,8 @@ pub enum RemoteCommand {
     Remove(RemoteRemoveArgs),
     /// Print a metadata template and setup plan for a remote/KMS backend.
     Plan(RemotePlanArgs),
+    /// Generate a remote/KMS request JSON template from metadata.
+    RequestTemplate(RemoteRequestTemplateArgs),
     /// Validate a remote/KMS request JSON file against metadata.
     ValidateRequest(RemoteRequestArgs),
     /// Validate a remote/KMS factor metadata JSON file.
@@ -281,6 +285,36 @@ pub struct RemoteRequestArgs {
     pub json: bool,
 }
 
+#[derive(Debug, clap::Args)]
+pub struct RemoteRequestTemplateArgs {
+    /// Path to a JSON RemoteFactorMetadataV2 document.
+    pub metadata_path: PathBuf,
+    /// Vault identifier to bind into the request.
+    #[arg(long, default_value = "vault")]
+    pub vault_id: String,
+    /// Vault generation to bind into the request.
+    #[arg(long, default_value_t = 0)]
+    pub generation: u64,
+    /// Request expiry as Unix seconds. Defaults to now + 300 seconds.
+    #[arg(long)]
+    pub expires_unix: Option<u64>,
+    /// Stable request id. Defaults to a timestamp-derived id.
+    #[arg(long)]
+    pub request_id: Option<String>,
+    /// Self-hosted client id.
+    #[arg(long)]
+    pub client_id: Option<String>,
+    /// Cloud KMS encryption context string.
+    #[arg(long)]
+    pub encryption_context: Option<String>,
+    /// OIDC subject.
+    #[arg(long)]
+    pub subject: Option<String>,
+    /// OIDC audience.
+    #[arg(long)]
+    pub audience: Option<String>,
+}
+
 #[derive(Clone, Copy, Debug, ValueEnum)]
 pub enum RemoteBackendArg {
     SelfHosted,
@@ -314,6 +348,25 @@ pub struct RecoveryRemoveArgs {
 pub struct RecoveryShareFileArgs {
     /// File containing one encoded recovery-share envelope.
     pub share_file: PathBuf,
+    /// Print machine-readable JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct RecoverySplitArgs {
+    /// Recovery-share set id to embed in the envelopes.
+    #[arg(long)]
+    pub set_id: String,
+    /// Number of shares required to recover.
+    #[arg(long)]
+    pub threshold: u8,
+    /// Total shares to generate.
+    #[arg(long)]
+    pub share_count: u8,
+    /// Read the secret as hex from stdin.
+    #[arg(long)]
+    pub secret_hex_stdin: bool,
     /// Print machine-readable JSON.
     #[arg(long)]
     pub json: bool,

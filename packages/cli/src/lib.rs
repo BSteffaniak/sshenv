@@ -62,6 +62,7 @@ pub fn run(cli: Cli) -> Result<()> {
                 RecoveryCommand::List(args) => commands::security::recovery_list(&ctx, args),
                 RecoveryCommand::Import(args) => commands::security::recovery_import(&ctx, args),
                 RecoveryCommand::Remove(args) => commands::security::recovery_remove(&ctx, args),
+                RecoveryCommand::Split(args) => commands::security::recovery_split(args),
                 RecoveryCommand::ValidateShare(args) => {
                     commands::security::recovery_validate_share(args)
                 }
@@ -74,6 +75,9 @@ pub fn run(cli: Cli) -> Result<()> {
                 RemoteCommand::Import(args) => commands::security::remote_import(&ctx, args),
                 RemoteCommand::Remove(args) => commands::security::remote_remove(&ctx, args),
                 RemoteCommand::Plan(args) => commands::security::remote_plan(args),
+                RemoteCommand::RequestTemplate(args) => {
+                    commands::security::remote_request_template(args)
+                }
                 RemoteCommand::ValidateRequest(args) => {
                     commands::security::remote_validate_request(args)
                 }
