@@ -641,6 +641,57 @@ fn binary_profile_policy_migrate_preserves_secret_access() {
     assert!(other_show_out.status.success());
     assert!(String::from_utf8_lossy(&other_show_out.stdout).contains("DUMMY=other"));
 
+    let apply_all_portable_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("security")
+        .arg("profile-policy")
+        .arg("apply-all")
+        .arg("--preset")
+        .arg("portable")
+        .arg("--passphrase")
+        .arg("bulk-passphrase")
+        .env("HOME", &home)
+        .env_remove("SSHENV_PROFILE_PASSPHRASE")
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run profile-policy apply-all portable");
+    assert!(
+        apply_all_portable_out.status.success(),
+        "profile-policy apply-all portable failed: {}",
+        String::from_utf8_lossy(&apply_all_portable_out.stderr)
+    );
+
+    let other_show_without_bulk_passphrase = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("show")
+        .arg("otherprofile")
+        .env("HOME", &home)
+        .env_remove("SSHENV_PROFILE_PASSPHRASE")
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run show other profile without bulk passphrase");
+    assert!(!other_show_without_bulk_passphrase.status.success());
+
+    for profile in ["myprofile", "otherprofile"] {
+        let bulk_show_out = Command::new(&bin)
+            .arg("--vault")
+            .arg(&vault_path)
+            .arg("show")
+            .arg(profile)
+            .env("HOME", &home)
+            .env("SSHENV_PROFILE_PASSPHRASE", "bulk-passphrase")
+            .env_remove("SSHENV_VAULT")
+            .output()
+            .expect("run show with bulk passphrase");
+        assert!(
+            bulk_show_out.status.success(),
+            "show {profile} with bulk passphrase failed: {}",
+            String::from_utf8_lossy(&bulk_show_out.stderr)
+        );
+    }
+
     let apply_out = Command::new(&bin)
         .arg("--vault")
         .arg(&vault_path)
@@ -653,6 +704,7 @@ fn binary_profile_policy_migrate_preserves_secret_access() {
         .arg("--passphrase")
         .arg("apply-passphrase")
         .env("HOME", &home)
+        .env("SSHENV_PROFILE_PASSPHRASE", "bulk-passphrase")
         .env_remove("SSHENV_VAULT")
         .output()
         .expect("run profile-policy apply portable");
@@ -695,7 +747,11 @@ fn binary_profile_policy_migrate_preserves_secret_access() {
         .env_remove("SSHENV_VAULT")
         .output()
         .expect("run show after profile-policy apply");
-    assert!(apply_show_out.status.success());
+    assert!(
+        apply_show_out.status.success(),
+        "show after profile-policy apply failed: {}",
+        String::from_utf8_lossy(&apply_show_out.stderr)
+    );
     assert!(String::from_utf8_lossy(&apply_show_out.stdout).contains("DUMMY=value"));
 
     let apply_standard_out = Command::new(&bin)

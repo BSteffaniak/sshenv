@@ -767,6 +767,16 @@ fn build_profile_policy_apply_plan(
     Ok(plan)
 }
 
+fn add_profile_policy_plan_action(
+    plan: &mut ProfilePolicyRepairPlan,
+    action: ProfilePolicyRepairAction,
+) {
+    if !plan.actions.contains(&action) {
+        plan.actions.push(action);
+        plan.action_labels.push(action.label().to_string());
+    }
+}
+
 fn apply_profile_policy_preset_metadata(
     vault: &mut Vault,
     profile: &str,
@@ -1131,7 +1141,14 @@ fn existing_or_default_profile_policy(vault: &Vault, profile: &str) -> ProfilePo
 pub fn profile_policy_apply(ctx: &CmdContext, args: ProfilePolicyApplyArgs) -> Result<()> {
     let (mut vault, data_key) = load_and_unlock_profile(&ctx.vault_path, &args.profile)?;
     let preset = profile_policy_preset(args.preset);
-    let plan = build_profile_policy_apply_plan(&vault, &args.profile, preset)?;
+    let mut plan = build_profile_policy_apply_plan(&vault, &args.profile, preset)?;
+    if args.passphrase.is_some()
+        && profile_preset_expected_requirements(preset)
+            .contains(&ProfileFactorRequirement::Passphrase)
+    {
+        add_profile_policy_plan_action(&mut plan, ProfilePolicyRepairAction::BindPassphrase);
+        add_profile_policy_plan_action(&mut plan, ProfilePolicyRepairAction::RotateProfileKey);
+    }
 
     if args.dry_run || args.json {
         let output = ProfilePolicyApplyPlanOutput {
@@ -1202,45 +1219,60 @@ pub fn profile_policy_apply_all(ctx: &CmdContext, args: ProfilePolicyApplyAllArg
         return Ok(());
     }
 
-    if preset != ProfilePolicyPreset::Standard {
+    if !matches!(
+        preset,
+        ProfilePolicyPreset::Standard | ProfilePolicyPreset::Portable
+    ) {
         anyhow::bail!(
-            "profile-policy apply-all without --dry-run currently supports --preset standard only"
+            "profile-policy apply-all without --dry-run currently supports --preset standard or portable only"
         );
     }
     let (mut vault, data_key) = crate::commands::load_and_unlock(&ctx.vault_path)?;
-    let profiles = profile_policy_names(&vault);
+    let output = build_profile_policy_apply_all_plan(&vault, preset)?;
+    if output.unrepairable_count > 0 {
+        anyhow::bail!(
+            "profile policy apply-all plan has {} unrepairable profile(s)",
+            output.unrepairable_count
+        );
+    }
+    ensure_profile_policy_apply_all_inputs_available(&output, &args)?;
+    let bulk_passphrase = bulk_apply_all_passphrase(&output, args.passphrase)?;
     let mut changed = false;
     let mut applied = Vec::new();
 
-    for profile in profiles {
-        apply_profile_policy_preset_metadata(&mut vault, &profile, preset)?;
-        let mut plan = build_profile_policy_apply_plan(&vault, &profile, preset)?;
-        if !plan
-            .actions
-            .contains(&ProfilePolicyRepairAction::RotateProfileKey)
-        {
-            plan.actions
-                .push(ProfilePolicyRepairAction::RotateProfileKey);
-            plan.action_labels.push(
-                ProfilePolicyRepairAction::RotateProfileKey
-                    .label()
-                    .to_string(),
-            );
+    for profile_output in output.profiles {
+        apply_profile_policy_preset_metadata(&mut vault, &profile_output.profile, preset)?;
+        let mut plan = profile_output.plan;
+        if preset == ProfilePolicyPreset::Portable && bulk_passphrase.is_some() {
+            add_profile_policy_plan_action(&mut plan, ProfilePolicyRepairAction::BindPassphrase);
+            add_profile_policy_plan_action(&mut plan, ProfilePolicyRepairAction::RotateProfileKey);
         }
-        let (_profile_changed, actions) =
-            apply_profile_policy_plan_actions(&mut vault, &profile, &[], None, &plan)?;
+        if preset == ProfilePolicyPreset::Standard
+            && !plan
+                .actions
+                .contains(&ProfilePolicyRepairAction::RotateProfileKey)
+        {
+            add_profile_policy_plan_action(&mut plan, ProfilePolicyRepairAction::RotateProfileKey);
+        }
+        let (_profile_changed, actions) = apply_profile_policy_plan_actions(
+            &mut vault,
+            &profile_output.profile,
+            &args.recipient_keys,
+            bulk_passphrase.clone(),
+            &plan,
+        )?;
         changed = true;
-        applied.push((profile, actions));
+        applied.push((profile_output.profile, actions));
     }
 
     if changed {
         save_all_profile_policy_vaults(ctx, &mut vault, &data_key)?;
     }
-    eprintln!("Applied Standard profile policy enforcement to all profiles.");
+    eprintln!("Applied {preset:?} profile policy enforcement to all profiles.");
     for (profile, actions) in applied {
         eprintln!("{profile}:");
         if actions.is_empty() {
-            eprintln!("- set preset metadata to Standard");
+            eprintln!("- set preset metadata to {preset:?}");
         } else {
             for action in actions {
                 eprintln!("- {action}");
@@ -1300,6 +1332,51 @@ pub fn profile_policy_repair(ctx: &CmdContext, args: ProfilePolicyRepairArgs) ->
         );
     }
     Ok(())
+}
+
+fn ensure_profile_policy_apply_all_inputs_available(
+    output: &ProfilePolicyApplyAllPlanOutput,
+    args: &ProfilePolicyApplyAllArgs,
+) -> Result<()> {
+    if output.requires_passphrase_count > 0
+        && args.passphrase.is_none()
+        && !std::io::stdin().is_terminal()
+    {
+        anyhow::bail!(
+            "profile policy apply-all requires --passphrase <value> in non-interactive mode"
+        );
+    }
+    if output.requires_recipient_key_count > 0 && args.recipient_keys.is_empty() {
+        if args.strict_inputs {
+            anyhow::bail!(
+                "profile policy apply-all requires --recipient-key <path-or-public-key-line> in strict-inputs mode"
+            );
+        }
+        eprintln!(
+            "note: profile policy apply-all may need --recipient-key <path-or-public-key-line> to migrate this v1 vault"
+        );
+    }
+    Ok(())
+}
+
+fn bulk_apply_all_passphrase(
+    output: &ProfilePolicyApplyAllPlanOutput,
+    passphrase: Option<String>,
+) -> Result<Option<String>> {
+    if output.requires_passphrase_count == 0 && passphrase.is_none() {
+        return Ok(None);
+    }
+    #[cfg(feature = "passphrase-factor")]
+    {
+        let passphrase =
+            passphrase_arg_or_prompt(passphrase, "Enter new sshenv profile passphrase: ")?;
+        Ok(Some(passphrase.to_string()))
+    }
+    #[cfg(not(feature = "passphrase-factor"))]
+    {
+        let _ = passphrase;
+        anyhow::bail!("this sshenv build was compiled without passphrase-factor support")
+    }
 }
 
 fn ensure_repair_inputs_available(
@@ -1413,7 +1490,8 @@ fn repair_profile_passphrase_if_needed(
     passphrase: Option<String>,
 ) -> Result<bool> {
     let policy = existing_or_default_profile_policy(vault, profile);
-    if profile_has_factor_metadata(&policy, UnlockFactorKindV2::Passphrase) {
+    if profile_has_factor_metadata(&policy, UnlockFactorKindV2::Passphrase) && passphrase.is_none()
+    {
         return Ok(false);
     }
     let passphrase = passphrase_arg_or_prompt(passphrase, "Enter new sshenv profile passphrase: ")?;
