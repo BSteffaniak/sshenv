@@ -358,6 +358,8 @@ fn binary_recovery_split_validate_and_combine_roundtrip() {
         .arg(&share_a)
         .arg("--share-file")
         .arg(&share_b)
+        .arg("--metadata")
+        .arg(&metadata_path)
         .arg("--json")
         .output()
         .expect("run recovery combine");
@@ -367,6 +369,7 @@ fn binary_recovery_split_validate_and_combine_roundtrip() {
         String::from_utf8_lossy(&combine_out.stderr)
     );
     let combine_json: serde_json::Value = serde_json::from_slice(&combine_out.stdout).unwrap();
+    assert_eq!(combine_json["metadata_verified"], true);
     assert_eq!(
         combine_json["recovered_secret_hex"],
         "00112233445566778899aabbccddeeff"

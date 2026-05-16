@@ -1054,6 +1054,15 @@ pub fn recovery_combine(args: RecoveryCombineArgs) -> Result<()> {
                 .map_err(anyhow::Error::from)
         })
         .collect::<Result<Vec<_>>>()?;
+    let metadata_verified = if let Some(metadata_path) = args.metadata.as_ref() {
+        let metadata = load_recovery_share_metadata(metadata_path)?;
+        for envelope in &envelopes {
+            sshenv_vault::recovery::validate_recovery_share_envelope_metadata(&metadata, envelope)?;
+        }
+        true
+    } else {
+        false
+    };
     let recovered = zeroize::Zeroizing::new(
         sshenv_vault::recovery::combine_recovery_share_envelopes(&envelopes)?,
     );
@@ -1064,10 +1073,12 @@ pub fn recovery_combine(args: RecoveryCombineArgs) -> Result<()> {
             serde_json::json!({
                 "recovered_secret_hex": recovered_hex,
                 "share_count": envelopes.len(),
+                "metadata_verified": metadata_verified,
             })
         );
     } else {
         eprintln!("warning: recovered break-glass secret is being written to stdout as hex");
+        eprintln!("metadata verified: {}", yes_no(metadata_verified));
         println!("{recovered_hex}");
     }
     Ok(())

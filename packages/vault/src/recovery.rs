@@ -90,6 +90,14 @@ pub enum ShamirError {
     DuplicateShareIndex(u8),
     #[error("Shamir share index must be non-zero")]
     ZeroShareIndex,
+    #[error(
+        "recovery share envelopes have inconsistent set ids: expected '{expected}', got '{actual}'"
+    )]
+    InconsistentEnvelopeSetId { expected: String, actual: String },
+    #[error(
+        "recovery share envelopes have inconsistent thresholds: expected {expected}, got {actual}"
+    )]
+    InconsistentEnvelopeThreshold { expected: u8, actual: u8 },
     #[error("Shamir shares have inconsistent lengths")]
     InconsistentShareLength,
 }
@@ -251,9 +259,22 @@ pub fn combine_recovery_share_envelopes(
         });
     };
     let threshold = first.threshold;
+    for envelope in envelopes {
+        if envelope.set_id != first.set_id {
+            return Err(ShamirError::InconsistentEnvelopeSetId {
+                expected: first.set_id.clone(),
+                actual: envelope.set_id.clone(),
+            });
+        }
+        if envelope.threshold != threshold {
+            return Err(ShamirError::InconsistentEnvelopeThreshold {
+                expected: threshold,
+                actual: envelope.threshold,
+            });
+        }
+    }
     let shares = envelopes
         .iter()
-        .filter(|envelope| envelope.set_id == first.set_id && envelope.threshold == threshold)
         .map(|envelope| envelope.share.clone())
         .collect::<Vec<_>>();
     combine_shamir_shares(&shares, threshold)
@@ -596,6 +617,28 @@ mod tests {
 
         let recovered = super::combine_shamir_shares(&shares[1..4], 3).unwrap();
         assert_eq!(recovered, secret);
+    }
+
+    #[cfg(feature = "shamir-sharing")]
+    #[test]
+    fn recovery_share_envelopes_reject_mixed_sets() {
+        let shares = super::split_secret_shamir(b"secret", 2, 2).unwrap();
+        let envelopes = vec![
+            super::RecoveryShareEnvelope {
+                set_id: "team-recovery".to_string(),
+                threshold: 2,
+                share: shares[0].clone(),
+            },
+            super::RecoveryShareEnvelope {
+                set_id: "other-recovery".to_string(),
+                threshold: 2,
+                share: shares[1].clone(),
+            },
+        ];
+        assert!(matches!(
+            super::combine_recovery_share_envelopes(&envelopes),
+            Err(super::ShamirError::InconsistentEnvelopeSetId { .. })
+        ));
     }
 
     #[cfg(feature = "shamir-sharing")]

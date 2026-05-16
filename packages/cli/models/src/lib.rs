@@ -455,6 +455,9 @@ pub struct RecoveryCombineArgs {
     /// File containing one encoded recovery-share envelope. Repeat for each collected share.
     #[arg(long = "share-file", required = true)]
     pub share_files: Vec<PathBuf>,
+    /// Optional recovery metadata JSON to verify set id, threshold, and share indices.
+    #[arg(long)]
+    pub metadata: Option<PathBuf>,
     /// Print machine-readable JSON.
     #[arg(long)]
     pub json: bool,
