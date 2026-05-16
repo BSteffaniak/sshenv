@@ -202,6 +202,20 @@ fn binary_security_planning_commands_emit_json() {
             "backend",
             "RemoteCheckpoint",
         ),
+        (
+            &[
+                "security",
+                "remote",
+                "plan",
+                "--backend",
+                "cloud-kms",
+                "--command",
+                "kms-adapter",
+                "--json",
+            ],
+            "enable_command_example",
+            "kms-adapter",
+        ),
     ];
 
     for (args, key, expected) in cases {
@@ -965,6 +979,63 @@ esac
     let cloud_wrap_json: serde_json::Value =
         serde_json::from_slice(&cloud_wrap_out.stdout).unwrap();
     assert_eq!(cloud_wrap_json["wrapped_key_hex"], "deadbeef");
+
+    let oidc_metadata_path = dir.path().join("remote-command-oidc.json");
+    std::fs::write(
+        &oidc_metadata_path,
+        format!(
+            r#"{{
+  "id": "command-oidc",
+  "backend": "oidc-approval",
+  "label": "command oidc approval",
+  "params": {{ "command": "{}" }}
+}}"#,
+            command_path.display()
+        ),
+    )
+    .unwrap();
+    let oidc_request_path = dir.path().join("request-oidc.json");
+    std::fs::write(
+        &oidc_request_path,
+        r#"{
+  "factor_id": "command-oidc",
+  "context": {
+    "vault-id": "vault",
+    "request-id": "req-3",
+    "generation": "1",
+    "expires-unix": "4102444800",
+    "subject": "user@example.com",
+    "audience": "sshenv"
+  }
+}"#,
+    )
+    .unwrap();
+    let mut oidc_wrap = Command::new(&bin)
+        .args(["security", "remote", "command-wrap"])
+        .arg(&oidc_metadata_path)
+        .arg(&oidc_request_path)
+        .arg("--payload-key-hex-stdin")
+        .arg("--json")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn oidc command-wrap");
+    oidc_wrap
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(b"00112233445566778899aabbccddeeff")
+        .unwrap();
+    let oidc_wrap_out = oidc_wrap
+        .wait_with_output()
+        .expect("wait oidc command-wrap");
+    assert!(
+        oidc_wrap_out.status.success(),
+        "oidc command-wrap failed: {}",
+        String::from_utf8_lossy(&oidc_wrap_out.stderr)
+    );
+    let oidc_wrap_json: serde_json::Value = serde_json::from_slice(&oidc_wrap_out.stdout).unwrap();
+    assert_eq!(oidc_wrap_json["wrapped_key_hex"], "deadbeef");
 }
 
 #[cfg(all(feature = "remote-factor", unix))]

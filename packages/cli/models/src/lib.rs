@@ -388,6 +388,9 @@ pub struct RemotePlanArgs {
     /// Cloud KMS key id/alias/resource name.
     #[arg(long)]
     pub key: Option<String>,
+    /// Optional command-backed adapter executable to include in the metadata template.
+    #[arg(long)]
+    pub command: Option<String>,
     /// Print machine-readable JSON.
     #[arg(long)]
     pub json: bool,

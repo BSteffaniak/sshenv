@@ -1787,6 +1787,7 @@ struct RemotePlanOutput {
     kms_factor_feature_enabled: bool,
     metadata: RemoteFactorMetadataV2,
     import_example: String,
+    enable_command_example: String,
     notes: Vec<String>,
 }
 
@@ -1816,6 +1817,9 @@ pub fn remote_plan(args: RemotePlanArgs) -> Result<()> {
             );
         }
     }
+    if let Some(command) = args.command {
+        params.insert("command".to_string(), command);
+    }
     let metadata = RemoteFactorMetadataV2 {
         id: args.id,
         backend,
@@ -1827,6 +1831,8 @@ pub fn remote_plan(args: RemotePlanArgs) -> Result<()> {
         remote_factor_feature_enabled: cfg!(feature = "remote-factor"),
         kms_factor_feature_enabled: cfg!(feature = "kms-factor"),
         import_example: "sshenv security remote import <metadata.json>".to_string(),
+        enable_command_example:
+            "sshenv security remote enable-command <metadata.json> <request.json>".to_string(),
         metadata,
         notes,
     };
@@ -1847,6 +1853,10 @@ pub fn remote_plan(args: RemotePlanArgs) -> Result<()> {
         println!("metadata template:");
         println!("{}", serde_json::to_string_pretty(&output.metadata)?);
         println!("import: {}", output.import_example);
+        println!(
+            "enable command-backed factor: {}",
+            output.enable_command_example
+        );
         println!("notes:");
         for note in &output.notes {
             println!("- {note}");
@@ -1867,6 +1877,7 @@ fn remote_plan_notes(backend: RemoteBackendArg) -> Vec<String> {
     let mut notes = vec![
         "remote/KMS metadata is non-secret and does not enable unlock by itself".to_string(),
         "backend wrapping/unwrapping must provide audit logging and replay protection".to_string(),
+        "use `enable-command` with a non-secret `command` metadata param to bind the vault payload to an external adapter".to_string(),
     ];
     match backend {
         RemoteBackendArg::SelfHosted => {
