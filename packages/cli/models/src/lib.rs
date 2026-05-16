@@ -136,6 +136,9 @@ pub enum SecurityCommand {
     /// Inspect future passphrase-cache design and controls.
     #[command(subcommand)]
     PassphraseCache(PassphraseCacheCommand),
+    /// Inspect stronger rollback-protection designs.
+    #[command(subcommand)]
+    Rollback(RollbackCommand),
     /// Manage local device-seal authorization.
     #[command(subcommand)]
     Device(DeviceCommand),
@@ -168,6 +171,38 @@ pub struct PassphraseCacheStatusArgs {
     /// Print machine-readable JSON.
     #[arg(long)]
     pub json: bool,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum RollbackCommand {
+    /// Show local rollback-protection status for this build/vault.
+    Status(RollbackStatusArgs),
+    /// Print a stronger rollback-protection plan.
+    Plan(RollbackPlanArgs),
+}
+
+#[derive(Debug, clap::Args)]
+pub struct RollbackStatusArgs {
+    /// Print machine-readable JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct RollbackPlanArgs {
+    /// Stronger rollback backend family to plan for.
+    #[arg(long, value_enum)]
+    pub backend: RollbackBackendArg,
+    /// Print machine-readable JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum RollbackBackendArg {
+    TpmMonotonic,
+    RemoteCheckpoint,
+    MultiDeviceSync,
 }
 
 #[derive(Debug, Subcommand)]

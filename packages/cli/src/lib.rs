@@ -19,7 +19,8 @@ pub mod session_registry;
 use anyhow::Result;
 use sshenv_cli_models::{
     Cli, Command, DeviceCommand, HardwareCommand, PassphraseCacheCommand, ProfilePolicyCommand,
-    RecoveryCommand, RemoteCommand, SecurityCommand, SessionsCommand, ShimsCommand,
+    RecoveryCommand, RemoteCommand, RollbackCommand, SecurityCommand, SessionsCommand,
+    ShimsCommand,
 };
 
 /// Dispatch a parsed [`Cli`] to the appropriate command handler.
@@ -57,6 +58,10 @@ pub fn run(cli: Cli) -> Result<()> {
                     commands::security::passphrase_cache_plan(args)
                 }
                 PassphraseCacheCommand::Clear => commands::security::passphrase_cache_clear(),
+            },
+            SecurityCommand::Rollback(sub) => match sub {
+                RollbackCommand::Status(args) => commands::security::rollback_status(&ctx, args),
+                RollbackCommand::Plan(args) => commands::security::rollback_plan(args),
             },
             SecurityCommand::Device(sub) => match sub {
                 DeviceCommand::List => commands::security::device_list(&ctx),

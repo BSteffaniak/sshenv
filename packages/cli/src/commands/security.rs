@@ -25,8 +25,8 @@ use sshenv_cli_models::{
     ProfilePolicyStatusArgs, ProfilePolicyVerifyBackupArgs, RecoveryCombineArgs, RecoveryListArgs,
     RecoveryMetadataArgs, RecoveryPlanArgs, RecoveryRemoveArgs, RecoveryShareFileArgs,
     RecoverySplitArgs, RemoteBackendArg, RemoteListArgs, RemoteMetadataArgs, RemotePlanArgs,
-    RemoteRemoveArgs, RemoteRequestArgs, RemoteRequestTemplateArgs, SecurityPresetArg,
-    SecurityPresetArgs,
+    RemoteRemoveArgs, RemoteRequestArgs, RemoteRequestTemplateArgs, RollbackBackendArg,
+    RollbackPlanArgs, RollbackStatusArgs, SecurityPresetArg, SecurityPresetArgs,
 };
 use sshenv_vault::models::{
     ProfileFactorRequirement, ProfilePolicy, ProfilePolicyFinding, ProfilePolicyFindingCode,
@@ -174,6 +174,176 @@ fn passphrase_cache_output() -> PassphraseCacheOutput {
             "must never write plaintext passphrases to the vault or logs".to_string(),
             "OS-backed storage should require local user/session access and support expiry"
                 .to_string(),
+        ],
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct RollbackStatusOutput {
+    local_feature_enabled: bool,
+    vault_generation: Option<u64>,
+    rollback_state_path: String,
+    stronger_backends_available: bool,
+    notes: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct RollbackPlanOutput {
+    backend: String,
+    local_feature_enabled: bool,
+    required_metadata: Vec<String>,
+    write_path: Vec<String>,
+    read_path: Vec<String>,
+    failure_modes: Vec<String>,
+}
+
+pub fn rollback_status(ctx: &CmdContext, args: RollbackStatusArgs) -> Result<()> {
+    let generation = if ctx.vault_path.exists() {
+        Vault::load_ciphertext(&ctx.vault_path)
+            .ok()
+            .and_then(|vault| vault.generation())
+    } else {
+        None
+    };
+    let output = RollbackStatusOutput {
+        local_feature_enabled: cfg!(feature = "rollback-protection"),
+        vault_generation: generation,
+        rollback_state_path: std::env::var("SSHENV_ROLLBACK").unwrap_or_else(|_| {
+            "~/.sshenv/rollback.toml (or platform config dir fallback)".to_string()
+        }),
+        stronger_backends_available: false,
+        notes: vec![
+            "current rollback protection is local best-effort generation tracking".to_string(),
+            "explicit restore updates the local baseline".to_string(),
+            "TPM/remote/multi-device backends are planned but not active".to_string(),
+        ],
+    };
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        println!("rollback protection status");
+        println!("==========================");
+        println!(
+            "local feature: {}",
+            enabled_label(output.local_feature_enabled)
+        );
+        println!(
+            "vault generation: {}",
+            output
+                .vault_generation
+                .map_or_else(|| "unknown".to_string(), |value| value.to_string())
+        );
+        println!("state path: {}", output.rollback_state_path);
+        println!("stronger backends: not configured");
+    }
+    Ok(())
+}
+
+pub fn rollback_plan(args: RollbackPlanArgs) -> Result<()> {
+    let output = RollbackPlanOutput {
+        backend: format!("{:?}", args.backend),
+        local_feature_enabled: cfg!(feature = "rollback-protection"),
+        required_metadata: rollback_required_metadata(args.backend),
+        write_path: rollback_write_path(args.backend),
+        read_path: rollback_read_path(args.backend),
+        failure_modes: rollback_failure_modes(args.backend),
+    };
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        println!("stronger rollback protection plan");
+        println!("=================================");
+        println!("backend: {}", output.backend);
+        println!("required metadata:");
+        for item in &output.required_metadata {
+            println!("- {item}");
+        }
+        println!("write path:");
+        for item in &output.write_path {
+            println!("- {item}");
+        }
+        println!("read path:");
+        for item in &output.read_path {
+            println!("- {item}");
+        }
+        println!("failure modes:");
+        for item in &output.failure_modes {
+            println!("- {item}");
+        }
+    }
+    Ok(())
+}
+
+fn rollback_required_metadata(backend: RollbackBackendArg) -> Vec<String> {
+    match backend {
+        RollbackBackendArg::TpmMonotonic => vec![
+            "TPM public name / NV index identifier".to_string(),
+            "counter policy and PCR binding, if used".to_string(),
+            "last accepted vault generation".to_string(),
+        ],
+        RollbackBackendArg::RemoteCheckpoint => vec![
+            "checkpoint service URL and public verification key".to_string(),
+            "vault id and latest signed generation".to_string(),
+            "request authentication/audit policy".to_string(),
+        ],
+        RollbackBackendArg::MultiDeviceSync => vec![
+            "device id and public signing key per trusted device".to_string(),
+            "last observed generation per device".to_string(),
+            "conflict policy for offline devices".to_string(),
+        ],
+    }
+}
+
+fn rollback_write_path(backend: RollbackBackendArg) -> Vec<String> {
+    match backend {
+        RollbackBackendArg::TpmMonotonic => vec![
+            "after successful vault save, increment TPM monotonic state".to_string(),
+            "record the generation accepted by TPM state".to_string(),
+        ],
+        RollbackBackendArg::RemoteCheckpoint => vec![
+            "after successful vault save, submit signed generation checkpoint".to_string(),
+            "require service acknowledgement before reporting durable success for strict mode"
+                .to_string(),
+        ],
+        RollbackBackendArg::MultiDeviceSync => vec![
+            "sign local generation observations".to_string(),
+            "sync observations opportunistically across trusted devices".to_string(),
+        ],
+    }
+}
+
+fn rollback_read_path(backend: RollbackBackendArg) -> Vec<String> {
+    match backend {
+        RollbackBackendArg::TpmMonotonic => vec![
+            "before unlock, compare vault generation with TPM monotonic state".to_string(),
+            "refuse older generations unless explicit restore updates the baseline".to_string(),
+        ],
+        RollbackBackendArg::RemoteCheckpoint => vec![
+            "before unlock, fetch latest signed checkpoint".to_string(),
+            "refuse vaults older than the service checkpoint unless explicitly restored"
+                .to_string(),
+        ],
+        RollbackBackendArg::MultiDeviceSync => vec![
+            "before unlock, compare with locally cached signed observations".to_string(),
+            "surface conflicts when another device has observed a newer generation".to_string(),
+        ],
+    }
+}
+
+fn rollback_failure_modes(backend: RollbackBackendArg) -> Vec<String> {
+    match backend {
+        RollbackBackendArg::TpmMonotonic => vec![
+            "TPM clear or motherboard replacement requires recovery flow".to_string(),
+            "PCR-bound policies can break after OS updates".to_string(),
+        ],
+        RollbackBackendArg::RemoteCheckpoint => vec![
+            "network/service outage must choose fail-open vs fail-closed policy".to_string(),
+            "service compromise can deny unlock or publish stale checkpoints without signatures"
+                .to_string(),
+        ],
+        RollbackBackendArg::MultiDeviceSync => vec![
+            "offline devices can have stale views".to_string(),
+            "device compromise requires key revocation and checkpoint reset".to_string(),
         ],
     }
 }

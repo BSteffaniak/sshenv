@@ -2121,6 +2121,11 @@ fn binary_ssh_hardening_config_denies_unencrypted_authorized_key() {
         "show with allow config failed: {}",
         String::from_utf8_lossy(&allowed_out.stderr)
     );
+    let allowed_stderr = String::from_utf8_lossy(&allowed_out.stderr);
+    assert!(
+        !allowed_stderr.contains("authorized SSH private key is unencrypted"),
+        "{allowed_stderr}"
+    );
 }
 
 #[test]
