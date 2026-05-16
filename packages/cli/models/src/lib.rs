@@ -159,6 +159,12 @@ pub enum DeviceCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum RecoveryCommand {
+    /// List recovery-share metadata stored in the current v2 vault.
+    List(RecoveryListArgs),
+    /// Import non-secret recovery-share metadata into the current v2 vault.
+    Import(RecoveryMetadataArgs),
+    /// Remove a recovery-share metadata set from the current v2 vault.
+    Remove(RecoveryRemoveArgs),
     /// Validate a recovery-share metadata JSON file.
     Validate(RecoveryMetadataArgs),
     /// Plan an M-of-N or break-glass recovery flow from metadata and provided share ids.
@@ -167,6 +173,12 @@ pub enum RecoveryCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum RemoteCommand {
+    /// List remote/KMS factor metadata stored in the current v2 vault.
+    List(RemoteListArgs),
+    /// Import non-secret remote/KMS factor metadata into the current v2 vault.
+    Import(RemoteMetadataArgs),
+    /// Remove remote/KMS factor metadata from the current v2 vault.
+    Remove(RemoteRemoveArgs),
     /// Validate a remote/KMS factor metadata JSON file.
     Validate(RemoteMetadataArgs),
 }
@@ -181,12 +193,38 @@ pub struct RemoteMetadataArgs {
 }
 
 #[derive(Debug, clap::Args)]
+pub struct RemoteListArgs {
+    /// Print machine-readable JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct RemoteRemoveArgs {
+    /// Remote/KMS factor id to remove.
+    pub id: String,
+}
+
+#[derive(Debug, clap::Args)]
 pub struct RecoveryMetadataArgs {
     /// Path to a JSON RecoveryShareSetMetadataV2 document.
     pub metadata_path: PathBuf,
     /// Print machine-readable JSON.
     #[arg(long)]
     pub json: bool,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct RecoveryListArgs {
+    /// Print machine-readable JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct RecoveryRemoveArgs {
+    /// Recovery-share set id to remove.
+    pub set_id: String,
 }
 
 #[derive(Debug, clap::Args)]

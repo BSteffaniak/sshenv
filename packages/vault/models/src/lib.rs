@@ -344,6 +344,7 @@ pub enum ProfilePolicyFindingCode {
     UnsatisfiedRequirement,
     MissingPresetBinding,
     UnsupportedFactorMetadata,
+    TeamRequiresRecoveryMetadata,
 }
 
 /// One structured profile policy validation finding.

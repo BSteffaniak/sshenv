@@ -55,10 +55,16 @@ pub fn run(cli: Cli) -> Result<()> {
                 DeviceCommand::Remove => commands::security::device_remove(&ctx),
             },
             SecurityCommand::Recovery(sub) => match sub {
+                RecoveryCommand::List(args) => commands::security::recovery_list(&ctx, args),
+                RecoveryCommand::Import(args) => commands::security::recovery_import(&ctx, args),
+                RecoveryCommand::Remove(args) => commands::security::recovery_remove(&ctx, args),
                 RecoveryCommand::Validate(args) => commands::security::recovery_validate(args),
                 RecoveryCommand::Plan(args) => commands::security::recovery_plan(args),
             },
             SecurityCommand::Remote(sub) => match sub {
+                RemoteCommand::List(args) => commands::security::remote_list(&ctx, args),
+                RemoteCommand::Import(args) => commands::security::remote_import(&ctx, args),
+                RemoteCommand::Remove(args) => commands::security::remote_remove(&ctx, args),
                 RemoteCommand::Validate(args) => commands::security::remote_validate(args),
             },
             SecurityCommand::ProfilePolicy(sub) => match sub {

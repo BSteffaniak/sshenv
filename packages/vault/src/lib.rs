@@ -994,6 +994,19 @@ impl Vault {
                 ));
             }
         }
+        if policy.preset == ProfilePolicyPreset::Team
+            && self
+                .policy_metadata
+                .as_ref()
+                .is_none_or(|metadata| metadata.recovery_share_sets.is_empty())
+        {
+            validation.findings.push(ProfilePolicyFinding::warning(
+                ProfilePolicyFindingCode::TeamRequiresRecoveryMetadata,
+                "team preset expects at least one recovery-share metadata set",
+                Some(UnlockFactorKindV2::RecoveryShare),
+                None,
+            ));
+        }
         for requirement in profile_preset_expected_requirements(policy.preset) {
             let kind = unlock_factor_kind_for_profile_requirement(requirement);
             if !profile_has_factor_metadata(policy, kind) {
@@ -1090,7 +1103,8 @@ impl Vault {
                         finding,
                     );
                 }
-                ProfilePolicyFindingCode::UnsupportedFactorMetadata => {
+                ProfilePolicyFindingCode::UnsupportedFactorMetadata
+                | ProfilePolicyFindingCode::TeamRequiresRecoveryMetadata => {
                     unrepairable.push(finding.message.clone());
                 }
             }
@@ -2037,6 +2051,70 @@ mod tests {
         assert!(validation.findings.iter().any(|finding| {
             finding.code == ProfilePolicyFindingCode::MissingPresetBinding
                 && finding.requirement == Some(ProfileFactorRequirement::Passphrase)
+        }));
+    }
+
+    #[test]
+    fn profile_policy_validator_warns_when_team_preset_lacks_recovery_metadata() {
+        let mut vault = test_vault_with_profile_key_mode();
+        vault
+            .profiles
+            .set_profile_policy(
+                "p",
+                ProfilePolicy {
+                    preset: ProfilePolicyPreset::Team,
+                    required_factors: Vec::new(),
+                    factor_metadata: Vec::new(),
+                },
+            )
+            .expect("set policy");
+
+        let validation = vault.validate_profile_policy("p");
+
+        assert_eq!(validation.error_count(), 0);
+        assert!(validation.findings.iter().any(|finding| {
+            finding.code == ProfilePolicyFindingCode::TeamRequiresRecoveryMetadata
+                && finding.factor == Some(UnlockFactorKindV2::RecoveryShare)
+        }));
+    }
+
+    #[test]
+    fn profile_policy_validator_accepts_team_preset_with_recovery_metadata() {
+        let mut vault = test_vault_with_profile_key_mode();
+        vault
+            .policy_metadata
+            .as_mut()
+            .expect("metadata")
+            .recovery_share_sets
+            .push(sshenv_vault_models::RecoveryShareSetMetadataV2 {
+                id: "team".to_string(),
+                label: None,
+                threshold: 1,
+                shares: vec![sshenv_vault_models::RecoveryShareMetadataV2 {
+                    id: "alice".to_string(),
+                    label: None,
+                    holder: Some("Alice".to_string()),
+                    public_identifier: None,
+                }],
+                shamir: None,
+            });
+        vault
+            .profiles
+            .set_profile_policy(
+                "p",
+                ProfilePolicy {
+                    preset: ProfilePolicyPreset::Team,
+                    required_factors: Vec::new(),
+                    factor_metadata: Vec::new(),
+                },
+            )
+            .expect("set policy");
+
+        let validation = vault.validate_profile_policy("p");
+
+        assert_eq!(validation.error_count(), 0, "{:?}", validation.findings);
+        assert!(!validation.findings.iter().any(|finding| {
+            finding.code == ProfilePolicyFindingCode::TeamRequiresRecoveryMetadata
         }));
     }
 

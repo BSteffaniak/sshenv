@@ -19,8 +19,9 @@ use sshenv_cli_models::{
     ProfilePolicyPruneBackupsArgs, ProfilePolicyRepairAllArgs, ProfilePolicyRepairArgs,
     ProfilePolicyRequirePassphraseArgs, ProfilePolicyRequirementArgs,
     ProfilePolicyRestoreBackupArgs, ProfilePolicyRotateKeyArgs, ProfilePolicySetArgs,
-    ProfilePolicyStatusArgs, ProfilePolicyVerifyBackupArgs, RecoveryMetadataArgs, RecoveryPlanArgs,
-    RemoteMetadataArgs, SecurityPresetArg, SecurityPresetArgs,
+    ProfilePolicyStatusArgs, ProfilePolicyVerifyBackupArgs, RecoveryListArgs, RecoveryMetadataArgs,
+    RecoveryPlanArgs, RecoveryRemoveArgs, RemoteListArgs, RemoteMetadataArgs, RemoteRemoveArgs,
+    SecurityPresetArg, SecurityPresetArgs,
 };
 use sshenv_vault::models::{
     ProfileFactorRequirement, ProfilePolicy, ProfilePolicyFinding, ProfilePolicyFindingCode,
@@ -178,6 +179,106 @@ pub fn device_remove(_ctx: &CmdContext) -> Result<()> {
 }
 
 #[cfg(feature = "recovery-shares")]
+pub fn recovery_list(ctx: &CmdContext, args: RecoveryListArgs) -> Result<()> {
+    let (ciphertext, _fps) = load_ciphertext_and_fps(&ctx.vault_path)?;
+    let sets = ciphertext
+        .policy_metadata
+        .as_ref()
+        .map_or(&[][..], |metadata| metadata.recovery_share_sets.as_slice());
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(sets)?);
+    } else if sets.is_empty() {
+        println!("(no recovery-share metadata)");
+    } else {
+        for set in sets {
+            println!(
+                "{} threshold {}/{}{}",
+                set.id,
+                set.threshold,
+                set.shares.len(),
+                set.label
+                    .as_ref()
+                    .map_or_else(String::new, |label| format!(" ({label})"))
+            );
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "recovery-shares"))]
+pub fn recovery_list(_ctx: &CmdContext, _args: RecoveryListArgs) -> Result<()> {
+    anyhow::bail!("this sshenv build was compiled without recovery-shares support")
+}
+
+#[cfg(feature = "recovery-shares")]
+pub fn recovery_import(ctx: &CmdContext, args: RecoveryMetadataArgs) -> Result<()> {
+    let imported = load_recovery_share_metadata(&args.metadata_path)?;
+    sshenv_vault::recovery::validate_recovery_share_set_metadata(&imported)?;
+    let (mut vault, data_key) = load_and_unlock_metadata(&ctx.vault_path)?;
+    ensure_policy_metadata_v2(&vault)?;
+    let metadata = vault.policy_metadata.get_or_insert_with(Default::default);
+    let replaced = metadata
+        .recovery_share_sets
+        .iter()
+        .any(|set| set.id == imported.id);
+    metadata
+        .recovery_share_sets
+        .retain(|set| set.id != imported.id);
+    let set_id = imported.id.clone();
+    metadata.recovery_share_sets.push(imported);
+    metadata
+        .recovery_share_sets
+        .sort_by(|left, right| left.id.cmp(&right.id));
+    save_vault(ctx, &mut vault, &data_key)?;
+    if args.json {
+        println!(
+            "{}",
+            serde_json::json!({ "imported": set_id, "replaced": replaced })
+        );
+    } else if replaced {
+        eprintln!("Replaced recovery-share metadata set {set_id}.");
+    } else {
+        eprintln!("Imported recovery-share metadata set {set_id}.");
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "recovery-shares"))]
+pub fn recovery_import(_ctx: &CmdContext, _args: RecoveryMetadataArgs) -> Result<()> {
+    anyhow::bail!("this sshenv build was compiled without recovery-shares support")
+}
+
+#[cfg(feature = "recovery-shares")]
+pub fn recovery_remove(ctx: &CmdContext, args: RecoveryRemoveArgs) -> Result<()> {
+    let (mut vault, data_key) = load_and_unlock_metadata(&ctx.vault_path)?;
+    ensure_policy_metadata_v2(&vault)?;
+    let Some(metadata) = vault.policy_metadata.as_mut() else {
+        anyhow::bail!(
+            "recovery-share metadata set '{}' is not configured",
+            args.set_id
+        );
+    };
+    let before = metadata.recovery_share_sets.len();
+    metadata
+        .recovery_share_sets
+        .retain(|set| set.id != args.set_id);
+    if metadata.recovery_share_sets.len() == before {
+        anyhow::bail!(
+            "recovery-share metadata set '{}' is not configured",
+            args.set_id
+        );
+    }
+    save_vault(ctx, &mut vault, &data_key)?;
+    eprintln!("Removed recovery-share metadata set {}.", args.set_id);
+    Ok(())
+}
+
+#[cfg(not(feature = "recovery-shares"))]
+pub fn recovery_remove(_ctx: &CmdContext, _args: RecoveryRemoveArgs) -> Result<()> {
+    anyhow::bail!("this sshenv build was compiled without recovery-shares support")
+}
+
+#[cfg(feature = "recovery-shares")]
 pub fn recovery_validate(args: RecoveryMetadataArgs) -> Result<()> {
     let metadata = load_recovery_share_metadata(&args.metadata_path)?;
     sshenv_vault::recovery::validate_recovery_share_set_metadata(&metadata)?;
@@ -268,6 +369,100 @@ fn load_recovery_share_metadata(
 }
 
 #[cfg(feature = "remote-factor")]
+pub fn remote_list(ctx: &CmdContext, args: RemoteListArgs) -> Result<()> {
+    let (ciphertext, _fps) = load_ciphertext_and_fps(&ctx.vault_path)?;
+    let factors = ciphertext
+        .policy_metadata
+        .as_ref()
+        .map_or(&[][..], |metadata| metadata.remote_factors.as_slice());
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(factors)?);
+    } else if factors.is_empty() {
+        println!("(no remote/KMS factor metadata)");
+    } else {
+        for factor in factors {
+            println!(
+                "{} {:?}{}",
+                factor.id,
+                factor.backend,
+                factor
+                    .label
+                    .as_ref()
+                    .map_or_else(String::new, |label| format!(" ({label})"))
+            );
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "remote-factor"))]
+pub fn remote_list(_ctx: &CmdContext, _args: RemoteListArgs) -> Result<()> {
+    anyhow::bail!("this sshenv build was compiled without remote-factor support")
+}
+
+#[cfg(feature = "remote-factor")]
+pub fn remote_import(ctx: &CmdContext, args: RemoteMetadataArgs) -> Result<()> {
+    let imported = load_remote_factor_metadata(&args.metadata_path)?;
+    sshenv_vault::remote::validate_remote_factor_metadata(&imported).map_err(anyhow::Error::msg)?;
+    let (mut vault, data_key) = load_and_unlock_metadata(&ctx.vault_path)?;
+    ensure_policy_metadata_v2(&vault)?;
+    let metadata = vault.policy_metadata.get_or_insert_with(Default::default);
+    let replaced = metadata
+        .remote_factors
+        .iter()
+        .any(|factor| factor.id == imported.id);
+    metadata
+        .remote_factors
+        .retain(|factor| factor.id != imported.id);
+    let factor_id = imported.id.clone();
+    metadata.remote_factors.push(imported);
+    metadata
+        .remote_factors
+        .sort_by(|left, right| left.id.cmp(&right.id));
+    save_vault(ctx, &mut vault, &data_key)?;
+    if args.json {
+        println!(
+            "{}",
+            serde_json::json!({ "imported": factor_id, "replaced": replaced })
+        );
+    } else if replaced {
+        eprintln!("Replaced remote/KMS factor metadata {factor_id}.");
+    } else {
+        eprintln!("Imported remote/KMS factor metadata {factor_id}.");
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "remote-factor"))]
+pub fn remote_import(_ctx: &CmdContext, _args: RemoteMetadataArgs) -> Result<()> {
+    anyhow::bail!("this sshenv build was compiled without remote-factor support")
+}
+
+#[cfg(feature = "remote-factor")]
+pub fn remote_remove(ctx: &CmdContext, args: RemoteRemoveArgs) -> Result<()> {
+    let (mut vault, data_key) = load_and_unlock_metadata(&ctx.vault_path)?;
+    ensure_policy_metadata_v2(&vault)?;
+    let Some(metadata) = vault.policy_metadata.as_mut() else {
+        anyhow::bail!("remote/KMS factor metadata '{}' is not configured", args.id);
+    };
+    let before = metadata.remote_factors.len();
+    metadata
+        .remote_factors
+        .retain(|factor| factor.id != args.id);
+    if metadata.remote_factors.len() == before {
+        anyhow::bail!("remote/KMS factor metadata '{}' is not configured", args.id);
+    }
+    save_vault(ctx, &mut vault, &data_key)?;
+    eprintln!("Removed remote/KMS factor metadata {}.", args.id);
+    Ok(())
+}
+
+#[cfg(not(feature = "remote-factor"))]
+pub fn remote_remove(_ctx: &CmdContext, _args: RemoteRemoveArgs) -> Result<()> {
+    anyhow::bail!("this sshenv build was compiled without remote-factor support")
+}
+
+#[cfg(feature = "remote-factor")]
 pub fn remote_validate(args: RemoteMetadataArgs) -> Result<()> {
     let metadata = load_remote_factor_metadata(&args.metadata_path)?;
     sshenv_vault::remote::validate_remote_factor_metadata(&metadata).map_err(anyhow::Error::msg)?;
@@ -304,6 +499,16 @@ fn load_remote_factor_metadata(
         .with_context(|| format!("failed to read remote factor metadata {}", path.display()))?;
     serde_json::from_str(&content)
         .with_context(|| format!("failed to parse remote factor metadata {}", path.display()))
+}
+
+#[cfg(any(feature = "recovery-shares", feature = "remote-factor"))]
+fn ensure_policy_metadata_v2(vault: &Vault) -> Result<()> {
+    if vault.header.version != VERSION_V2 {
+        anyhow::bail!(
+            "advanced policy metadata requires v2; run `sshenv migrate-vault --to v2` first"
+        );
+    }
+    Ok(())
 }
 
 pub fn profile_policy_backups(ctx: &CmdContext, args: ProfilePolicyBackupsArgs) -> Result<()> {
@@ -1663,8 +1868,18 @@ fn profile_policy_findings(vault: &Vault, preset: ProfilePolicyPreset) -> Vec<St
     match preset {
         ProfilePolicyPreset::Standard => {}
         ProfilePolicyPreset::Team => {
+            if !has_v2 {
+                findings.push("vault is not v2".to_string());
+            }
+            if vault
+                .policy_metadata
+                .as_ref()
+                .is_none_or(|metadata| metadata.recovery_share_sets.is_empty())
+            {
+                findings.push("no recovery-share metadata configured".to_string());
+            }
             findings.push(
-                "team preset is advisory until threshold/recovery-share support is implemented"
+                "team preset remains advisory until recovery-share unlock is implemented"
                     .to_string(),
             );
         }
