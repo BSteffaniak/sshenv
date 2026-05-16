@@ -1819,6 +1819,44 @@ fn binary_security_preset_recommended_migrates_to_v2() {
 }
 
 #[test]
+fn binary_profile_policy_apply_all_no_backup_suppresses_default_backup() {
+    let bin = cargo_bin();
+    if !bin.exists() {
+        eprintln!("skipping: {} does not exist", bin.display());
+        return;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let vault_path = dir.path().join("vault");
+    init_vault_with_profile(&bin, &home, &vault_path, "myprofile");
+
+    let apply_all_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("security")
+        .arg("profile-policy")
+        .arg("apply-all")
+        .arg("--preset")
+        .arg("standard")
+        .arg("--recipient-key")
+        .arg(home.join(".ssh").join("id_ed25519.pub"))
+        .arg("--no-backup")
+        .env("HOME", &home)
+        .env_remove("SSHENV_PROFILE_PASSPHRASE")
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run profile-policy apply-all --no-backup");
+    assert!(
+        apply_all_out.status.success(),
+        "profile-policy apply-all --no-backup failed: {}",
+        String::from_utf8_lossy(&apply_all_out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&apply_all_out.stderr);
+    assert!(!stderr.contains("Backup written to "), "{stderr}");
+}
+
+#[test]
 fn binary_profile_policy_repair_all_enforces_advisory_portable() {
     let bin = cargo_bin();
     if !bin.exists() {
@@ -1932,7 +1970,6 @@ fn binary_profile_policy_repair_all_enforces_advisory_portable() {
         .arg("repair-all")
         .arg("--passphrase")
         .arg("bulk-passphrase")
-        .arg("--backup")
         .env("HOME", &home)
         .env_remove("SSHENV_PROFILE_PASSPHRASE")
         .env_remove("SSHENV_VAULT")

@@ -1323,7 +1323,10 @@ pub fn profile_policy_apply_all(ctx: &CmdContext, args: ProfilePolicyApplyAllArg
     }
     ensure_profile_policy_apply_all_inputs_available(&output, &args)?;
     let bulk_passphrase = bulk_apply_all_passphrase(&output, args.passphrase)?;
-    create_bulk_profile_policy_backup_if_requested(ctx, args.backup)?;
+    create_bulk_profile_policy_backup_if_requested(
+        ctx,
+        bulk_backup_enabled(args.backup, args.no_backup),
+    )?;
     let mut changed = false;
     let mut applied = Vec::new();
 
@@ -1401,7 +1404,10 @@ pub fn profile_policy_repair_all(ctx: &CmdContext, args: ProfilePolicyRepairAllA
     }
     ensure_profile_policy_repair_all_inputs_available(&output, &args)?;
     let bulk_passphrase = bulk_repair_all_passphrase(&output, args.passphrase)?;
-    create_bulk_profile_policy_backup_if_requested(ctx, args.backup)?;
+    create_bulk_profile_policy_backup_if_requested(
+        ctx,
+        bulk_backup_enabled(args.backup, args.no_backup),
+    )?;
     let mut changed = false;
     let mut applied = Vec::new();
 
@@ -1519,6 +1525,10 @@ pub fn profile_policy_repair(ctx: &CmdContext, args: ProfilePolicyRepairArgs) ->
         );
     }
     Ok(())
+}
+
+const fn bulk_backup_enabled(_backup: bool, no_backup: bool) -> bool {
+    !no_backup
 }
 
 fn create_bulk_profile_policy_backup_if_requested(

@@ -254,9 +254,12 @@ pub struct ProfilePolicyApplyAllArgs {
     /// New profile passphrase for presets that require one. If omitted, read from a hidden prompt.
     #[arg(long)]
     pub passphrase: Option<String>,
-    /// Copy the current vault to a timestamped backup before mutating all profiles.
-    #[arg(long)]
+    /// Deprecated: bulk profile-policy mutations create backups by default.
+    #[arg(long, hide = true, conflicts_with = "no_backup")]
     pub backup: bool,
+    /// Do not create a timestamped backup before mutating all profiles.
+    #[arg(long)]
+    pub no_backup: bool,
     /// Show the bulk apply plan without changing the vault.
     #[arg(long)]
     pub dry_run: bool,
@@ -288,9 +291,12 @@ pub struct ProfilePolicyRepairAllArgs {
     /// If omitted and needed, read from a hidden prompt.
     #[arg(long)]
     pub passphrase: Option<String>,
-    /// Copy the current vault to a timestamped backup before mutating all profiles.
-    #[arg(long)]
+    /// Deprecated: bulk profile-policy mutations create backups by default.
+    #[arg(long, hide = true, conflicts_with = "no_backup")]
     pub backup: bool,
+    /// Do not create a timestamped backup before mutating all profiles.
+    #[arg(long)]
+    pub no_backup: bool,
     /// Show the bulk repair plan without changing the vault.
     #[arg(long)]
     pub dry_run: bool,
