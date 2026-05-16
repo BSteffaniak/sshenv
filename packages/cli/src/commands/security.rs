@@ -9,7 +9,7 @@ use serde::Serialize;
 use sshenv_cli_models::{
     ChangePassphraseArgs, DisablePassphraseArgs, EnablePassphraseArgs, ProfilePolicyApplyAllArgs,
     ProfilePolicyApplyArgs, ProfilePolicyChangePassphraseArgs, ProfilePolicyCheckArgs,
-    ProfilePolicyDisablePassphraseArgs, ProfilePolicyRepairArgs,
+    ProfilePolicyDisablePassphraseArgs, ProfilePolicyRepairAllArgs, ProfilePolicyRepairArgs,
     ProfilePolicyRequirePassphraseArgs, ProfilePolicyRequirementArgs, ProfilePolicyRotateKeyArgs,
     ProfilePolicySetArgs, ProfilePolicyStatusArgs, SecurityPresetArg, SecurityPresetArgs,
 };
@@ -268,6 +268,17 @@ struct ProfilePolicyApplyAllPlanOutput {
     requires_device_seal_count: usize,
     requires_recipient_key_count: usize,
     profiles: Vec<ProfilePolicyApplyPlanOutput>,
+}
+
+#[derive(Debug, Serialize)]
+struct ProfilePolicyRepairAllPlanOutput {
+    profiles_total: usize,
+    repairable_count: usize,
+    unrepairable_count: usize,
+    requires_passphrase_count: usize,
+    requires_device_seal_count: usize,
+    requires_recipient_key_count: usize,
+    profiles: Vec<ProfilePolicyRepairPlan>,
 }
 
 #[derive(Debug, Serialize)]
@@ -624,6 +635,28 @@ fn print_profile_policy_apply_all_plan(output: &ProfilePolicyApplyAllPlanOutput)
     }
 }
 
+fn print_profile_policy_repair_all_plan(output: &ProfilePolicyRepairAllPlanOutput) {
+    println!("profile policy repair-all plan");
+    println!("==============================");
+    println!("profiles total: {}", output.profiles_total);
+    println!("repairable: {}", output.repairable_count);
+    println!("unrepairable: {}", output.unrepairable_count);
+    println!("requires passphrase: {}", output.requires_passphrase_count);
+    println!(
+        "requires device seal: {}",
+        output.requires_device_seal_count
+    );
+    println!(
+        "requires recipient key: {}",
+        output.requires_recipient_key_count
+    );
+    for profile in &output.profiles {
+        println!();
+        println!("profile: {}", profile.profile);
+        print_profile_policy_plan_details(profile);
+    }
+}
+
 fn print_profile_policy_apply_plan(output: &ProfilePolicyApplyPlanOutput) {
     println!("profile policy apply plan");
     println!("=========================");
@@ -720,6 +753,52 @@ fn build_profile_policy_apply_all_plan(
         requires_recipient_key_count,
         profiles,
     })
+}
+
+fn build_profile_policy_repair_all_plan(vault: &Vault) -> ProfilePolicyRepairAllPlanOutput {
+    let profiles = profile_policy_metadata_names(vault)
+        .into_iter()
+        .map(|profile| vault.plan_profile_policy_repair(&profile, None))
+        .collect::<Vec<_>>();
+
+    let repairable_count = profiles.iter().filter(|profile| profile.repairable).count();
+    let unrepairable_count = profiles
+        .iter()
+        .filter(|profile| !profile.unrepairable.is_empty())
+        .count();
+    let requires_passphrase_count = profiles
+        .iter()
+        .filter(|profile| profile.requires_passphrase)
+        .count();
+    let requires_device_seal_count = profiles
+        .iter()
+        .filter(|profile| profile.requires_device_seal)
+        .count();
+    let requires_recipient_key_count = profiles
+        .iter()
+        .filter(|profile| profile.requires_recipient_key)
+        .count();
+
+    ProfilePolicyRepairAllPlanOutput {
+        profiles_total: profiles.len(),
+        repairable_count,
+        unrepairable_count,
+        requires_passphrase_count,
+        requires_device_seal_count,
+        requires_recipient_key_count,
+        profiles,
+    }
+}
+
+fn profile_policy_metadata_names(vault: &Vault) -> Vec<String> {
+    let mut profiles = vault
+        .profiles
+        .profile_policies
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+    profiles.sort();
+    profiles
 }
 
 fn profile_policy_names(vault: &Vault) -> Vec<String> {
@@ -1290,6 +1369,67 @@ pub fn profile_policy_apply_all(ctx: &CmdContext, args: ProfilePolicyApplyAllArg
     Ok(())
 }
 
+pub fn profile_policy_repair_all(ctx: &CmdContext, args: ProfilePolicyRepairAllArgs) -> Result<()> {
+    if args.dry_run || args.json {
+        let (vault, _key) = load_and_unlock_metadata(&ctx.vault_path)?;
+        let output = build_profile_policy_repair_all_plan(&vault);
+        if args.json {
+            println!("{}", serde_json::to_string_pretty(&output)?);
+        } else {
+            print_profile_policy_repair_all_plan(&output);
+        }
+        if output.unrepairable_count > 0 {
+            anyhow::bail!(
+                "profile policy repair-all plan has {} unrepairable profile(s)",
+                output.unrepairable_count
+            );
+        }
+        return Ok(());
+    }
+
+    let (mut vault, data_key) = crate::commands::load_and_unlock(&ctx.vault_path)?;
+    let output = build_profile_policy_repair_all_plan(&vault);
+    if output.unrepairable_count > 0 {
+        anyhow::bail!(
+            "profile policy repair-all plan has {} unrepairable profile(s)",
+            output.unrepairable_count
+        );
+    }
+    ensure_profile_policy_repair_all_inputs_available(&output, &args)?;
+    let bulk_passphrase = bulk_repair_all_passphrase(&output, args.passphrase)?;
+    let mut changed = false;
+    let mut applied = Vec::new();
+
+    for plan in output.profiles {
+        let profile = plan.profile.clone();
+        let (profile_changed, actions) = apply_profile_policy_plan_actions(
+            &mut vault,
+            &profile,
+            &args.recipient_keys,
+            bulk_passphrase.clone(),
+            &plan,
+        )?;
+        changed |= profile_changed;
+        applied.push((profile, actions));
+    }
+
+    if changed {
+        save_all_profile_policy_vaults(ctx, &mut vault, &data_key)?;
+    }
+    eprintln!("Repaired profile policies for all profiles.");
+    for (profile, actions) in applied {
+        eprintln!("{profile}:");
+        if actions.is_empty() {
+            eprintln!("- already consistent");
+        } else {
+            for action in actions {
+                eprintln!("- {action}");
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn profile_policy_repair(ctx: &CmdContext, args: ProfilePolicyRepairArgs) -> Result<()> {
     let (mut vault, data_key) = load_and_unlock_profile(&ctx.vault_path, &args.profile)?;
     let initial_validation = vault.validate_profile_policy(&args.profile);
@@ -1340,6 +1480,51 @@ pub fn profile_policy_repair(ctx: &CmdContext, args: ProfilePolicyRepairArgs) ->
         );
     }
     Ok(())
+}
+
+fn ensure_profile_policy_repair_all_inputs_available(
+    output: &ProfilePolicyRepairAllPlanOutput,
+    args: &ProfilePolicyRepairAllArgs,
+) -> Result<()> {
+    if output.requires_passphrase_count > 0
+        && args.passphrase.is_none()
+        && !std::io::stdin().is_terminal()
+    {
+        anyhow::bail!(
+            "profile policy repair-all requires --passphrase <value> in non-interactive mode"
+        );
+    }
+    if output.requires_recipient_key_count > 0 && args.recipient_keys.is_empty() {
+        if args.strict_inputs {
+            anyhow::bail!(
+                "profile policy repair-all requires --recipient-key <path-or-public-key-line> in strict-inputs mode"
+            );
+        }
+        eprintln!(
+            "note: profile policy repair-all may need --recipient-key <path-or-public-key-line> to migrate this v1 vault"
+        );
+    }
+    Ok(())
+}
+
+fn bulk_repair_all_passphrase(
+    output: &ProfilePolicyRepairAllPlanOutput,
+    passphrase: Option<String>,
+) -> Result<Option<String>> {
+    if output.requires_passphrase_count == 0 && passphrase.is_none() {
+        return Ok(None);
+    }
+    #[cfg(feature = "passphrase-factor")]
+    {
+        let passphrase =
+            passphrase_arg_or_prompt(passphrase, "Enter new sshenv profile passphrase: ")?;
+        Ok(Some(passphrase.to_string()))
+    }
+    #[cfg(not(feature = "passphrase-factor"))]
+    {
+        let _ = passphrase;
+        anyhow::bail!("this sshenv build was compiled without passphrase-factor support")
+    }
 }
 
 fn ensure_profile_policy_apply_all_preset_supported(preset: ProfilePolicyPreset) -> Result<()> {

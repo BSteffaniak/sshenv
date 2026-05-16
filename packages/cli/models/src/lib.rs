@@ -151,6 +151,8 @@ pub enum ProfilePolicyCommand {
     ApplyAll(ProfilePolicyApplyAllArgs),
     /// Repair/reconcile a profile's policy metadata with concrete enforcement.
     Repair(ProfilePolicyRepairArgs),
+    /// Repair/reconcile all existing profile policy metadata.
+    RepairAll(ProfilePolicyRepairAllArgs),
     /// Set advisory policy metadata for a profile.
     Set(ProfilePolicySetArgs),
 }
@@ -250,6 +252,27 @@ pub struct ProfilePolicyApplyAllArgs {
     #[arg(long)]
     pub dry_run: bool,
     /// Print the bulk apply plan as machine-readable JSON.
+    #[arg(long)]
+    pub json: bool,
+    /// Fail before mutation when planned repair needs recipient-key input.
+    #[arg(long)]
+    pub strict_inputs: bool,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct ProfilePolicyRepairAllArgs {
+    /// Public key for a current recipient when v1-to-v2 migration cannot discover it.
+    /// Repeat as needed.
+    #[arg(long = "recipient-key", value_name = "PATH_OR_LINE")]
+    pub recipient_keys: Vec<String>,
+    /// New profile passphrase when repair needs to create passphrase bindings.
+    /// If omitted and needed, read from a hidden prompt.
+    #[arg(long)]
+    pub passphrase: Option<String>,
+    /// Show the bulk repair plan without changing the vault.
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Print the bulk repair plan as machine-readable JSON.
     #[arg(long)]
     pub json: bool,
     /// Fail before mutation when planned repair needs recipient-key input.

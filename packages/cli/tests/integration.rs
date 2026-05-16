@@ -1819,6 +1819,162 @@ fn binary_security_preset_recommended_migrates_to_v2() {
 }
 
 #[test]
+fn binary_profile_policy_repair_all_enforces_advisory_portable() {
+    let bin = cargo_bin();
+    if !bin.exists() {
+        eprintln!("skipping: {} does not exist", bin.display());
+        return;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let vault_path = dir.path().join("vault");
+    init_vault_with_profile(&bin, &home, &vault_path, "myprofile");
+
+    let set_other_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("set")
+        .arg("otherprofile")
+        .arg("DUMMY")
+        .arg("--value")
+        .arg("other")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run set other profile");
+    assert!(set_other_out.status.success());
+
+    let migrate_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("migrate-vault")
+        .arg("--to")
+        .arg("v2")
+        .arg("--recipient-key")
+        .arg(home.join(".ssh").join("id_ed25519.pub"))
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run migrate-vault");
+    assert!(migrate_out.status.success());
+
+    for profile in ["myprofile", "otherprofile"] {
+        let set_policy_out = Command::new(&bin)
+            .arg("--vault")
+            .arg(&vault_path)
+            .arg("security")
+            .arg("profile-policy")
+            .arg("set")
+            .arg(profile)
+            .arg("--preset")
+            .arg("portable")
+            .env("HOME", &home)
+            .env_remove("SSHENV_VAULT")
+            .output()
+            .expect("run profile-policy set portable");
+        assert!(
+            set_policy_out.status.success(),
+            "profile-policy set {profile} failed: {}",
+            String::from_utf8_lossy(&set_policy_out.stderr)
+        );
+    }
+
+    let dry_run_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("security")
+        .arg("profile-policy")
+        .arg("repair-all")
+        .arg("--dry-run")
+        .arg("--json")
+        .env("HOME", &home)
+        .env_remove("SSHENV_PROFILE_PASSPHRASE")
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run profile-policy repair-all dry-run json");
+    assert!(dry_run_out.status.success());
+    let dry_run_json = String::from_utf8_lossy(&dry_run_out.stdout);
+    assert!(
+        dry_run_json.contains("\"profiles_total\": 2"),
+        "{dry_run_json}"
+    );
+    assert!(
+        dry_run_json.contains("\"requires_passphrase_count\": 2"),
+        "{dry_run_json}"
+    );
+
+    let missing_passphrase_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("security")
+        .arg("profile-policy")
+        .arg("repair-all")
+        .env("HOME", &home)
+        .env_remove("SSHENV_PROFILE_PASSPHRASE")
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run profile-policy repair-all without passphrase");
+    assert!(!missing_passphrase_out.status.success());
+    let stderr = String::from_utf8_lossy(&missing_passphrase_out.stderr);
+    assert!(
+        stderr.contains(
+            "profile policy repair-all requires --passphrase <value> in non-interactive mode"
+        ),
+        "{stderr}"
+    );
+
+    let repair_all_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("security")
+        .arg("profile-policy")
+        .arg("repair-all")
+        .arg("--passphrase")
+        .arg("bulk-passphrase")
+        .env("HOME", &home)
+        .env_remove("SSHENV_PROFILE_PASSPHRASE")
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run profile-policy repair-all");
+    assert!(
+        repair_all_out.status.success(),
+        "profile-policy repair-all failed: {}",
+        String::from_utf8_lossy(&repair_all_out.stderr)
+    );
+
+    for profile in ["myprofile", "otherprofile"] {
+        let show_without_passphrase_out = Command::new(&bin)
+            .arg("--vault")
+            .arg(&vault_path)
+            .arg("show")
+            .arg(profile)
+            .env("HOME", &home)
+            .env_remove("SSHENV_PROFILE_PASSPHRASE")
+            .env_remove("SSHENV_VAULT")
+            .output()
+            .expect("run show without repaired passphrase");
+        assert!(!show_without_passphrase_out.status.success());
+
+        let show_out = Command::new(&bin)
+            .arg("--vault")
+            .arg(&vault_path)
+            .arg("show")
+            .arg(profile)
+            .env("HOME", &home)
+            .env("SSHENV_PROFILE_PASSPHRASE", "bulk-passphrase")
+            .env_remove("SSHENV_VAULT")
+            .output()
+            .expect("run show with repaired passphrase");
+        assert!(
+            show_out.status.success(),
+            "show {profile} with repaired passphrase failed: {}",
+            String::from_utf8_lossy(&show_out.stderr)
+        );
+    }
+}
+
+#[test]
 fn binary_passphrase_factor_requires_passphrase_after_enable() {
     let bin = cargo_bin();
     if !bin.exists() {
