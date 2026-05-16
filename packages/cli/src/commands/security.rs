@@ -19,9 +19,10 @@ use sshenv_cli_models::{
     ProfilePolicyDisablePassphraseArgs, ProfilePolicyPruneBackupsArgs, ProfilePolicyRepairAllArgs,
     ProfilePolicyRepairArgs, ProfilePolicyRequirePassphraseArgs, ProfilePolicyRequirementArgs,
     ProfilePolicyRestoreBackupArgs, ProfilePolicyRotateKeyArgs, ProfilePolicySetArgs,
-    ProfilePolicyStatusArgs, ProfilePolicyVerifyBackupArgs, RecoveryListArgs, RecoveryMetadataArgs,
-    RecoveryPlanArgs, RecoveryRemoveArgs, RemoteBackendArg, RemoteListArgs, RemoteMetadataArgs,
-    RemotePlanArgs, RemoteRemoveArgs, SecurityPresetArg, SecurityPresetArgs,
+    ProfilePolicyStatusArgs, ProfilePolicyVerifyBackupArgs, RecoveryCombineArgs, RecoveryListArgs,
+    RecoveryMetadataArgs, RecoveryPlanArgs, RecoveryRemoveArgs, RecoveryShareFileArgs,
+    RemoteBackendArg, RemoteListArgs, RemoteMetadataArgs, RemotePlanArgs, RemoteRemoveArgs,
+    RemoteRequestArgs, SecurityPresetArg, SecurityPresetArgs,
 };
 use sshenv_vault::models::{
     ProfileFactorRequirement, ProfilePolicy, ProfilePolicyFinding, ProfilePolicyFindingCode,
@@ -429,6 +430,77 @@ pub fn recovery_remove(_ctx: &CmdContext, _args: RecoveryRemoveArgs) -> Result<(
     anyhow::bail!("this sshenv build was compiled without recovery-shares support")
 }
 
+#[cfg(feature = "shamir-sharing")]
+pub fn recovery_validate_share(args: RecoveryShareFileArgs) -> Result<()> {
+    let encoded = fs::read_to_string(&args.share_file).with_context(|| {
+        format!(
+            "failed to read recovery share {}",
+            args.share_file.display()
+        )
+    })?;
+    let envelope = sshenv_vault::recovery::decode_recovery_share_envelope(encoded.trim())?;
+    if args.json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "valid": true,
+                "set_id": envelope.set_id,
+                "threshold": envelope.threshold,
+                "share_index": envelope.share.index,
+                "share_bytes": envelope.share.value.len(),
+            })
+        );
+    } else {
+        println!("recovery share envelope: valid");
+        println!("set id: {}", envelope.set_id);
+        println!("threshold: {}", envelope.threshold);
+        println!("share index: {}", envelope.share.index);
+        println!("share bytes: {}", envelope.share.value.len());
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "shamir-sharing"))]
+pub fn recovery_validate_share(_args: RecoveryShareFileArgs) -> Result<()> {
+    anyhow::bail!("this sshenv build was compiled without shamir-sharing support")
+}
+
+#[cfg(feature = "shamir-sharing")]
+pub fn recovery_combine(args: RecoveryCombineArgs) -> Result<()> {
+    let envelopes = args
+        .share_files
+        .iter()
+        .map(|path| {
+            let encoded = fs::read_to_string(path)
+                .with_context(|| format!("failed to read recovery share {}", path.display()))?;
+            sshenv_vault::recovery::decode_recovery_share_envelope(encoded.trim())
+                .map_err(anyhow::Error::from)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let recovered = zeroize::Zeroizing::new(
+        sshenv_vault::recovery::combine_recovery_share_envelopes(&envelopes)?,
+    );
+    let recovered_hex = hex::encode(recovered.as_slice());
+    if args.json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "recovered_secret_hex": recovered_hex,
+                "share_count": envelopes.len(),
+            })
+        );
+    } else {
+        eprintln!("warning: recovered break-glass secret is being written to stdout as hex");
+        println!("{recovered_hex}");
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "shamir-sharing"))]
+pub fn recovery_combine(_args: RecoveryCombineArgs) -> Result<()> {
+    anyhow::bail!("this sshenv build was compiled without shamir-sharing support")
+}
+
 #[cfg(feature = "recovery-shares")]
 pub fn recovery_validate(args: RecoveryMetadataArgs) -> Result<()> {
     let metadata = load_recovery_share_metadata(&args.metadata_path)?;
@@ -750,6 +822,35 @@ pub fn remote_validate(_args: RemoteMetadataArgs) -> Result<()> {
 }
 
 #[cfg(feature = "remote-factor")]
+pub fn remote_validate_request(args: RemoteRequestArgs) -> Result<()> {
+    let metadata = load_remote_factor_metadata(&args.metadata_path)?;
+    let request = load_remote_factor_request(&args.request_path)?;
+    sshenv_vault::remote::validate_remote_factor_request(&metadata, &request)?;
+    if args.json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "valid": true,
+                "factor_id": request.factor_id,
+                "backend": metadata.backend,
+                "context_keys": request.context.keys().collect::<Vec<_>>(),
+            })
+        );
+    } else {
+        println!("remote factor request: valid");
+        println!("factor id: {}", request.factor_id);
+        println!("backend: {:?}", metadata.backend);
+        println!("context keys: {}", request.context.len());
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "remote-factor"))]
+pub fn remote_validate_request(_args: RemoteRequestArgs) -> Result<()> {
+    anyhow::bail!("this sshenv build was compiled without remote-factor support")
+}
+
+#[cfg(feature = "remote-factor")]
 fn load_remote_factor_metadata(
     path: &Path,
 ) -> Result<sshenv_vault::models::RemoteFactorMetadataV2> {
@@ -757,6 +858,14 @@ fn load_remote_factor_metadata(
         .with_context(|| format!("failed to read remote factor metadata {}", path.display()))?;
     serde_json::from_str(&content)
         .with_context(|| format!("failed to parse remote factor metadata {}", path.display()))
+}
+
+#[cfg(feature = "remote-factor")]
+fn load_remote_factor_request(path: &Path) -> Result<sshenv_vault::remote::RemoteFactorRequest> {
+    let content = fs::read_to_string(path)
+        .with_context(|| format!("failed to read remote factor request {}", path.display()))?;
+    serde_json::from_str(&content)
+        .with_context(|| format!("failed to parse remote factor request {}", path.display()))
 }
 
 #[cfg(any(feature = "recovery-shares", feature = "remote-factor"))]

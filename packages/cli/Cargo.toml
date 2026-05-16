@@ -49,6 +49,7 @@ age        = { workspace = true }
 anyhow     = { workspace = true }
 clap       = { workspace = true }
 dirs       = { workspace = true }
+hex        = { workspace = true }
 libc       = { workspace = true }
 rpassword  = { workspace = true }
 serde      = { workspace = true }

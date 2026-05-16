@@ -1,15 +1,16 @@
 use std::collections::BTreeMap;
 
+use serde::{Deserialize, Serialize};
 use sshenv_vault_models::{RemoteFactorBackendKindV2, RemoteFactorMetadataV2};
 use thiserror::Error;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteFactorRequest {
     pub factor_id: String,
     pub context: BTreeMap<String, String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteFactorResponse {
     pub wrapped_key: Vec<u8>,
     pub audit_id: Option<String>,

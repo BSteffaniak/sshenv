@@ -203,6 +203,10 @@ pub enum RecoveryCommand {
     Import(RecoveryMetadataArgs),
     /// Remove a recovery-share metadata set from the current v2 vault.
     Remove(RecoveryRemoveArgs),
+    /// Validate one encoded Shamir recovery-share envelope file.
+    ValidateShare(RecoveryShareFileArgs),
+    /// Combine encoded Shamir recovery-share envelope files and print the recovered secret as hex.
+    Combine(RecoveryCombineArgs),
     /// Validate a recovery-share metadata JSON file.
     Validate(RecoveryMetadataArgs),
     /// Plan an M-of-N or break-glass recovery flow from metadata and provided share ids.
@@ -219,6 +223,8 @@ pub enum RemoteCommand {
     Remove(RemoteRemoveArgs),
     /// Print a metadata template and setup plan for a remote/KMS backend.
     Plan(RemotePlanArgs),
+    /// Validate a remote/KMS request JSON file against metadata.
+    ValidateRequest(RemoteRequestArgs),
     /// Validate a remote/KMS factor metadata JSON file.
     Validate(RemoteMetadataArgs),
 }
@@ -264,6 +270,17 @@ pub struct RemotePlanArgs {
     pub json: bool,
 }
 
+#[derive(Debug, clap::Args)]
+pub struct RemoteRequestArgs {
+    /// Path to a JSON RemoteFactorMetadataV2 document.
+    pub metadata_path: PathBuf,
+    /// Path to a JSON RemoteFactorRequest document.
+    pub request_path: PathBuf,
+    /// Print machine-readable JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
 #[derive(Clone, Copy, Debug, ValueEnum)]
 pub enum RemoteBackendArg {
     SelfHosted,
@@ -291,6 +308,25 @@ pub struct RecoveryListArgs {
 pub struct RecoveryRemoveArgs {
     /// Recovery-share set id to remove.
     pub set_id: String,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct RecoveryShareFileArgs {
+    /// File containing one encoded recovery-share envelope.
+    pub share_file: PathBuf,
+    /// Print machine-readable JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct RecoveryCombineArgs {
+    /// File containing one encoded recovery-share envelope. Repeat for each collected share.
+    #[arg(long = "share-file", required = true)]
+    pub share_files: Vec<PathBuf>,
+    /// Print machine-readable JSON.
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Debug, clap::Args)]
