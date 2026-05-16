@@ -1,3 +1,5 @@
+#[cfg(feature = "age-plugin-recipient")]
+use std::collections::BTreeSet;
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::io::IsTerminal;
@@ -584,7 +586,17 @@ struct HardwareStatusOutput {
     hardware_recipient_feature: bool,
     age_plugin_recipient_feature: bool,
     age_plugin_identity_sources: Vec<String>,
+    age_plugin_identity_files: Vec<AgePluginIdentityFileOutput>,
+    age_plugin_plugins: BTreeMap<String, usize>,
     known_plans: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct AgePluginIdentityFileOutput {
+    path: String,
+    identity_count: usize,
+    plugins: BTreeMap<String, usize>,
+    invalid_lines: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -601,6 +613,7 @@ struct HardwarePlanOutput {
 }
 
 pub fn hardware_status(args: HardwareStatusArgs) -> Result<()> {
+    let age_plugin_identity_files = inspect_age_plugin_identity_files();
     let output = HardwareStatusOutput {
         hardware_recipient_feature: cfg!(feature = "hardware-recipient"),
         age_plugin_recipient_feature: cfg!(feature = "age-plugin-recipient"),
@@ -609,6 +622,8 @@ pub fn hardware_status(args: HardwareStatusArgs) -> Result<()> {
             "~/.sshenv/age-plugin-identities".to_string(),
             "~/.sshenv/age-plugin-identities.d/*".to_string(),
         ],
+        age_plugin_plugins: age_plugin_plugins_from_files(&age_plugin_identity_files),
+        age_plugin_identity_files,
         known_plans: vec![
             "age-plugin".to_string(),
             "yubi-key-piv".to_string(),
@@ -632,8 +647,106 @@ pub fn hardware_status(args: HardwareStatusArgs) -> Result<()> {
         for source in &output.age_plugin_identity_sources {
             println!("- {source}");
         }
+        println!(
+            "age-plugin identity files: {}",
+            output.age_plugin_identity_files.len()
+        );
+        for file in &output.age_plugin_identity_files {
+            println!(
+                "- {} (identities: {}, invalid lines: {})",
+                file.path, file.identity_count, file.invalid_lines
+            );
+        }
+        if !output.age_plugin_plugins.is_empty() {
+            println!("age-plugin identities by plugin:");
+            for (plugin, count) in &output.age_plugin_plugins {
+                println!("- {plugin}: {count}");
+            }
+        }
     }
     Ok(())
+}
+
+fn age_plugin_plugins_from_files(files: &[AgePluginIdentityFileOutput]) -> BTreeMap<String, usize> {
+    let mut plugins = BTreeMap::new();
+    for file in files {
+        for (plugin, count) in &file.plugins {
+            *plugins.entry(plugin.clone()).or_default() += count;
+        }
+    }
+    plugins
+}
+
+#[cfg(feature = "age-plugin-recipient")]
+fn inspect_age_plugin_identity_files() -> Vec<AgePluginIdentityFileOutput> {
+    discover_age_plugin_identity_paths()
+        .into_iter()
+        .map(|path| inspect_age_plugin_identity_file(&path))
+        .collect()
+}
+
+#[cfg(not(feature = "age-plugin-recipient"))]
+#[allow(clippy::missing_const_for_fn)]
+fn inspect_age_plugin_identity_files() -> Vec<AgePluginIdentityFileOutput> {
+    Vec::new()
+}
+
+#[cfg(feature = "age-plugin-recipient")]
+fn discover_age_plugin_identity_paths() -> Vec<PathBuf> {
+    let mut paths = BTreeSet::new();
+    if let Some(raw) = std::env::var_os("SSHENV_AGE_PLUGIN_IDENTITIES") {
+        for path in std::env::split_paths(&raw) {
+            if path.is_file() {
+                paths.insert(path);
+            }
+        }
+    }
+
+    if let Some(home) = dirs::home_dir() {
+        let file = home.join(".sshenv").join("age-plugin-identities");
+        if file.is_file() {
+            paths.insert(file);
+        }
+        let dir = home.join(".sshenv").join("age-plugin-identities.d");
+        if let Ok(entries) = fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_file() {
+                    paths.insert(path);
+                }
+            }
+        }
+    }
+
+    paths.into_iter().collect()
+}
+
+#[cfg(feature = "age-plugin-recipient")]
+fn inspect_age_plugin_identity_file(path: &Path) -> AgePluginIdentityFileOutput {
+    let mut plugins = BTreeMap::new();
+    let mut identity_count = 0;
+    let mut invalid_lines = 0;
+    if let Ok(content) = fs::read_to_string(path) {
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+            match trimmed.parse::<age::plugin::Identity>() {
+                Ok(identity) => {
+                    identity_count += 1;
+                    *plugins.entry(identity.plugin().to_string()).or_default() += 1;
+                }
+                Err(_) => invalid_lines += 1,
+            }
+        }
+    }
+    AgePluginIdentityFileOutput {
+        path: path.display().to_string(),
+        identity_count,
+        plugins,
+        invalid_lines,
+    }
 }
 
 pub fn hardware_plan(args: HardwarePlanArgs) -> Result<()> {

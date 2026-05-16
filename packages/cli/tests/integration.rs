@@ -205,6 +205,47 @@ fn binary_security_planning_commands_emit_json() {
     }
 }
 
+#[cfg(feature = "age-plugin-recipient")]
+#[test]
+fn binary_hardware_status_reports_age_plugin_identity_files() {
+    let bin = cargo_bin();
+    if !bin.exists() {
+        eprintln!("skipping: {} does not exist", bin.display());
+        return;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let identity_file = dir.path().join("plugin-identities.txt");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(
+        &identity_file,
+        "# comment\nAGE-PLUGIN-FOOBAR-1QVHULF\nnot-an-identity\n",
+    )
+    .unwrap();
+
+    let output = Command::new(&bin)
+        .args(["security", "hardware", "status", "--json"])
+        .env("HOME", &home)
+        .env("SSHENV_AGE_PLUGIN_IDENTITIES", &identity_file)
+        .output()
+        .expect("run hardware status");
+    assert!(
+        output.status.success(),
+        "hardware status failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["age_plugin_recipient_feature"], true);
+    assert_eq!(
+        json["age_plugin_identity_files"].as_array().unwrap().len(),
+        1
+    );
+    assert_eq!(json["age_plugin_identity_files"][0]["identity_count"], 1);
+    assert_eq!(json["age_plugin_identity_files"][0]["invalid_lines"], 1);
+    assert_eq!(json["age_plugin_plugins"]["foobar"], 1);
+}
+
 #[cfg(feature = "shamir-sharing")]
 #[test]
 fn binary_recovery_split_validate_and_combine_roundtrip() {
