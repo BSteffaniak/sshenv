@@ -384,6 +384,19 @@ fn binary_profile_policy_migrate_preserves_secret_access() {
     let home = dir.path().join("home");
     let vault_path = dir.path().join("vault");
     init_vault_with_profile(&bin, &home, &vault_path, "myprofile");
+    let set_other_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("set")
+        .arg("otherprofile")
+        .arg("DUMMY")
+        .arg("--value")
+        .arg("other")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("set second profile");
+    assert!(set_other_out.status.success());
 
     let migrate_out = Command::new(&bin)
         .arg("--vault")
@@ -573,6 +586,60 @@ fn binary_profile_policy_migrate_preserves_secret_access() {
         .expect("run show after profile-policy disable-passphrase");
     assert!(show_without_passphrase_out.status.success());
     assert!(String::from_utf8_lossy(&show_without_passphrase_out.stdout).contains("DUMMY=value"));
+
+    let apply_all_standard_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("security")
+        .arg("profile-policy")
+        .arg("apply-all")
+        .arg("--preset")
+        .arg("standard")
+        .env("HOME", &home)
+        .env_remove("SSHENV_PROFILE_PASSPHRASE")
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run profile-policy apply-all standard");
+    assert!(
+        apply_all_standard_out.status.success(),
+        "profile-policy apply-all standard failed: {}",
+        String::from_utf8_lossy(&apply_all_standard_out.stderr)
+    );
+
+    let other_standard_status_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("security")
+        .arg("profile-policy")
+        .arg("status")
+        .arg("otherprofile")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run other profile status after apply-all standard");
+    assert!(
+        other_standard_status_out.status.success(),
+        "other status failed: {}",
+        String::from_utf8_lossy(&other_standard_status_out.stderr)
+    );
+    let other_standard_status_stdout = String::from_utf8_lossy(&other_standard_status_out.stdout);
+    assert!(
+        other_standard_status_stdout.contains("preset: Standard"),
+        "{other_standard_status_stdout}"
+    );
+
+    let other_show_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("show")
+        .arg("otherprofile")
+        .env("HOME", &home)
+        .env_remove("SSHENV_PROFILE_PASSPHRASE")
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run show other profile after apply-all standard");
+    assert!(other_show_out.status.success());
+    assert!(String::from_utf8_lossy(&other_show_out.stdout).contains("DUMMY=other"));
 
     let apply_out = Command::new(&bin)
         .arg("--vault")

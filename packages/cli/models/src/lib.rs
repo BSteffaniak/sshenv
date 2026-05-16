@@ -239,7 +239,7 @@ pub struct ProfilePolicyApplyAllArgs {
     /// Preset to apply as concrete profile-specific enforcement.
     #[arg(long, value_enum)]
     pub preset: SecurityPresetArg,
-    /// Show the bulk apply plan without changing the vault. Currently required.
+    /// Show the bulk apply plan without changing the vault.
     #[arg(long)]
     pub dry_run: bool,
     /// Print the bulk apply plan as machine-readable JSON.

@@ -1183,23 +1183,69 @@ pub fn profile_policy_apply(ctx: &CmdContext, args: ProfilePolicyApplyArgs) -> R
 }
 
 pub fn profile_policy_apply_all(ctx: &CmdContext, args: ProfilePolicyApplyAllArgs) -> Result<()> {
-    if !args.dry_run {
-        anyhow::bail!("profile-policy apply-all currently supports --dry-run only");
-    }
-    let (vault, _key) = load_and_unlock_metadata(&ctx.vault_path)?;
     let preset = profile_policy_preset(args.preset);
-    let output = build_profile_policy_apply_all_plan(&vault, preset)?;
+    if args.dry_run {
+        let (vault, _key) = load_and_unlock_metadata(&ctx.vault_path)?;
+        let output = build_profile_policy_apply_all_plan(&vault, preset)?;
 
-    if args.json {
-        println!("{}", serde_json::to_string_pretty(&output)?);
-    } else {
-        print_profile_policy_apply_all_plan(&output);
+        if args.json {
+            println!("{}", serde_json::to_string_pretty(&output)?);
+        } else {
+            print_profile_policy_apply_all_plan(&output);
+        }
+        if output.unrepairable_count > 0 {
+            anyhow::bail!(
+                "profile policy apply-all plan has {} unrepairable profile(s)",
+                output.unrepairable_count
+            );
+        }
+        return Ok(());
     }
-    if output.unrepairable_count > 0 {
+
+    if preset != ProfilePolicyPreset::Standard {
         anyhow::bail!(
-            "profile policy apply-all plan has {} unrepairable profile(s)",
-            output.unrepairable_count
+            "profile-policy apply-all without --dry-run currently supports --preset standard only"
         );
+    }
+    let (mut vault, data_key) = crate::commands::load_and_unlock(&ctx.vault_path)?;
+    let profiles = profile_policy_names(&vault);
+    let mut changed = false;
+    let mut applied = Vec::new();
+
+    for profile in profiles {
+        apply_profile_policy_preset_metadata(&mut vault, &profile, preset)?;
+        let mut plan = build_profile_policy_apply_plan(&vault, &profile, preset)?;
+        if !plan
+            .actions
+            .contains(&ProfilePolicyRepairAction::RotateProfileKey)
+        {
+            plan.actions
+                .push(ProfilePolicyRepairAction::RotateProfileKey);
+            plan.action_labels.push(
+                ProfilePolicyRepairAction::RotateProfileKey
+                    .label()
+                    .to_string(),
+            );
+        }
+        let (_profile_changed, actions) =
+            apply_profile_policy_plan_actions(&mut vault, &profile, &[], None, &plan)?;
+        changed = true;
+        applied.push((profile, actions));
+    }
+
+    if changed {
+        save_all_profile_policy_vaults(ctx, &mut vault, &data_key)?;
+    }
+    eprintln!("Applied Standard profile policy enforcement to all profiles.");
+    for (profile, actions) in applied {
+        eprintln!("{profile}:");
+        if actions.is_empty() {
+            eprintln!("- set preset metadata to Standard");
+        } else {
+            for action in actions {
+                eprintln!("- {action}");
+            }
+        }
     }
     Ok(())
 }

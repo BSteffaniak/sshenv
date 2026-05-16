@@ -1352,6 +1352,13 @@ fn encode_profiles_for_payload(
         };
         encoded.profile_entries.insert(profile.clone(), entry);
     }
+    for (profile, entry) in &profiles.profile_entries {
+        if !profiles.profiles.contains_key(profile) {
+            encoded
+                .profile_entries
+                .insert(profile.clone(), entry.clone());
+        }
+    }
     encoded.profiles.clear();
     serde_json::to_vec(&encoded).context("failed to serialize profile-entry map to JSON")
 }
@@ -2259,6 +2266,43 @@ mod tests {
         assert_eq!(
             unlocked.profiles.get("p").unwrap().get("K").unwrap(),
             "profile-keyed"
+        );
+    }
+
+    #[test]
+    fn partial_profile_unlock_save_preserves_locked_profile_entries() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("vault");
+
+        let (pubkey, identity) = generate_keypair();
+        let (mut v, key) = Vault::create(&pubkey).expect("create");
+        v.profiles.set("p1", "K", "one".into());
+        v.profiles.set("p2", "K", "two".into());
+        v.migrate_to_v2(std::slice::from_ref(&pubkey))
+            .expect("migrate");
+        v.enable_profile_keys().expect("enable profile keys");
+        v.save(&path, &key).expect("save profile-keyed v2");
+
+        let initial_entries = profile_entries_from_saved_vault(&path, key.as_slice());
+        let parsed = Vault::load_ciphertext(&path).expect("load ciphertext");
+        let identities: Vec<Box<dyn age::Identity>> = vec![identity];
+        let (mut metadata_only, _) =
+            Vault::unlock_metadata_with_passphrase(parsed, &identities, None)
+                .expect("unlock metadata");
+        metadata_only
+            .unlock_profile_with_passphrase("p1", &key, None)
+            .expect("unlock p1");
+        metadata_only.rotate_profile_key("p1").expect("rotate p1");
+        metadata_only
+            .save(&path, &key)
+            .expect("save partial unlock");
+
+        let rotated_entries = profile_entries_from_saved_vault(&path, key.as_slice());
+        assert_ne!(initial_entries.get("p1"), rotated_entries.get("p1"));
+        assert_eq!(
+            initial_entries.get("p2"),
+            rotated_entries.get("p2"),
+            "locked, unmodified profile entry should be preserved"
         );
     }
 
