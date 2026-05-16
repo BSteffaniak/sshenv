@@ -678,6 +678,55 @@ fn binary_profile_policy_apply_migrates_v1_to_enforced_v2() {
     let vault_path = dir.path().join("vault");
     init_vault_with_profile(&bin, &home, &vault_path, "myprofile");
 
+    let dry_run_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("security")
+        .arg("profile-policy")
+        .arg("apply")
+        .arg("myprofile")
+        .arg("--preset")
+        .arg("portable")
+        .arg("--dry-run")
+        .arg("--json")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run profile-policy apply dry-run json");
+    assert!(dry_run_out.status.success());
+    let dry_run_json = String::from_utf8_lossy(&dry_run_out.stdout);
+    assert!(
+        dry_run_json.contains("\"target_preset\": \"Portable\""),
+        "{dry_run_json}"
+    );
+    assert!(
+        dry_run_json.contains("\"requires_passphrase\": true"),
+        "{dry_run_json}"
+    );
+    assert!(
+        dry_run_json.contains("\"requires_recipient_key\": true"),
+        "{dry_run_json}"
+    );
+    assert!(dry_run_json.contains("\"migrate-to-v2\""), "{dry_run_json}");
+
+    let dry_run_status_out = Command::new(&bin)
+        .arg("--vault")
+        .arg(&vault_path)
+        .arg("security")
+        .arg("profile-policy")
+        .arg("status")
+        .arg("myprofile")
+        .env("HOME", &home)
+        .env_remove("SSHENV_VAULT")
+        .output()
+        .expect("run profile-policy status after apply dry-run");
+    assert!(dry_run_status_out.status.success());
+    let dry_run_status_stdout = String::from_utf8_lossy(&dry_run_status_out.stdout);
+    assert!(
+        dry_run_status_stdout.contains("policy metadata: absent"),
+        "{dry_run_status_stdout}"
+    );
+
     let apply_out = Command::new(&bin)
         .arg("--vault")
         .arg(&vault_path)

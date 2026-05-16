@@ -252,6 +252,13 @@ struct ProfilePolicyStatusOutput {
 }
 
 #[derive(Debug, Serialize)]
+struct ProfilePolicyApplyPlanOutput {
+    profile: String,
+    target_preset: String,
+    plan: ProfilePolicyRepairPlan,
+}
+
+#[derive(Debug, Serialize)]
 struct ProfilePolicyCheckOutput {
     profiles_checked: usize,
     warnings: usize,
@@ -582,10 +589,22 @@ fn validate_profile_policy_for_save(vault: &Vault, profile: &str) -> Result<()> 
     Ok(())
 }
 
+fn print_profile_policy_apply_plan(output: &ProfilePolicyApplyPlanOutput) {
+    println!("profile policy apply plan");
+    println!("=========================");
+    println!("profile: {}", output.profile);
+    println!("target preset: {}", output.target_preset);
+    print_profile_policy_plan_details(&output.plan);
+}
+
 fn print_profile_policy_repair_plan(output: &ProfilePolicyRepairPlan) {
     println!("profile policy repair plan");
     println!("==========================");
     println!("profile: {}", output.profile);
+    print_profile_policy_plan_details(output);
+}
+
+fn print_profile_policy_plan_details(output: &ProfilePolicyRepairPlan) {
     println!("repairable: {}", yes_no(output.repairable));
     println!("already consistent: {}", yes_no(output.already_consistent));
     println!(
@@ -616,6 +635,51 @@ fn print_profile_policy_repair_plan(output: &ProfilePolicyRepairPlan) {
             println!("- {item}");
         }
     }
+}
+
+fn build_profile_policy_apply_plan(
+    vault: &Vault,
+    profile: &str,
+    preset: ProfilePolicyPreset,
+) -> Result<ProfilePolicyRepairPlan> {
+    let mut planned_vault = vault.clone();
+    apply_profile_policy_preset_metadata(&mut planned_vault, profile, preset)?;
+    let validation = planned_vault.validate_profile_policy(profile);
+    if validation.profile_policy_missing() {
+        anyhow::bail!("no such profile: {profile}");
+    }
+    let mut plan = planned_vault.plan_profile_policy_repair(profile, Some(&validation));
+    if matches!(
+        preset,
+        ProfilePolicyPreset::Standard | ProfilePolicyPreset::Paranoid
+    ) && !plan
+        .actions
+        .contains(&ProfilePolicyRepairAction::RotateProfileKey)
+    {
+        plan.actions
+            .push(ProfilePolicyRepairAction::RotateProfileKey);
+        plan.action_labels.push(
+            ProfilePolicyRepairAction::RotateProfileKey
+                .label()
+                .to_string(),
+        );
+    }
+    Ok(plan)
+}
+
+fn apply_profile_policy_preset_metadata(
+    vault: &mut Vault,
+    profile: &str,
+    preset: ProfilePolicyPreset,
+) -> Result<()> {
+    let mut policy = existing_or_default_profile_policy(vault, profile);
+    policy.preset = preset;
+    if preset == ProfilePolicyPreset::Standard {
+        policy.required_factors.clear();
+        policy.factor_metadata.clear();
+    }
+    vault.profiles.set_profile_policy(profile, policy)?;
+    Ok(())
 }
 
 fn profile_repair_needs_passphrase(policy: &ProfilePolicy) -> bool {
@@ -966,39 +1030,36 @@ fn existing_or_default_profile_policy(vault: &Vault, profile: &str) -> ProfilePo
 
 pub fn profile_policy_apply(ctx: &CmdContext, args: ProfilePolicyApplyArgs) -> Result<()> {
     let (mut vault, data_key) = load_and_unlock_profile(&ctx.vault_path, &args.profile)?;
-    prepare_profile_policy_enforcement(&mut vault, &args.profile, &args.recipient_keys)?;
-
     let preset = profile_policy_preset(args.preset);
-    let mut policy = existing_or_default_profile_policy(&vault, &args.profile);
-    policy.preset = preset;
-    if preset == ProfilePolicyPreset::Standard {
-        policy.required_factors.clear();
-        policy.factor_metadata.clear();
-    }
-    vault.profiles.set_profile_policy(&args.profile, policy)?;
-    let mut changed = true;
+    let plan = build_profile_policy_apply_plan(&vault, &args.profile, preset)?;
 
-    let validation = vault.validate_profile_policy(&args.profile);
-    let mut plan = vault.plan_profile_policy_repair(&args.profile, Some(&validation));
-    if preset == ProfilePolicyPreset::Paranoid
-        && !plan
-            .actions
-            .contains(&ProfilePolicyRepairAction::RotateProfileKey)
-    {
-        plan.actions
-            .push(ProfilePolicyRepairAction::RotateProfileKey);
-        plan.action_labels.push(
-            ProfilePolicyRepairAction::RotateProfileKey
-                .label()
-                .to_string(),
-        );
+    if args.dry_run || args.json {
+        let output = ProfilePolicyApplyPlanOutput {
+            profile: args.profile,
+            target_preset: format!("{preset:?}"),
+            plan,
+        };
+        if args.json {
+            println!("{}", serde_json::to_string_pretty(&output)?);
+        } else {
+            print_profile_policy_apply_plan(&output);
+        }
+        if !output.plan.unrepairable.is_empty() {
+            anyhow::bail!(
+                "profile policy apply has unrecoverable validation issue(s): {}",
+                output.plan.unrepairable.join(", ")
+            );
+        }
+        return Ok(());
     }
+
     ensure_profile_policy_plan_inputs_available(
         &plan,
         args.passphrase.as_ref(),
         &args.recipient_keys,
         "profile policy apply",
     )?;
+    apply_profile_policy_preset_metadata(&mut vault, &args.profile, preset)?;
     let (plan_changed, applied_actions) = apply_profile_policy_plan_actions(
         &mut vault,
         &args.profile,
@@ -1006,9 +1067,8 @@ pub fn profile_policy_apply(ctx: &CmdContext, args: ProfilePolicyApplyArgs) -> R
         args.passphrase,
         &plan,
     )?;
-    changed |= plan_changed;
 
-    if changed {
+    if plan_changed || !plan.already_consistent {
         save_profile_policy_vault(ctx, &mut vault, &data_key, &args.profile)?;
     }
     eprintln!(
@@ -1163,21 +1223,6 @@ fn apply_profile_policy_plan_actions(
     }
 
     Ok((changed, applied_actions))
-}
-
-fn prepare_profile_policy_enforcement(
-    vault: &mut Vault,
-    profile: &str,
-    recipient_keys: &[String],
-) -> Result<bool> {
-    let was_v2 = vault.header.version == VERSION_V2;
-    let had_profile_keys = vault.profile_keys_enabled();
-    migrate_to_v2_if_needed(vault, recipient_keys)?;
-    if !vault.profile_keys_enabled() {
-        vault.enable_profile_keys()?;
-    }
-    ensure_profile_policy_editable(vault, profile)?;
-    Ok(!was_v2 || !had_profile_keys)
 }
 
 #[cfg(not(feature = "device-seal"))]

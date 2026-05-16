@@ -221,6 +221,12 @@ pub struct ProfilePolicyApplyArgs {
     /// New profile passphrase for presets that require one. If omitted, read from a hidden prompt.
     #[arg(long)]
     pub passphrase: Option<String>,
+    /// Show the apply plan without changing the vault.
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Print the apply plan as machine-readable JSON without changing the vault.
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Debug, clap::Args)]
