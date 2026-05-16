@@ -72,6 +72,9 @@ pub fn run(cli: Cli) -> Result<()> {
             SecurityCommand::Hardware(sub) => match sub {
                 HardwareCommand::Status(args) => commands::security::hardware_status(args),
                 HardwareCommand::Plan(args) => commands::security::hardware_plan(args),
+                HardwareCommand::ValidateRecipient(args) => {
+                    commands::security::hardware_validate_recipient(args)
+                }
             },
             SecurityCommand::Recovery(sub) => match sub {
                 RecoveryCommand::List(args) => commands::security::recovery_list(&ctx, args),

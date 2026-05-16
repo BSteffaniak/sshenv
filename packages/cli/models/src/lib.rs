@@ -241,6 +241,8 @@ pub enum HardwareCommand {
     Status(HardwareStatusArgs),
     /// Print an actionable setup plan for a hardware recipient family.
     Plan(HardwarePlanArgs),
+    /// Validate a public recipient descriptor and show its stable fingerprint.
+    ValidateRecipient(HardwareValidateRecipientArgs),
 }
 
 #[derive(Debug, clap::Args)]
@@ -258,6 +260,15 @@ pub struct HardwarePlanArgs {
     /// age plugin name, without `age-plugin-` prefix.
     #[arg(long)]
     pub plugin: Option<String>,
+    /// Print machine-readable JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct HardwareValidateRecipientArgs {
+    /// Public SSH key line or age-plugin recipient descriptor.
+    pub descriptor: String,
     /// Print machine-readable JSON.
     #[arg(long)]
     pub json: bool,

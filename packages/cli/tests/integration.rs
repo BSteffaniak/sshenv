@@ -229,6 +229,35 @@ fn binary_security_planning_commands_emit_json() {
     }
 }
 
+#[test]
+fn binary_hardware_validate_recipient_reports_fingerprint() {
+    let bin = cargo_bin();
+    if !bin.exists() {
+        eprintln!("skipping: {} does not exist", bin.display());
+        return;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let (_priv_path, pub_line) = write_named_keypair(dir.path(), "id_ed25519");
+    let expected_fingerprint = fingerprint_from_line(&pub_line).unwrap();
+    let output = Command::new(&bin)
+        .args(["security", "hardware", "validate-recipient"])
+        .arg(&pub_line)
+        .arg("--json")
+        .output()
+        .expect("run hardware validate-recipient");
+    assert!(
+        output.status.success(),
+        "validate-recipient failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["valid"], true);
+    assert_eq!(json["descriptor_kind"], "SshRecipient");
+    assert_eq!(json["hardware_recipient"], false);
+    assert_eq!(json["fingerprint"], expected_fingerprint);
+}
+
 #[cfg(feature = "age-plugin-recipient")]
 #[test]
 fn binary_hardware_status_reports_age_plugin_identity_files() {

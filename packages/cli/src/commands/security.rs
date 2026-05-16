@@ -19,16 +19,17 @@ use serde::Serialize;
 use sshenv_cli_models::{
     ChangePassphraseArgs, DeviceBackendArg, DevicePlanArgs, DisablePassphraseArgs,
     EnablePassphraseArgs, HardenArgs, HardwareKindArg, HardwarePlanArgs, HardwareStatusArgs,
-    PassphraseCacheStatusArgs, ProfilePolicyApplyAllArgs, ProfilePolicyApplyArgs,
-    ProfilePolicyBackupsArgs, ProfilePolicyChangePassphraseArgs, ProfilePolicyCheckArgs,
-    ProfilePolicyDisablePassphraseArgs, ProfilePolicyPruneBackupsArgs, ProfilePolicyRepairAllArgs,
-    ProfilePolicyRepairArgs, ProfilePolicyRequirePassphraseArgs, ProfilePolicyRequirementArgs,
-    ProfilePolicyRestoreBackupArgs, ProfilePolicyRotateKeyArgs, ProfilePolicySetArgs,
-    ProfilePolicyStatusArgs, ProfilePolicyVerifyBackupArgs, RecoveryCombineArgs, RecoveryListArgs,
-    RecoveryMetadataArgs, RecoveryPlanArgs, RecoveryRemoveArgs, RecoveryShareFileArgs,
-    RecoverySplitArgs, RemoteBackendArg, RemoteListArgs, RemoteMetadataArgs, RemotePlanArgs,
-    RemoteRemoveArgs, RemoteRequestArgs, RemoteRequestTemplateArgs, RollbackBackendArg,
-    RollbackPlanArgs, RollbackStatusArgs, SecurityPresetArg, SecurityPresetArgs,
+    HardwareValidateRecipientArgs, PassphraseCacheStatusArgs, ProfilePolicyApplyAllArgs,
+    ProfilePolicyApplyArgs, ProfilePolicyBackupsArgs, ProfilePolicyChangePassphraseArgs,
+    ProfilePolicyCheckArgs, ProfilePolicyDisablePassphraseArgs, ProfilePolicyPruneBackupsArgs,
+    ProfilePolicyRepairAllArgs, ProfilePolicyRepairArgs, ProfilePolicyRequirePassphraseArgs,
+    ProfilePolicyRequirementArgs, ProfilePolicyRestoreBackupArgs, ProfilePolicyRotateKeyArgs,
+    ProfilePolicySetArgs, ProfilePolicyStatusArgs, ProfilePolicyVerifyBackupArgs,
+    RecoveryCombineArgs, RecoveryListArgs, RecoveryMetadataArgs, RecoveryPlanArgs,
+    RecoveryRemoveArgs, RecoveryShareFileArgs, RecoverySplitArgs, RemoteBackendArg, RemoteListArgs,
+    RemoteMetadataArgs, RemotePlanArgs, RemoteRemoveArgs, RemoteRequestArgs,
+    RemoteRequestTemplateArgs, RollbackBackendArg, RollbackPlanArgs, RollbackStatusArgs,
+    SecurityPresetArg, SecurityPresetArgs,
 };
 use sshenv_vault::models::{
     ProfileFactorRequirement, ProfilePolicy, ProfilePolicyFinding, ProfilePolicyFindingCode,
@@ -612,6 +613,14 @@ struct HardwarePlanOutput {
     notes: Vec<String>,
 }
 
+#[derive(Debug, Serialize)]
+struct HardwareValidateRecipientOutput {
+    valid: bool,
+    descriptor_kind: String,
+    fingerprint: String,
+    hardware_recipient: bool,
+}
+
 pub fn hardware_status(args: HardwareStatusArgs) -> Result<()> {
     let age_plugin_identity_files = inspect_age_plugin_identity_files();
     let output = HardwareStatusOutput {
@@ -747,6 +756,27 @@ fn inspect_age_plugin_identity_file(path: &Path) -> AgePluginIdentityFileOutput 
         plugins,
         invalid_lines,
     }
+}
+
+pub fn hardware_validate_recipient(args: HardwareValidateRecipientArgs) -> Result<()> {
+    let kind = sshenv_vault::recipient::recipient_descriptor_kind(&args.descriptor);
+    let fingerprint =
+        sshenv_vault::recipient::fingerprint_from_recipient_descriptor(&args.descriptor)?;
+    let output = HardwareValidateRecipientOutput {
+        valid: true,
+        descriptor_kind: format!("{kind:?}"),
+        fingerprint,
+        hardware_recipient: matches!(kind, UnlockFactorKindV2::HardwareRecipient),
+    };
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        println!("recipient descriptor: valid");
+        println!("kind: {}", output.descriptor_kind);
+        println!("hardware recipient: {}", yes_no(output.hardware_recipient));
+        println!("fingerprint: {}", output.fingerprint);
+    }
+    Ok(())
 }
 
 pub fn hardware_plan(args: HardwarePlanArgs) -> Result<()> {
