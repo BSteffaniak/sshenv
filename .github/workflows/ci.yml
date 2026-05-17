@@ -1,78 +1,333 @@
-name: CI
+name: Build and Test
 
 on:
   push:
-    branches: [master]
+    branches: ["master"]
+    paths:
+      - ".github/workflows/ci.yml"
+      - "packages/**"
+      - "**/*.toml"
+      - "Cargo.lock"
+      - "deny.toml"
+      - "rust-toolchain.toml"
+      - "!**/*.md"
+      - "!**/LICENSE"
+      - "!**/.gitignore"
   pull_request:
-    branches: [master]
+    branches: ["master"]
+  workflow_dispatch:
+    inputs:
+      seed:
+        description: "Random seed for deterministic feature randomization"
+        required: false
+        type: string
+      packages:
+        description: "Comma-separated list of packages to build"
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
 
 jobs:
-  fmt:
-    name: rustfmt
+  determine-affected-packages:
+    name: Analyze Changes
     runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.analyze.outputs.matrix }}
+      has-changes: ${{ steps.analyze.outputs.has-changes }}
+      reasoning: ${{ steps.analyze.outputs.reasoning }}
+      randomization-seed: ${{ steps.seed.outputs.value }}
+
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: stable
-          components: rustfmt
-      - run: cargo fmt --all -- --check
+          fetch-depth: 0
 
-  clippy:
-    name: clippy (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
+      - name: Generate seed
+        id: seed
+        shell: bash
+        run: |
+          if [[ -n "${{ github.event.inputs.seed }}" ]]; then
+            echo "value=${{ github.event.inputs.seed }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=$(date +%s)$RANDOM" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Analyze changes and generate comprehensive matrix
+        id: analyze
+        uses: MoosicBox/MoosicBox/.github/actions/clippier@master
         with:
-          toolchain: stable
-          components: clippy
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --all-targets --all-features -- -D warnings
+          command: features
+          workspace-path: .
 
-  test:
-    name: test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo test --all --all-features
+          packages: ${{ github.event.inputs.packages }}
+          chunked: 12
+          max-parallel: 128
+          spread: true
+          randomize: true
+          seed: ${{ steps.seed.outputs.value }}
+          include-reasoning: true
+          transform-name-regex: "^sshenv_"
+          git-strategy: workflow-history
+          jq-filter: |
+            map(.toolchains |= (. // "" | split("\n") | map(select(. != "" and . != "cargo-machete" and . != "machete")) | join("\n")))
+            | (group_by(.name) | map({key: .[0].name, value: ([.[].os] | unique | length > 1)}) | from_entries) as $multiOs
+            | (group_by([.name, .os]) | map({key: "\(.[0].name)|\(.[0].os)", value: length}) | from_entries) as $osCounts
+            | to_entries
+            | reduce .[] as $item ({result: [], counters: {}};
+                ($item.value.name + "|" + $item.value.os) as $key |
+                ((.counters[$key] // 0) + 1) as $idx |
+                ($item.value.os | gsub("-latest$"; "")) as $osShort |
+                {
+                    result: (.result + [$item.value + {
+                        osIndex: $idx,
+                        osCount: $osCounts[$key],
+                        hasMultipleOs: $multiOs[$item.value.name],
+                        osShort: $osShort,
+                        osEmoji: (if $osShort == "ubuntu" then "🐧" elif $osShort == "macos" then "🍎" elif $osShort == "windows" then "🪟" else $osShort end)
+                    }]),
+                    counters: (.counters + {($key): $idx})
+                }
+            )
+            | .result
+          ignore: |
+            **/*.md
+            **/*.txt
+            **/LICENSE
+            **/.gitignore
+          inject-reasoning: |
+            ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.packages && format('Manual workflow dispatch - selected packages: {0}', github.event.inputs.packages) || '' }}
+            ${{ github.event_name == 'workflow_dispatch' && !github.event.inputs.packages && 'Manual workflow dispatch - all packages included' || '' }}
+          inject-reasoning-condition: ${{ github.event_name == 'workflow_dispatch' }}
+          force-full-matrix-condition: ${{ github.event_name == 'workflow_dispatch' }}
 
-  build:
-    name: build (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo build --release --all
+          generate-summary: true
+          summary-title: "Smart CI Analysis Summary"
+          summary-event-name: ${{ github.event_name }}
+          summary-ref-name: ${{ github.ref_name }}
+          summary-trigger-input: ${{ github.event.inputs.packages }}
+          summary-show-trigger: true
+          summary-show-jobs-details: true
+          summary-include-seed: true
 
-  deny:
-    name: cargo-deny
+  cargo-deny:
+    name: Cargo Deny
     runs-on: ubuntu-latest
+    needs: [determine-affected-packages]
+    if: ${{ needs.determine-affected-packages.outputs.has-changes == 'true' }}
+
     steps:
       - uses: actions/checkout@v4
+
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check
+          arguments: --all-features
+
+  build-cargo-machete:
+    name: Build Cargo Machete (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    needs: [determine-affected-packages]
+    if: ${{ needs.determine-affected-packages.outputs.has-changes == 'true' }}
+    strategy:
+      fail-fast: true
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+
+    steps:
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/checkout@v4
+
+      - name: Setup cargo-machete
+        uses: BSteffaniak/cache-artifact@master
+        with:
+          repo: https://github.com/BSteffaniak/cargo-machete
+          command: cargo install --git https://github.com/BSteffaniak/cargo-machete --branch ignored-dirs cargo-machete
+          shell: bash
+          output-path: ~/.cargo/bin/cargo-machete${{ matrix.os == 'windows-latest' && '.exe' || '' }}
+          artifact-name: cargo-machete-${{ matrix.os }}-binary
+          cache-key-prefix: cargo-machete
+          make-executable: true
+          verify-command: --version
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ matrix.os == 'macos-latest' }}
+        with:
+          name: cargo-machete-macos
+          path: ~/.cargo/bin/cargo-machete
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ matrix.os == 'ubuntu-latest' }}
+        with:
+          name: cargo-machete-ubuntu
+          path: ~/.cargo/bin/cargo-machete
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ matrix.os == 'windows-latest' }}
+        with:
+          name: cargo-machete.exe
+          path: ~/.cargo/bin/cargo-machete.exe
+
+  validate-feature-propagation:
+    name: Validate Feature Propagation
+    runs-on: ubuntu-latest
+    needs: [determine-affected-packages]
+    if: ${{ needs.determine-affected-packages.outputs.has-changes == 'true' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Validate feature propagation
+        uses: MoosicBox/MoosicBox/.github/actions/clippier@master
+        with:
+          command: validate-feature-propagation
+          workspace-path: .
+          skip-on-no-changes: false
+
+  build:
+    name: ${{ matrix.package.name }}${{ matrix.package.hasMultipleOs && format(' {0}', matrix.package.osEmoji) || '' }}${{ matrix.package.osCount > 1 && format(' {0}', matrix.package.osIndex) || '' }}
+    runs-on: ${{ matrix.package.os }}
+    needs: [determine-affected-packages, build-cargo-machete]
+    if: ${{ needs.determine-affected-packages.outputs.has-changes == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        package: ${{ fromJson(needs.determine-affected-packages.outputs.matrix) }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup CI environment
+        uses: MoosicBox/MoosicBox/.github/actions/clippier@master
+        with:
+          command: setup
+          package-json: ${{ toJson(matrix.package) }}
+          skip-checkout: "true"
+          rust-components: "rustfmt, clippy"
+
+      - name: Download cargo-machete
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.package.os == 'windows-latest' && 'cargo-machete.exe' || matrix.package.os == 'macos-latest' && 'cargo-machete-macos' || 'cargo-machete-ubuntu' }}
+          path: ~/.cargo/bin
+
+      - name: Make cargo-machete executable
+        shell: bash
+        run: chmod +x ~/.cargo/bin/cargo-machete${{ matrix.package.os == 'windows-latest' && '.exe' || '' }}
+
+      - name: Test suite for ${{ matrix.package.name }}
+        id: test-suite
+        uses: MoosicBox/MoosicBox/.github/actions/clippier@master
+        with:
+          command: run-matrix
+          run-matrix-package-json: ${{ toJson(matrix.package) }}
+          run-matrix-steps: |
+            clear-target-1:
+              commands: rm -rf target
+
+            clippy:
+              commands: |
+                {{if matrix.package.env}}{{matrix.package.env}} {{endif}}cargo{{if matrix.package.nightly}} +nightly{{endif}} clippy {{if runner.debug}}-vv {{endif}}--all-targets --no-default-features {{clippier.feature-flags}}{{if matrix.package.cargo}} {{matrix.package.cargo}}{{endif}} -- -D warnings
+              label: "Clippy"
+              strategy: "sequential"
+
+            tests:
+              commands: |
+                SSHENV_DEVICE_SEAL_BACKEND=local-file {{if matrix.package.env}}{{matrix.package.env}} {{endif}}cargo{{if matrix.package.nightly}} +nightly{{endif}} test {{if runner.debug}}-vv {{endif}}--no-default-features {{clippier.feature-flags}}{{if matrix.package.cargo}} {{matrix.package.cargo}}{{endif}} --no-fail-fast
+              label: "Tests"
+              strategy: "sequential"
+
+            doctests:
+              commands: |
+                PACKAGE_PATH="{{matrix.package.path}}"
+                PACKAGE_PATH="${PACKAGE_PATH#./}"
+                if ! cargo metadata --format-version=1 --no-deps | jq -e ".packages[] | select(.manifest_path | contains(\"${PACKAGE_PATH}/Cargo.toml\")) | .targets[] | select(.kind[] | contains(\"lib\"))" > /dev/null 2>&1; then
+                    echo "Skipping doctests for {{matrix.package.name}} - no library target found"
+                    exit 0
+                fi
+                {{if matrix.package.env}}{{matrix.package.env}} {{endif}}cargo{{if matrix.package.nightly}} +nightly{{endif}} test --doc {{if runner.debug}}-vv {{endif}}--no-default-features {{clippier.feature-flags}}{{if matrix.package.cargo}} {{matrix.package.cargo}}{{endif}} --no-fail-fast
+              label: "Doctests"
+              strategy: "sequential"
+
+            build-release:
+              commands: |
+                {{if matrix.package.env}}{{matrix.package.env}} {{endif}}cargo{{if matrix.package.nightly}} +nightly{{endif}} build --release {{if runner.debug}}-vv {{endif}}--no-default-features {{clippier.feature-flags}}{{if matrix.package.cargo}} {{matrix.package.cargo}}{{endif}}
+              label: "Release Build"
+              strategy: "sequential"
+
+            clear-target-2:
+              commands: rm -rf target
+
+            format:
+              commands: |
+                cargo{{if matrix.package.nightly}} +nightly{{endif}}{{if runner.debug}} -vv{{endif}} fmt --all -- --check
+              label: "Format Check"
+              strategy: "combined"
+
+            machete:
+              commands: |
+                ~/.cargo/bin/cargo-machete${{ matrix.package.os == 'windows-latest' && '.exe' || '' }} --with-metadata {{matrix.package.path}}
+              label: "Dependency Validation (Machete)"
+              strategy: "combined"
+              working-directory: "."
+
+          run-matrix-debug-shells: "fish,bash"
+          run-matrix-auto-upload: true
+
+      - name: Upload failure data for workflow summary
+        if: always() && steps.test-suite.outputs.failure-artifact-path != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.test-suite.outputs.failure-artifact-name }}
+          path: ${{ steps.test-suite.outputs.failure-artifact-path }}
+          if-no-files-found: ignore
+          overwrite: true
+
+  generate-failures-summary:
+    name: Generate Workflow Failures Summary
+    runs-on: ubuntu-latest
+    needs: [determine-affected-packages, build]
+    if: always() && needs.determine-affected-packages.outputs.has-changes == 'true'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download failure artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: test-results-*
+          path: ./failure-data
+          merge-multiple: true
+
+      - name: Generate workflow-wide failures summary
+        id: failures-summary
+        uses: MoosicBox/MoosicBox/.github/actions/clippier@master
+        with:
+          command: run-matrix-aggregate-failures
+          run-matrix-working-directory: ./failure-data
+          run-matrix-summary-auto-expand: never
+          run-matrix-aggregate-output-file: ./failures-summary.md
+
+      - name: Upload failures summary artifact
+        if: always() && steps.failures-summary.outputs.aggregate-summary-path != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: workflow-failures-summary
+          path: ${{ steps.failures-summary.outputs.aggregate-summary-path }}
+          if-no-files-found: ignore
