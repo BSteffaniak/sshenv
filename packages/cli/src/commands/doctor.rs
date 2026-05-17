@@ -42,7 +42,6 @@ fn windows_private_dacl_status(path: &std::path::Path) -> Result<bool> {
     use std::ptr::null_mut;
 
     use anyhow::Context;
-    use windows_sys::Win32::Foundation::LocalFree;
     use windows_sys::Win32::Security::Authorization::{GetNamedSecurityInfoW, SE_FILE_OBJECT};
     use windows_sys::Win32::Security::{
         DACL_SECURITY_INFORMATION, GetSecurityDescriptorControl, PSECURITY_DESCRIPTOR,
@@ -64,7 +63,7 @@ fn windows_private_dacl_status(path: &std::path::Path) -> Result<bool> {
             null_mut(),
             null_mut(),
             null_mut(),
-            &mut security_descriptor,
+            &raw mut security_descriptor,
         )
     };
     if rc != 0 {
@@ -77,7 +76,8 @@ fn windows_private_dacl_status(path: &std::path::Path) -> Result<bool> {
     let mut control = 0_u16;
     let mut revision = 0_u32;
     // SAFETY: `descriptor` is a valid security descriptor allocated by GetNamedSecurityInfoW.
-    let ok = unsafe { GetSecurityDescriptorControl(descriptor.0, &mut control, &mut revision) };
+    let ok =
+        unsafe { GetSecurityDescriptorControl(descriptor.0, &raw mut control, &raw mut revision) };
     if ok == 0 {
         return Err(std::io::Error::last_os_error()).context("failed to read descriptor control");
     }
@@ -91,7 +91,7 @@ struct LocalAllocGuard(windows_sys::Win32::Foundation::HLOCAL);
 impl Drop for LocalAllocGuard {
     fn drop(&mut self) {
         unsafe {
-            LocalFree(self.0);
+            windows_sys::Win32::Foundation::LocalFree(self.0);
         }
     }
 }
