@@ -57,10 +57,17 @@ pub fn default_rollback_path() -> PathBuf {
     if let Ok(p) = std::env::var("SSHENV_ROLLBACK") {
         return PathBuf::from(p);
     }
-    dirs::home_dir().map_or_else(
+    sshenv_home_dir().map_or_else(
         || PathBuf::from(".sshenv/rollback.toml"),
         |home| home.join(".sshenv").join("rollback.toml"),
     )
+}
+
+fn sshenv_home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(dirs::home_dir)
 }
 
 /// Ensure the loaded generation is not older than local state.

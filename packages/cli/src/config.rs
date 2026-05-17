@@ -81,10 +81,17 @@ pub fn default_config_path() -> PathBuf {
     if let Ok(path) = std::env::var("SSHENV_CONFIG") {
         return PathBuf::from(path);
     }
-    dirs::home_dir().map_or_else(
+    sshenv_home_dir().map_or_else(
         || PathBuf::from(".sshenv/config.toml"),
         |home| home.join(".sshenv").join("config.toml"),
     )
+}
+
+fn sshenv_home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(dirs::home_dir)
 }
 
 /// Load runtime configuration, returning defaults when no config file exists.
