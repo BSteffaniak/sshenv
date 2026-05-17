@@ -2481,20 +2481,37 @@ mod tests {
         let validation = vault.validate_profile_policy("p");
         let plan = vault.plan_profile_policy_repair("p", Some(&validation));
 
-        assert!(plan.repairable, "{:?}", plan.unrepairable);
-        assert!(
-            plan.actions
-                .contains(&ProfilePolicyRepairAction::BindPassphrase),
-            "{:?}",
-            plan.actions
-        );
-        assert!(
-            plan.actions
-                .contains(&ProfilePolicyRepairAction::RotateProfileKey),
-            "{:?}",
-            plan.actions
-        );
         assert_eq!(plan.findings, validation.findings);
+        if cfg!(feature = "passphrase-factor") {
+            assert!(plan.repairable, "{:?}", plan.unrepairable);
+            assert!(
+                plan.actions
+                    .contains(&ProfilePolicyRepairAction::BindPassphrase),
+                "{:?}",
+                plan.actions
+            );
+            assert!(
+                plan.actions
+                    .contains(&ProfilePolicyRepairAction::RotateProfileKey),
+                "{:?}",
+                plan.actions
+            );
+        } else {
+            assert!(!plan.repairable, "{:?}", plan.actions);
+            assert!(
+                !plan
+                    .actions
+                    .contains(&ProfilePolicyRepairAction::BindPassphrase),
+                "{:?}",
+                plan.actions
+            );
+            assert!(
+                plan.unrepairable.iter().any(|reason| reason
+                    == "passphrase binding requires a build with passphrase-factor support"),
+                "{:?}",
+                plan.unrepairable
+            );
+        }
     }
 
     #[test]
