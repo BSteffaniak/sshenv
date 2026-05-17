@@ -50,7 +50,7 @@ jobs:
       randomization-seed: ${{ steps.seed.outputs.value }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -131,7 +131,7 @@ jobs:
     if: ${{ needs.determine-affected-packages.outputs.has-changes == 'true' }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
@@ -151,7 +151,7 @@ jobs:
     steps:
       - uses: dtolnay/rust-toolchain@stable
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Setup cargo-machete
         uses: BSteffaniak/cache-artifact@master
@@ -165,19 +165,19 @@ jobs:
           make-executable: true
           verify-command: --version
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: ${{ matrix.os == 'macos-latest' }}
         with:
           name: cargo-machete-macos
           path: ~/.cargo/bin/cargo-machete
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: ${{ matrix.os == 'ubuntu-latest' }}
         with:
           name: cargo-machete-ubuntu
           path: ~/.cargo/bin/cargo-machete
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: ${{ matrix.os == 'windows-latest' }}
         with:
           name: cargo-machete.exe
@@ -190,7 +190,7 @@ jobs:
     if: ${{ needs.determine-affected-packages.outputs.has-changes == 'true' }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -212,7 +212,7 @@ jobs:
         package: ${{ fromJson(needs.determine-affected-packages.outputs.matrix) }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Setup CI environment
         uses: MoosicBox/MoosicBox/.github/actions/clippier@master
@@ -223,7 +223,7 @@ jobs:
           rust-components: "rustfmt, clippy"
 
       - name: Download cargo-machete
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: ${{ matrix.package.os == 'windows-latest' && 'cargo-machete.exe' || matrix.package.os == 'macos-latest' && 'cargo-machete-macos' || 'cargo-machete-ubuntu' }}
           path: ~/.cargo/bin
@@ -293,7 +293,7 @@ jobs:
 
       - name: Upload failure data for workflow summary
         if: always() && steps.test-suite.outputs.failure-artifact-path != ''
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ${{ steps.test-suite.outputs.failure-artifact-name }}
           path: ${{ steps.test-suite.outputs.failure-artifact-path }}
@@ -311,7 +311,7 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -330,10 +330,10 @@ jobs:
     if: always() && needs.determine-affected-packages.outputs.has-changes == 'true'
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Download failure artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           pattern: test-results-*
           path: ./failure-data
@@ -350,7 +350,7 @@ jobs:
 
       - name: Upload failures summary artifact
         if: always() && steps.failures-summary.outputs.aggregate-summary-path != ''
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: workflow-failures-summary
           path: ${{ steps.failures-summary.outputs.aggregate-summary-path }}
