@@ -308,7 +308,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
 
     steps:
       - uses: actions/checkout@v4
@@ -318,7 +318,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Run CLI integration tests
-        run: SSHENV_DEVICE_SEAL_BACKEND=local-file cargo test --package sshenv --all-features --test integration --no-fail-fast
+        shell: bash
+        env:
+          SSHENV_DEVICE_SEAL_BACKEND: local-file
+        run: cargo test --package sshenv --all-features --test integration --no-fail-fast
 
   generate-failures-summary:
     name: Generate Workflow Failures Summary
