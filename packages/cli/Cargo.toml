@@ -68,6 +68,8 @@ tempfile = { workspace = true }
 toml = { workspace = true }
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
     "Win32_System_Threading",
 ], default-features = false }
 zeroize = { workspace = true }
