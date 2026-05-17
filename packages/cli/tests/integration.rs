@@ -1,11 +1,11 @@
 //! Integration tests that drive the CLI end-to-end against temp files.
 
 use std::io::Cursor;
-#[cfg(any(feature = "remote-factor", feature = "shamir-sharing"))]
+#[cfg(any(feature = "shamir-sharing", all(feature = "remote-factor", unix)))]
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::Command;
-#[cfg(any(feature = "remote-factor", feature = "shamir-sharing"))]
+#[cfg(any(feature = "shamir-sharing", all(feature = "remote-factor", unix)))]
 use std::process::Stdio;
 
 use rand_core::OsRng;
