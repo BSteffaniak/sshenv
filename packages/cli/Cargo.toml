@@ -22,6 +22,11 @@ default = [
 ]
 device-seal = ["sshenv_vault/device-seal"]
 device-seal-file = ["device-seal", "sshenv_vault/device-seal-file"]
+fail-on-warnings = [
+    "sshenv_cli_models/fail-on-warnings",
+    "sshenv_shims/fail-on-warnings",
+    "sshenv_vault/fail-on-warnings",
+]
 hardware-recipient = ["sshenv_vault/hardware-recipient"]
 kms-factor = ["remote-factor", "sshenv_vault/kms-factor"]
 linux-secret-service = ["device-seal", "sshenv_vault/linux-secret-service"]

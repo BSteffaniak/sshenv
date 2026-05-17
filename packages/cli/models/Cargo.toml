@@ -7,6 +7,9 @@ name                 = "sshenv_cli_models"
 repository.workspace = true
 version.workspace    = true
 
+[features]
+fail-on-warnings = []
+
 [dependencies]
 clap = { workspace = true }
 

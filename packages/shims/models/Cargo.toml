@@ -7,6 +7,9 @@ name                 = "sshenv_shims_models"
 repository.workspace = true
 version.workspace    = true
 
+[features]
+fail-on-warnings = []
+
 [dependencies]
 serde     = { workspace = true }
 thiserror = { workspace = true }
