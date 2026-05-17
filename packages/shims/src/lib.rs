@@ -287,6 +287,7 @@ fn set_mode_on_file(file: &fs::File, mode: u32) -> Result<()> {
 }
 
 #[cfg(not(unix))]
+#[allow(clippy::missing_const_for_fn, clippy::unnecessary_wraps)]
 fn set_mode_on_file(_file: &fs::File, _mode: u32) -> Result<()> {
     Ok(())
 }

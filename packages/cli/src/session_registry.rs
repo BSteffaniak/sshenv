@@ -186,6 +186,7 @@ fn set_mode_on_file(file: &File, mode: u32) -> Result<()> {
 }
 
 #[cfg(not(unix))]
+#[allow(clippy::missing_const_for_fn, clippy::unnecessary_wraps)]
 fn set_mode_on_file(_file: &File, _mode: u32) -> Result<()> {
     Ok(())
 }
@@ -199,6 +200,7 @@ fn lock_path_for(path: &Path) -> PathBuf {
 }
 
 struct RegistryLock {
+    #[cfg_attr(not(unix), allow(dead_code))]
     file: File,
 }
 
@@ -235,6 +237,7 @@ fn lock_file(file: &File) -> Result<()> {
 }
 
 #[cfg(not(unix))]
+#[allow(clippy::missing_const_for_fn, clippy::unnecessary_wraps)]
 fn lock_file(_file: &File) -> Result<()> {
     Ok(())
 }

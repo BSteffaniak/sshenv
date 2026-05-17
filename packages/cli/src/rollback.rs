@@ -307,6 +307,7 @@ fn save_state(path: &Path, state: &RollbackFile) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use super::*;
 
     #[cfg(unix)]

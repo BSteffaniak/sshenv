@@ -5,7 +5,9 @@
 //! the process start time so `sessions kill` can verify that a registry
 //! entry still points at the same process before sending a signal.
 
-use anyhow::{Context, Result};
+#[cfg(unix)]
+use anyhow::Context;
+use anyhow::Result;
 
 #[cfg(unix)]
 pub type Pid = libc::pid_t;

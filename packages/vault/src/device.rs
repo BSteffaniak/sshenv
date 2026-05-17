@@ -18,7 +18,6 @@ use std::io::Write;
 use std::path::Path;
 #[cfg(any(
     feature = "device-seal-file",
-    all(feature = "macos-keychain", target_os = "macos"),
     all(feature = "tpm-device-seal", target_os = "linux"),
     all(feature = "windows-dpapi", target_os = "windows")
 ))]
@@ -758,22 +757,22 @@ fn windows_dpapi_secret_path() -> PathBuf {
 }
 
 #[cfg(all(feature = "windows-dpapi", target_os = "windows"))]
-const DPAPI_PROTECT_SCRIPT: &str = r#"
+const DPAPI_PROTECT_SCRIPT: &str = r"
 $hex = [Console]::In.ReadToEnd().Trim()
 if (($hex.Length % 2) -ne 0) { throw 'hex input has odd length' }
 $bytes = New-Object byte[] ($hex.Length / 2)
 for ($i = 0; $i -lt $bytes.Length; $i++) { $bytes[$i] = [Convert]::ToByte($hex.Substring($i * 2, 2), 16) }
 $protected = [System.Security.Cryptography.ProtectedData]::Protect($bytes, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
 [Convert]::ToBase64String($protected)
-"#;
+";
 
 #[cfg(all(feature = "windows-dpapi", target_os = "windows"))]
-const DPAPI_UNPROTECT_SCRIPT: &str = r#"
+const DPAPI_UNPROTECT_SCRIPT: &str = r"
 $encoded = [Console]::In.ReadToEnd().Trim()
 $protected = [Convert]::FromBase64String($encoded)
 $bytes = [System.Security.Cryptography.ProtectedData]::Unprotect($protected, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
 ([BitConverter]::ToString($bytes)).Replace('-', '')
-"#;
+";
 
 #[cfg(all(feature = "macos-keychain", target_os = "macos"))]
 fn store_macos_keychain_secret(secret: &[u8]) -> Result<()> {
