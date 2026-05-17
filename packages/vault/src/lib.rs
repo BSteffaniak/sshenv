@@ -2116,6 +2116,17 @@ pub fn atomic_write(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
 
     tmp.persist(path)
         .with_context(|| format!("failed to persist vault at {}", path.display()))?;
+    restrict_private_file_permissions(path, mode)
+        .with_context(|| format!("failed to restrict permissions on {}", path.display()))?;
+    Ok(())
+}
+
+/// Apply platform-appropriate private-file permissions for files that would
+/// be `0600` on Unix. Public/non-secret modes are intentionally left alone.
+pub fn restrict_private_file_permissions(path: &Path, mode: u32) -> Result<()> {
+    if mode.trailing_zeros() >= 6 {
+        restrict_current_user_file(path)?;
+    }
     Ok(())
 }
 
@@ -2130,6 +2141,140 @@ fn set_permissions_mode_on_file(file: &fs::File, mode: u32) -> Result<()> {
 #[cfg(not(unix))]
 #[allow(clippy::missing_const_for_fn, clippy::unnecessary_wraps)]
 fn set_permissions_mode_on_file(_file: &fs::File, _mode: u32) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(windows)]
+fn restrict_current_user_file(path: &Path) -> Result<()> {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    use std::ptr::{null, null_mut};
+
+    use windows_sys::Win32::Foundation::{LocalFree, PSID};
+    use windows_sys::Win32::Security::Authorization::{
+        EXPLICIT_ACCESS_W, NO_INHERITANCE, SET_ACCESS, SetEntriesInAclW, TRUSTEE_IS_SID,
+        TRUSTEE_IS_USER, TRUSTEE_W,
+    };
+    use windows_sys::Win32::Security::{
+        ACL, DACL_SECURITY_INFORMATION, GetTokenInformation, OWNER_SECURITY_INFORMATION,
+        PROTECTED_DACL_SECURITY_INFORMATION, SE_FILE_OBJECT, SetNamedSecurityInfoW, TOKEN_QUERY,
+        TOKEN_USER, TokenUser,
+    };
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    let mut token = null_mut();
+    // SAFETY: Opens the current process token for query only.
+    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+        return Err(std::io::Error::last_os_error()).context("failed to open process token");
+    }
+    let token = HandleGuard(token);
+
+    let mut needed = 0_u32;
+    // SAFETY: This first call intentionally probes the required buffer length.
+    unsafe {
+        GetTokenInformation(token.0, TokenUser, null_mut(), 0, &mut needed);
+    }
+    if needed == 0 {
+        return Err(std::io::Error::last_os_error()).context("failed to query token user length");
+    }
+
+    let mut buffer = vec![0_u8; usize::try_from(needed).context("token user buffer too large")?];
+    // SAFETY: `buffer` is writable and sized according to the previous query.
+    if unsafe {
+        GetTokenInformation(
+            token.0,
+            TokenUser,
+            buffer.as_mut_ptr().cast(),
+            needed,
+            &mut needed,
+        )
+    } == 0
+    {
+        return Err(std::io::Error::last_os_error()).context("failed to query token user");
+    }
+
+    // SAFETY: The buffer was populated as a TOKEN_USER by GetTokenInformation.
+    let user = unsafe { &*(buffer.as_ptr().cast::<TOKEN_USER>()) };
+    let user_sid = user.User.Sid;
+
+    let mut trustee = TRUSTEE_W {
+        pMultipleTrustee: null_mut(),
+        MultipleTrusteeOperation: 0,
+        TrusteeForm: TRUSTEE_IS_SID,
+        TrusteeType: TRUSTEE_IS_USER,
+        ptstrName: user_sid.cast(),
+    };
+    let mut access = EXPLICIT_ACCESS_W {
+        grfAccessPermissions: 0x1F01FF, // FILE_ALL_ACCESS
+        grfAccessMode: SET_ACCESS,
+        grfInheritance: NO_INHERITANCE,
+        Trustee: trustee,
+    };
+    let mut acl: *mut ACL = null_mut();
+    // SAFETY: Creates a new ACL for the single current-user ACE.
+    let rc = unsafe { SetEntriesInAclW(1, &mut access, null_mut(), &mut acl) };
+    if rc != 0 {
+        return Err(std::io::Error::from_raw_os_error(
+            i32::try_from(rc).unwrap_or(i32::MAX),
+        ))
+        .context("failed to build private file ACL");
+    }
+    let acl = LocalAllocGuard(acl.cast());
+
+    let wide_path: Vec<u16> = OsStr::new(path)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    // SAFETY: `wide_path` is NUL-terminated, `user_sid` and ACL are valid for this call.
+    let rc = unsafe {
+        SetNamedSecurityInfoW(
+            wide_path.as_ptr().cast_mut(),
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION
+                | DACL_SECURITY_INFORMATION
+                | PROTECTED_DACL_SECURITY_INFORMATION,
+            user_sid,
+            null_mut(),
+            acl.0.cast(),
+            null_mut(),
+        )
+    };
+    if rc != 0 {
+        return Err(std::io::Error::from_raw_os_error(
+            i32::try_from(rc).unwrap_or(i32::MAX),
+        ))
+        .context("failed to set private file ACL");
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+struct HandleGuard(windows_sys::Win32::Foundation::HANDLE);
+
+#[cfg(windows)]
+impl Drop for HandleGuard {
+    fn drop(&mut self) {
+        unsafe {
+            windows_sys::Win32::Foundation::CloseHandle(self.0);
+        }
+    }
+}
+
+#[cfg(windows)]
+struct LocalAllocGuard(windows_sys::Win32::Foundation::HLOCAL);
+
+#[cfg(windows)]
+impl Drop for LocalAllocGuard {
+    fn drop(&mut self) {
+        unsafe {
+            LocalFree(self.0);
+        }
+    }
+}
+
+#[cfg(not(windows))]
+#[allow(clippy::missing_const_for_fn, clippy::unnecessary_wraps)]
+fn restrict_current_user_file(_path: &Path) -> Result<()> {
     Ok(())
 }
 

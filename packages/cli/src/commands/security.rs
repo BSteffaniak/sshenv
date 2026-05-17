@@ -4427,11 +4427,7 @@ fn copy_vault_file(from: &Path, to: &Path) -> Result<()> {
         fs::create_dir_all(parent)?;
     }
     fs::copy(from, to)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(to, fs::Permissions::from_mode(0o600))?;
-    }
+    sshenv_vault::restrict_private_file_permissions(to, 0o600)?;
     Ok(())
 }
 
