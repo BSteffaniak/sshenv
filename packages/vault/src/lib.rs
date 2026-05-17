@@ -2196,7 +2196,7 @@ fn restrict_current_user_file(path: &Path) -> Result<()> {
     let user = unsafe { &*(buffer.as_ptr().cast::<TOKEN_USER>()) };
     let user_sid = user.User.Sid;
 
-    let mut trustee = TRUSTEE_W {
+    let trustee = TRUSTEE_W {
         pMultipleTrustee: null_mut(),
         MultipleTrusteeOperation: 0,
         TrusteeForm: TRUSTEE_IS_SID,
