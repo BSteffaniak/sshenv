@@ -54,19 +54,23 @@ sshenv_cli_models = { workspace = true }
 sshenv_shims      = { workspace = true }
 sshenv_vault      = { workspace = true }
 
-age        = { workspace = true }
-anyhow     = { workspace = true }
-clap       = { workspace = true }
-dirs       = { workspace = true }
-hex        = { workspace = true }
-libc       = { workspace = true }
-rpassword  = { workspace = true }
-serde      = { workspace = true }
+age = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+dirs = { workspace = true }
+hex = { workspace = true }
+libc = { workspace = true }
+rpassword = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
-ssh-key    = { workspace = true, features = ["ed25519"] }
-tempfile   = { workspace = true }
-toml       = { workspace = true }
-zeroize    = { workspace = true }
+ssh-key = { workspace = true, features = ["ed25519"] }
+tempfile = { workspace = true }
+toml = { workspace = true }
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+], default-features = false }
+zeroize = { workspace = true }
 
 [dev-dependencies]
 rand_core = { version = "0.6", default-features = false, features = [

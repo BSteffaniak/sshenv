@@ -5,7 +5,7 @@
 //! the process start time so `sessions kill` can verify that a registry
 //! entry still points at the same process before sending a signal.
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use anyhow::Context;
 use anyhow::Result;
 
@@ -69,7 +69,18 @@ pub fn send_signal(pid: Pid, signal: Signal) -> Result<bool> {
         }
     }
 
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        match signal {
+            Signal::Term | Signal::Kill => terminate_windows_process(pid),
+            Signal::Int | Signal::Hup => anyhow::bail!(
+                "session signal {} is not supported on Windows; use term or kill",
+                signal.name()
+            ),
+        }
+    }
+
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = (pid, signal);
         anyhow::bail!("session signaling is not supported on this platform")
@@ -164,7 +175,87 @@ fn platform_process_token(_pid: Pid) -> Option<String> {
     None
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn platform_process_token(pid: Pid) -> Option<String> {
+    use windows_sys::Win32::Foundation::{CloseHandle, FILETIME};
+    use windows_sys::Win32::System::Threading::{
+        GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    let pid_u32 = u32::try_from(pid).ok()?;
+    // SAFETY: `OpenProcess` is called with query-only access and a caller-provided PID.
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid_u32) };
+    if handle.is_null() {
+        return None;
+    }
+
+    let mut creation = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let mut exit = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let mut kernel = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let mut user = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+
+    // SAFETY: `handle` is valid when non-null and all FILETIME pointers are writable.
+    let ok = unsafe { GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user) };
+    // SAFETY: `handle` came from `OpenProcess` and is closed exactly once here.
+    unsafe {
+        CloseHandle(handle);
+    }
+    if ok == 0 {
+        return None;
+    }
+
+    let creation_ticks =
+        (u64::from(creation.dwHighDateTime) << 32) | u64::from(creation.dwLowDateTime);
+    Some(format!("windows:{pid}:{creation_ticks}"))
+}
+
+#[cfg(windows)]
+fn terminate_windows_process(pid: Pid) -> Result<bool> {
+    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_INVALID_PARAMETER, GetLastError};
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_TERMINATE, TerminateProcess};
+
+    let pid_u32 = u32::try_from(pid).context("invalid Windows process id")?;
+    // SAFETY: `OpenProcess` is called with terminate access and a caller-provided PID.
+    let handle = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid_u32) };
+    if handle.is_null() {
+        // SAFETY: reads the thread-local last-error set by `OpenProcess`.
+        let error = unsafe { GetLastError() };
+        if error == ERROR_INVALID_PARAMETER {
+            return Ok(false);
+        }
+        return Err(std::io::Error::from_raw_os_error(
+            i32::try_from(error).unwrap_or(i32::MAX),
+        ))
+        .with_context(|| format!("failed to open pid {pid} for termination"));
+    }
+
+    // SAFETY: `handle` is valid and opened for PROCESS_TERMINATE.
+    let ok = unsafe { TerminateProcess(handle, 1) };
+    // SAFETY: `handle` came from `OpenProcess` and is closed exactly once here.
+    unsafe {
+        CloseHandle(handle);
+    }
+    if ok == 0 {
+        Err(std::io::Error::last_os_error())
+            .with_context(|| format!("failed to terminate pid {pid}"))
+    } else {
+        Ok(true)
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
 #[allow(clippy::missing_const_for_fn)]
 fn platform_process_token(_pid: Pid) -> Option<String> {
     None
