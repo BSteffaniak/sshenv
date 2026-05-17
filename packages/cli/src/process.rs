@@ -207,7 +207,15 @@ fn platform_process_token(pid: Pid) -> Option<String> {
     };
 
     // SAFETY: `handle` is valid when non-null and all FILETIME pointers are writable.
-    let ok = unsafe { GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user) };
+    let ok = unsafe {
+        GetProcessTimes(
+            handle,
+            &raw mut creation,
+            &raw mut exit,
+            &raw mut kernel,
+            &raw mut user,
+        )
+    };
     // SAFETY: `handle` came from `OpenProcess` and is closed exactly once here.
     unsafe {
         CloseHandle(handle);
