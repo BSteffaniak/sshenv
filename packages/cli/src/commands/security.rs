@@ -97,9 +97,16 @@ fn passphrase_arg_or_prompt(
 ) -> Result<zeroize::Zeroizing<String>> {
     Ok(match value {
         Some(value) => zeroize::Zeroizing::new(value),
-        None => zeroize::Zeroizing::new(
-            rpassword::prompt_password(prompt).context("failed to read passphrase")?,
-        ),
+        None => {
+            if !std::io::stdin().is_terminal() {
+                anyhow::bail!(
+                    "failed to read passphrase: stdin is not a terminal; pass --passphrase for non-interactive use"
+                );
+            }
+            zeroize::Zeroizing::new(
+                rpassword::prompt_password(prompt).context("failed to read passphrase")?,
+            )
+        }
     })
 }
 
