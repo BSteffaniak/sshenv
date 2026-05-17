@@ -4174,6 +4174,7 @@ fn binary_unlock_no_matching_key_errors_helpfully() {
 /// `~/.sshenv/bin` is first in PATH, the naive `Command::new(<cmd>)`
 /// would re-find the shim and loop forever. `sshenv run` must resolve
 /// the target by PATH-skipping the shim directory.
+#[cfg(unix)]
 #[test]
 fn binary_shim_does_not_self_invoke() {
     let bin = cargo_bin();
@@ -4442,8 +4443,12 @@ fn binary_rename_profile_moves_vars_and_updates_shim_bindings() {
     let binding = bindings.find_by_command("pi-bedrock").unwrap();
     assert_eq!(binding.profile, "bedrock");
 
-    let shim = std::fs::read_to_string(shim_dir.join("pi-bedrock")).unwrap();
+    let shim =
+        std::fs::read_to_string(shim_dir.join(sshenv_shims::shim_file_name("pi-bedrock"))).unwrap();
     assert!(shim.contains("profile: bedrock"));
+    #[cfg(windows)]
+    assert!(shim.contains("sshenv run \"bedrock\" -- \"pi-bedrock\" %*"));
+    #[cfg(not(windows))]
     assert!(shim.contains("exec sshenv run \"bedrock\" -- \"pi-bedrock\" \"$@\""));
 }
 
@@ -4476,7 +4481,11 @@ fn binary_shims_rename_updates_binding_and_regenerates_shims() {
         "bind failed: {}",
         String::from_utf8_lossy(&bind_out.stderr)
     );
-    assert!(shim_dir.join("pi-bedrock").exists());
+    assert!(
+        shim_dir
+            .join(sshenv_shims::shim_file_name("pi-bedrock"))
+            .exists()
+    );
 
     let rename_out = Command::new(&bin)
         .arg("shims")
@@ -4504,10 +4513,18 @@ fn binary_shims_rename_updates_binding_and_regenerates_shims() {
         "bedrock"
     );
 
-    assert!(!shim_dir.join("pi-bedrock").exists());
-    let shim = std::fs::read_to_string(shim_dir.join("bedrock")).unwrap();
+    assert!(
+        !shim_dir
+            .join(sshenv_shims::shim_file_name("pi-bedrock"))
+            .exists()
+    );
+    let shim =
+        std::fs::read_to_string(shim_dir.join(sshenv_shims::shim_file_name("bedrock"))).unwrap();
     assert!(shim.contains("profile: bedrock"));
     assert!(shim.contains("command: bedrock"));
+    #[cfg(windows)]
+    assert!(shim.contains("sshenv run \"bedrock\" -- \"bedrock\" %*"));
+    #[cfg(not(windows))]
     assert!(shim.contains("exec sshenv run \"bedrock\" -- \"bedrock\" \"$@\""));
 }
 

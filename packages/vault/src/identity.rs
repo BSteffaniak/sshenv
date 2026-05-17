@@ -58,7 +58,7 @@ impl PrivateKeySecurity {
 /// Duplicates are preserved at their first occurrence.
 #[must_use]
 pub fn discover_private_key_paths() -> Vec<PathBuf> {
-    let Some(home) = dirs::home_dir() else {
+    let Some(home) = ssh_home_dir() else {
         return Vec::new();
     };
     let ssh_dir = home.join(".ssh");
@@ -117,7 +117,7 @@ pub fn discover_private_key_paths_in(ssh_dir: &Path) -> Vec<PathBuf> {
 pub fn discover_public_key_paths() -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = Vec::new();
 
-    let Some(home) = dirs::home_dir() else {
+    let Some(home) = ssh_home_dir() else {
         return out;
     };
     let ssh_dir = home.join(".ssh");
@@ -182,6 +182,13 @@ fn append_pub_extension(path: &Path) -> PathBuf {
     PathBuf::from(value)
 }
 
+fn ssh_home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(dirs::home_dir)
+}
+
 /// Load all discoverable private keys as `age` identities, without any
 /// vault-recipient filter.
 ///
@@ -228,7 +235,7 @@ pub fn load_identities_from_paths(paths: &[PathBuf]) -> Result<Vec<Box<dyn age::
 pub fn load_identities_for_vault(
     recipient_fingerprints: &HashSet<String>,
 ) -> Result<Vec<Box<dyn age::Identity>>> {
-    let Some(home) = dirs::home_dir() else {
+    let Some(home) = ssh_home_dir() else {
         return Ok(Vec::new());
     };
     let ssh_dir = home.join(".ssh");
@@ -330,7 +337,7 @@ fn discover_age_plugin_identity_paths() -> Vec<PathBuf> {
         }
     }
 
-    if let Some(home) = dirs::home_dir() {
+    if let Some(home) = ssh_home_dir() {
         let file = home.join(".sshenv").join("age-plugin-identities");
         if file.is_file() {
             paths.insert(file);

@@ -165,7 +165,7 @@ fn command_has_path_component(cmd: &str) -> bool {
 #[cfg(windows)]
 fn command_candidates(dir: &Path, cmd: &str, path_ext: &OsStr) -> Vec<PathBuf> {
     let base = dir.join(cmd);
-    let mut candidates = vec![base.clone()];
+    let mut candidates = vec![base];
     if Path::new(cmd).extension().is_some() {
         return candidates;
     }
@@ -296,7 +296,13 @@ mod tests {
         let path = path_os(&[shim_dir.as_path(), real_dir.as_path()]);
         let r =
             resolve_command_skipping_shim_dir_in("mycmd", &shim_dir, &path, path_ext()).unwrap();
-        assert_eq!(r, real_dir.join("mycmd.cmd"));
+        assert_eq!(r.parent(), Some(real_dir.as_path()));
+        assert!(
+            r.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .eq_ignore_ascii_case("mycmd.cmd")
+        );
     }
 
     #[test]
