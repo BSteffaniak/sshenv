@@ -13,12 +13,10 @@ fail-on-warnings = ["sshenv_shims_models/fail-on-warnings"]
 [dependencies]
 sshenv_shims_models = { workspace = true }
 
-anyhow    = { workspace = true }
-dirs      = { workspace = true }
-serde     = { workspace = true }
-tempfile  = { workspace = true }
-thiserror = { workspace = true }
-toml      = { workspace = true }
+anyhow   = { workspace = true }
+dirs     = { workspace = true }
+tempfile = { workspace = true }
+toml     = { workspace = true }
 
 [lints]
 workspace = true

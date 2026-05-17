@@ -804,7 +804,6 @@ fn store_macos_keychain_secret(secret: &[u8]) -> Result<()> {
     all(feature = "macos-keychain", target_os = "macos"),
     all(feature = "linux-secret-service", target_os = "linux"),
     feature = "secure-enclave",
-    all(feature = "tpm-device-seal", target_os = "linux"),
     all(feature = "windows-dpapi", target_os = "windows")
 ))]
 fn parse_hex_secret(value: &str, label: &str) -> Result<Zeroizing<[u8; KEY_LEN]>> {

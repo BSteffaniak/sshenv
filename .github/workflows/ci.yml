@@ -79,6 +79,7 @@ jobs:
           spread: true
           randomize: true
           seed: ${{ steps.seed.outputs.value }}
+          skip-features: fail-on-warnings
           include-reasoning: true
           transform-name-regex: "^sshenv_"
           git-strategy: workflow-history
@@ -249,7 +250,7 @@ jobs:
 
             tests:
               commands: |
-                SSHENV_DEVICE_SEAL_BACKEND=local-file {{if matrix.package.env}}{{matrix.package.env}} {{endif}}cargo{{if matrix.package.nightly}} +nightly{{endif}} test {{if runner.debug}}-vv {{endif}}--no-default-features {{clippier.feature-flags}}{{if matrix.package.cargo}} {{matrix.package.cargo}}{{endif}} --no-fail-fast
+                {{if matrix.package.env}}{{matrix.package.env}} {{endif}}cargo{{if matrix.package.nightly}} +nightly{{endif}} test {{if runner.debug}}-vv {{endif}}--lib --bins --no-default-features {{clippier.feature-flags}}{{if matrix.package.cargo}} {{matrix.package.cargo}}{{endif}} --no-fail-fast
               label: "Tests"
               strategy: "sequential"
 
@@ -299,10 +300,30 @@ jobs:
           if-no-files-found: ignore
           overwrite: true
 
+  integration-tests:
+    name: Integration Tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    needs: [determine-affected-packages]
+    if: ${{ needs.determine-affected-packages.outputs.has-changes == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run CLI integration tests
+        run: SSHENV_DEVICE_SEAL_BACKEND=local-file cargo test --package sshenv --all-features --test integration --no-fail-fast
+
   generate-failures-summary:
     name: Generate Workflow Failures Summary
     runs-on: ubuntu-latest
-    needs: [determine-affected-packages, build]
+    needs: [determine-affected-packages, build, integration-tests]
     if: always() && needs.determine-affected-packages.outputs.has-changes == 'true'
 
     steps:

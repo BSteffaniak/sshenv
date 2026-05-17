@@ -1771,7 +1771,7 @@ fn rotate_recovered_vault_key_if_possible(
 }
 
 #[cfg(all(feature = "shamir-sharing", not(feature = "rekey")))]
-#[allow(clippy::unnecessary_wraps)]
+#[allow(clippy::missing_const_for_fn, clippy::unnecessary_wraps)]
 fn rotate_recovered_vault_key_if_possible(
     _vault: &mut Vault,
     _data_key: &mut DataKey,

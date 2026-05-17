@@ -46,7 +46,6 @@ clap = { version = "4", default-features = false, features = [
 dirs = { version = "6", default-features = false }
 hex = { version = "0.4", default-features = false, features = ["std"] }
 libc = { version = "0.2", default-features = false }
-proptest = { version = "1", default-features = false, features = ["std"] }
 rpassword = { version = "7", default-features = false }
 serde = { version = "1", default-features = false, features = [
     "std",

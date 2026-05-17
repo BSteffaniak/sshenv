@@ -55,7 +55,6 @@ thiserror = { workspace = true }
 zeroize = { workspace = true }
 
 [dev-dependencies]
-proptest = { workspace = true }
 ssh-key = { version = "0.6", default-features = false, features = [
     "std",
     "alloc",

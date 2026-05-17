@@ -246,6 +246,14 @@ pub struct Vault {
     profile_factor_keys: BTreeMap<String, Vec<PayloadKeyFactor>>,
 }
 
+#[cfg_attr(
+    not(any(
+        feature = "passphrase-factor",
+        feature = "device-seal",
+        feature = "remote-factor"
+    )),
+    allow(dead_code)
+)]
 #[derive(Debug, Clone)]
 struct PayloadKeyFactor {
     kind: UnlockFactorKindV2,
