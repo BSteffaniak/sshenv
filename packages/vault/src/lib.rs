@@ -2148,17 +2148,16 @@ fn set_permissions_mode_on_file(_file: &fs::File, _mode: u32) -> Result<()> {
 fn restrict_current_user_file(path: &Path) -> Result<()> {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
-    use std::ptr::{null, null_mut};
+    use std::ptr::null_mut;
 
-    use windows_sys::Win32::Foundation::{LocalFree, PSID};
     use windows_sys::Win32::Security::Authorization::{
-        EXPLICIT_ACCESS_W, NO_INHERITANCE, SET_ACCESS, SetEntriesInAclW, TRUSTEE_IS_SID,
-        TRUSTEE_IS_USER, TRUSTEE_W,
+        EXPLICIT_ACCESS_W, SE_FILE_OBJECT, SET_ACCESS, SetEntriesInAclW, SetNamedSecurityInfoW,
+        TRUSTEE_IS_SID, TRUSTEE_IS_USER, TRUSTEE_W,
     };
     use windows_sys::Win32::Security::{
-        ACL, DACL_SECURITY_INFORMATION, GetTokenInformation, OWNER_SECURITY_INFORMATION,
-        PROTECTED_DACL_SECURITY_INFORMATION, SE_FILE_OBJECT, SetNamedSecurityInfoW, TOKEN_QUERY,
-        TOKEN_USER, TokenUser,
+        ACL, DACL_SECURITY_INFORMATION, GetTokenInformation, NO_INHERITANCE,
+        OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, TOKEN_QUERY, TOKEN_USER,
+        TokenUser,
     };
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
@@ -2205,7 +2204,7 @@ fn restrict_current_user_file(path: &Path) -> Result<()> {
         ptstrName: user_sid.cast(),
     };
     let mut access = EXPLICIT_ACCESS_W {
-        grfAccessPermissions: 0x1F01FF, // FILE_ALL_ACCESS
+        grfAccessPermissions: 0x001F_01FF, // FILE_ALL_ACCESS
         grfAccessMode: SET_ACCESS,
         grfInheritance: NO_INHERITANCE,
         Trustee: trustee,
@@ -2267,7 +2266,7 @@ struct LocalAllocGuard(windows_sys::Win32::Foundation::HLOCAL);
 impl Drop for LocalAllocGuard {
     fn drop(&mut self) {
         unsafe {
-            LocalFree(self.0);
+            windows_sys::Win32::Foundation::LocalFree(self.0);
         }
     }
 }
