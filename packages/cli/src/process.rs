@@ -159,12 +159,12 @@ fn platform_process_token(pid: Pid) -> Option<String> {
 }
 
 #[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
-fn platform_process_token(_pid: Pid) -> Option<String> {
+const fn platform_process_token(_pid: Pid) -> Option<String> {
     None
 }
 
 #[cfg(not(unix))]
-fn platform_process_token(_pid: Pid) -> Option<String> {
+const fn platform_process_token(_pid: Pid) -> Option<String> {
     None
 }
 
