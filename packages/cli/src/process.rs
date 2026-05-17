@@ -159,12 +159,14 @@ fn platform_process_token(pid: Pid) -> Option<String> {
 }
 
 #[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
-const fn platform_process_token(_pid: Pid) -> Option<String> {
+#[allow(clippy::missing_const_for_fn)]
+fn platform_process_token(_pid: Pid) -> Option<String> {
     None
 }
 
 #[cfg(not(unix))]
-const fn platform_process_token(_pid: Pid) -> Option<String> {
+#[allow(clippy::missing_const_for_fn)]
+fn platform_process_token(_pid: Pid) -> Option<String> {
     None
 }
 
