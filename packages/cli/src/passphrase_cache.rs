@@ -1,23 +1,32 @@
 use std::path::Path;
+#[cfg(target_os = "macos")]
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context, Result, bail};
-use serde::{Deserialize, Serialize};
+#[cfg(target_os = "macos")]
+use anyhow::Context;
+use anyhow::{Result, bail};
+#[cfg(target_os = "macos")]
+use serde::Deserialize;
+use serde::Serialize;
 use zeroize::Zeroizing;
 
 use crate::config::{PassphraseCacheBackend, load as load_config};
+#[cfg(target_os = "macos")]
 use crate::session_registry::vault_id;
 
+#[cfg(target_os = "macos")]
 const MACOS_KEYCHAIN_SERVICE: &str = "sshenv passphrase cache";
 const DEFAULT_TTL_SECONDS: u64 = 300;
 
+#[cfg(target_os = "macos")]
 #[derive(Debug, Serialize)]
 struct CacheEntry<'a> {
     passphrase: &'a str,
     expires_unix: u64,
 }
 
+#[cfg(target_os = "macos")]
 #[derive(Debug, Deserialize)]
 struct OwnedCacheEntry {
     passphrase: String,
@@ -94,6 +103,7 @@ const fn backend_available(backend: PassphraseCacheBackend) -> bool {
     }
 }
 
+#[cfg(target_os = "macos")]
 fn account(vault_path: &Path) -> String {
     format!("vault:{}", vault_id(vault_path))
 }

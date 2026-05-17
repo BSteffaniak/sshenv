@@ -3198,6 +3198,7 @@ fn binary_security_preset_recommended_migrates_to_v2() {
         .arg("--recipient-key")
         .arg(home.join(".ssh").join("id_ed25519.pub"))
         .env("HOME", &home)
+        .env("SSHENV_DEVICE_SEAL_BACKEND", "local-file")
         .env_remove("SSHENV_VAULT")
         .output()
         .expect("run security preset recommended");
@@ -3213,6 +3214,7 @@ fn binary_security_preset_recommended_migrates_to_v2() {
         .arg("list-recipients")
         .arg("--verbose")
         .env("HOME", &home)
+        .env("SSHENV_DEVICE_SEAL_BACKEND", "local-file")
         .env_remove("SSHENV_VAULT")
         .output()
         .expect("run list-recipients");

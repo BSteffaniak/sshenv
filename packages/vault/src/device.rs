@@ -65,6 +65,8 @@ const BACKEND_WINDOWS_DPAPI: &str = "windows-dpapi";
 const KEY_LEN: usize = 32;
 #[cfg(feature = "secure-enclave")]
 pub const SECURE_ENCLAVE_COMMAND_ENV: &str = "SSHENV_SECURE_ENCLAVE_DEVICE_SEAL_COMMAND";
+#[cfg(feature = "device-seal-file")]
+const DEVICE_SEAL_BACKEND_ENV: &str = "SSHENV_DEVICE_SEAL_BACKEND";
 #[cfg(all(feature = "macos-keychain", target_os = "macos"))]
 const MACOS_KEYCHAIN_SERVICE: &str = "sshenv device seal";
 #[cfg(all(feature = "macos-keychain", target_os = "macos"))]
@@ -193,6 +195,11 @@ pub const fn backend_status() -> &'static str {
 }
 
 fn load_or_create_device_secret() -> Result<(&'static str, Zeroizing<[u8; KEY_LEN]>)> {
+    #[cfg(feature = "device-seal-file")]
+    if local_file_backend_requested()? {
+        return load_or_create_local_file_secret();
+    }
+
     #[cfg(feature = "secure-enclave")]
     if secure_enclave_command_path().is_some() {
         if let Ok(secret) = load_secure_enclave_secret() {
@@ -266,13 +273,7 @@ fn load_or_create_device_secret() -> Result<(&'static str, Zeroizing<[u8; KEY_LE
         not(all(feature = "tpm-device-seal", target_os = "linux"))
     ))]
     {
-        if let Ok(secret) = load_local_file_secret() {
-            return Ok((BACKEND_LOCAL_FILE, secret));
-        }
-        let secret = create_random_secret();
-        let encoded = format!("{}\n", hex::encode(secret.as_slice()));
-        crate::atomic_write(&local_file_secret_path(), encoded.as_bytes(), 0o600)?;
-        Ok((BACKEND_LOCAL_FILE, secret))
+        load_or_create_local_file_secret()
     }
 
     #[cfg(all(
@@ -308,6 +309,33 @@ fn create_random_secret() -> Zeroizing<[u8; KEY_LEN]> {
     let mut secret = [0_u8; KEY_LEN];
     rand_core::OsRng.fill_bytes(&mut secret);
     Zeroizing::new(secret)
+}
+
+#[cfg(feature = "device-seal-file")]
+fn local_file_backend_requested() -> Result<bool> {
+    let Ok(value) = std::env::var(DEVICE_SEAL_BACKEND_ENV) else {
+        return Ok(false);
+    };
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(false);
+    }
+    if value == BACKEND_LOCAL_FILE {
+        Ok(true)
+    } else {
+        bail!("unsupported device-seal backend override '{value}'")
+    }
+}
+
+#[cfg(feature = "device-seal-file")]
+fn load_or_create_local_file_secret() -> Result<(&'static str, Zeroizing<[u8; KEY_LEN]>)> {
+    if let Ok(secret) = load_local_file_secret() {
+        return Ok((BACKEND_LOCAL_FILE, secret));
+    }
+    let secret = create_random_secret();
+    let encoded = format!("{}\n", hex::encode(secret.as_slice()));
+    crate::atomic_write(&local_file_secret_path(), encoded.as_bytes(), 0o600)?;
+    Ok((BACKEND_LOCAL_FILE, secret))
 }
 
 fn load_local_file_secret() -> Result<Zeroizing<[u8; KEY_LEN]>> {
@@ -536,7 +564,12 @@ fn load_tpm_secret() -> Result<Zeroizing<[u8; KEY_LEN]>> {
     bail!("TPM device-seal backend is not available in this build")
 }
 
-#[cfg(all(feature = "tpm-device-seal", target_os = "linux"))]
+#[cfg(all(
+    feature = "tpm-device-seal",
+    target_os = "linux",
+    not(all(feature = "linux-secret-service", target_os = "linux")),
+    not(all(feature = "windows-dpapi", target_os = "windows"))
+))]
 fn store_tpm_secret(secret: &[u8]) -> Result<()> {
     let state = tpm_state_dir();
     std::fs::create_dir_all(&state).with_context(|| {
@@ -568,7 +601,12 @@ fn create_tpm_primary(primary: &Path) -> Result<()> {
     )
 }
 
-#[cfg(all(feature = "tpm-device-seal", target_os = "linux"))]
+#[cfg(all(
+    feature = "tpm-device-seal",
+    target_os = "linux",
+    not(all(feature = "linux-secret-service", target_os = "linux")),
+    not(all(feature = "windows-dpapi", target_os = "windows"))
+))]
 fn create_tpm_sealed_object(
     primary: &Path,
     public: &Path,

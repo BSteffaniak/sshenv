@@ -2,9 +2,13 @@
 # Run `cargo deny check` locally or in CI.
 
 [advisories]
-ignore  = []
+ignore = [
+    # Pulled in by age v0.11.2 via rsa v0.9.10. No patched rsa release is
+    # available for RUSTSEC-2023-0071 yet; revisit when age/rsa ships one.
+    "RUSTSEC-2023-0071",
+]
 version = 2
-yanked  = "deny"
+yanked = "deny"
 
 [licenses]
 allow = [
