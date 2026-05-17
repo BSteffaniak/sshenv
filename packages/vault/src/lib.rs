@@ -2147,6 +2147,7 @@ fn set_permissions_mode_on_file(_file: &fs::File, _mode: u32) -> Result<()> {
 #[cfg(windows)]
 fn restrict_current_user_file(path: &Path) -> Result<()> {
     use std::ffi::OsStr;
+    use std::mem::MaybeUninit;
     use std::os::windows::ffi::OsStrExt;
     use std::ptr::null_mut;
 
@@ -2163,7 +2164,7 @@ fn restrict_current_user_file(path: &Path) -> Result<()> {
 
     let mut token = null_mut();
     // SAFETY: Opens the current process token for query only.
-    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw mut token) } == 0 {
         return Err(std::io::Error::last_os_error()).context("failed to open process token");
     }
     let token = HandleGuard(token);
@@ -2171,13 +2172,15 @@ fn restrict_current_user_file(path: &Path) -> Result<()> {
     let mut needed = 0_u32;
     // SAFETY: This first call intentionally probes the required buffer length.
     unsafe {
-        GetTokenInformation(token.0, TokenUser, null_mut(), 0, &mut needed);
+        GetTokenInformation(token.0, TokenUser, null_mut(), 0, &raw mut needed);
     }
     if needed == 0 {
         return Err(std::io::Error::last_os_error()).context("failed to query token user length");
     }
 
-    let mut buffer = vec![0_u8; usize::try_from(needed).context("token user buffer too large")?];
+    let buffer_len = usize::try_from(needed).context("token user buffer too large")?;
+    let buffer_units = buffer_len.div_ceil(std::mem::size_of::<TOKEN_USER>());
+    let mut buffer = vec![MaybeUninit::<TOKEN_USER>::uninit(); buffer_units];
     // SAFETY: `buffer` is writable and sized according to the previous query.
     if unsafe {
         GetTokenInformation(
@@ -2185,7 +2188,7 @@ fn restrict_current_user_file(path: &Path) -> Result<()> {
             TokenUser,
             buffer.as_mut_ptr().cast(),
             needed,
-            &mut needed,
+            &raw mut needed,
         )
     } == 0
     {
@@ -2193,7 +2196,7 @@ fn restrict_current_user_file(path: &Path) -> Result<()> {
     }
 
     // SAFETY: The buffer was populated as a TOKEN_USER by GetTokenInformation.
-    let user = unsafe { &*(buffer.as_ptr().cast::<TOKEN_USER>()) };
+    let user = unsafe { &*buffer.as_ptr().cast::<TOKEN_USER>() };
     let user_sid = user.User.Sid;
 
     let trustee = TRUSTEE_W {
@@ -2203,7 +2206,7 @@ fn restrict_current_user_file(path: &Path) -> Result<()> {
         TrusteeType: TRUSTEE_IS_USER,
         ptstrName: user_sid.cast(),
     };
-    let mut access = EXPLICIT_ACCESS_W {
+    let access = EXPLICIT_ACCESS_W {
         grfAccessPermissions: 0x001F_01FF, // FILE_ALL_ACCESS
         grfAccessMode: SET_ACCESS,
         grfInheritance: NO_INHERITANCE,
@@ -2211,7 +2214,7 @@ fn restrict_current_user_file(path: &Path) -> Result<()> {
     };
     let mut acl: *mut ACL = null_mut();
     // SAFETY: Creates a new ACL for the single current-user ACE.
-    let rc = unsafe { SetEntriesInAclW(1, &mut access, null_mut(), &mut acl) };
+    let rc = unsafe { SetEntriesInAclW(1, &raw const access, null_mut(), &raw mut acl) };
     if rc != 0 {
         return Err(std::io::Error::from_raw_os_error(
             i32::try_from(rc).unwrap_or(i32::MAX),
