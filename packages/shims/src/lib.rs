@@ -4,8 +4,10 @@
 //! per-host plaintext state: a list of profile/command pairs plus an
 //! optional shim-directory override.
 //!
-//! Shim scripts (default: `~/.sshenv/bin/<command>`) are tiny `sh`
-//! scripts that exec `sshenv run <profile> -- <command> "$@"`.
+//! Shim scripts are tiny platform-native launchers in the configured shim
+//! directory. Unix builds generate POSIX `sh` scripts named after the bound
+//! command. Windows builds generate `.cmd` launchers so standard `PATHEXT`
+//! lookup can find them.
 
 #![allow(clippy::multiple_crate_versions)]
 
@@ -151,9 +153,28 @@ pub fn save_bindings(path: &Path, bindings: &BindingsFile) -> Result<()> {
     atomic_write_text(path, &combined, 0o644)
 }
 
-/// Generate the script body for one shim.
+/// Generate the platform-native script body for one shim.
 #[must_use]
 pub fn render_shim_script(binding: &Binding) -> String {
+    render_shim_script_for_platform(binding)
+}
+
+#[cfg(windows)]
+fn render_shim_script_for_platform(binding: &Binding) -> String {
+    format!(
+        "@echo off\r\n\
+REM Managed by sshenv; do not edit. Regenerate via `sshenv shims sync`.\r\n\
+REM profile: {profile}\r\n\
+REM command: {command}\r\n\
+sshenv run \"{profile}\" -- \"{command}\" %*\r\n\
+exit /b %ERRORLEVEL%\r\n",
+        profile = binding.profile,
+        command = binding.command,
+    )
+}
+
+#[cfg(not(windows))]
+fn render_shim_script_for_platform(binding: &Binding) -> String {
     format!(
         "#!/bin/sh\n\
 # Managed by sshenv; do not edit. Regenerate via `sshenv shims sync`.\n\
@@ -163,6 +184,25 @@ exec sshenv run \"{profile}\" -- \"{command}\" \"$@\"\n",
         profile = binding.profile,
         command = binding.command,
     )
+}
+
+#[must_use]
+pub fn shim_file_name(command: &str) -> String {
+    shim_file_name_for_platform(command)
+}
+
+#[cfg(windows)]
+fn shim_file_name_for_platform(command: &str) -> String {
+    if command.to_ascii_lowercase().ends_with(".cmd") {
+        command.to_string()
+    } else {
+        format!("{command}.cmd")
+    }
+}
+
+#[cfg(not(windows))]
+fn shim_file_name_for_platform(command: &str) -> String {
+    command.to_string()
 }
 
 /// Write all shims in `bindings.bindings` to `shim_dir`, removing any
@@ -187,8 +227,8 @@ pub fn sync_shims(shim_dir: &Path, bindings: &BindingsFile) -> Result<(usize, us
     let mut written = 0_usize;
     for binding in &bindings.bindings {
         validate_command_name(&binding.command)?;
-        wanted_names.insert(binding.command.clone());
-        let target = shim_dir.join(&binding.command);
+        wanted_names.insert(shim_file_name(&binding.command));
+        let target = shim_dir.join(shim_file_name(&binding.command));
         let script = render_shim_script(binding);
         atomic_write_text(&target, &script, 0o755)?;
         written += 1;
@@ -331,6 +371,7 @@ mod tests {
         assert_eq!(loaded.find_by_command("cmd-c").unwrap().profile, "p2");
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn render_shim_script_shape() {
         let b = Binding {
@@ -344,6 +385,34 @@ mod tests {
         assert!(s.contains("exec sshenv run \"pi-bedrock\" -- \"pi-bedrock\" \"$@\""));
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn render_shim_script_shape() {
+        let b = Binding {
+            profile: "pi-bedrock".into(),
+            command: "pi-bedrock".into(),
+        };
+        let s = render_shim_script(&b);
+        assert!(s.starts_with("@echo off\r\n"));
+        assert!(s.contains("REM profile: pi-bedrock"));
+        assert!(s.contains("REM command: pi-bedrock"));
+        assert!(s.contains("sshenv run \"pi-bedrock\" -- \"pi-bedrock\" %*"));
+        assert!(s.contains("exit /b %ERRORLEVEL%"));
+    }
+
+    #[test]
+    fn shim_file_name_is_platform_native() {
+        #[cfg(windows)]
+        {
+            assert_eq!(shim_file_name("tool"), "tool.cmd");
+            assert_eq!(shim_file_name("tool.cmd"), "tool.cmd");
+        }
+        #[cfg(not(windows))]
+        {
+            assert_eq!(shim_file_name("tool"), "tool");
+        }
+    }
+
     #[test]
     fn sync_writes_new_shims_and_removes_stale_managed() {
         let dir = tempfile::tempdir().unwrap();
@@ -355,16 +424,16 @@ mod tests {
         let (w, r) = sync_shims(&shim_dir, &f).unwrap();
         assert_eq!(w, 2);
         assert_eq!(r, 0);
-        assert!(shim_dir.join("a").exists());
-        assert!(shim_dir.join("b").exists());
+        assert!(shim_dir.join(shim_file_name("a")).exists());
+        assert!(shim_dir.join(shim_file_name("b")).exists());
 
         // Unbind b, sync again: b should be removed.
         f.remove_by_command("b");
         let (w, r) = sync_shims(&shim_dir, &f).unwrap();
         assert_eq!(w, 1);
         assert_eq!(r, 1);
-        assert!(shim_dir.join("a").exists());
-        assert!(!shim_dir.join("b").exists());
+        assert!(shim_dir.join(shim_file_name("a")).exists());
+        assert!(!shim_dir.join(shim_file_name("b")).exists());
     }
 
     #[test]

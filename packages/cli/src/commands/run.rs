@@ -98,19 +98,27 @@ fn current_shim_dir() -> PathBuf {
 /// [`resolve_command_skipping_shim_dir_in`] for a testable variant.
 fn resolve_command_skipping_shim_dir(cmd: &str, shim_dir: &Path) -> Result<PathBuf> {
     let path_env = std::env::var_os("PATH").unwrap_or_default();
-    resolve_command_skipping_shim_dir_in(cmd, shim_dir, path_env.as_os_str())
+    #[cfg(windows)]
+    let path_ext = std::env::var_os("PATHEXT").unwrap_or_default();
+    #[cfg(windows)]
+    let path_ext = path_ext.as_os_str();
+    #[cfg(not(windows))]
+    let path_ext = OsStr::new("");
+    resolve_command_skipping_shim_dir_in(cmd, shim_dir, path_env.as_os_str(), path_ext)
 }
 
-/// Test-friendly variant: takes the PATH string explicitly so tests don't
+/// Test-friendly variant: takes PATH and PATHEXT explicitly so tests don't
 /// need to mutate the process environment.
 fn resolve_command_skipping_shim_dir_in(
     cmd: &str,
     shim_dir: &Path,
     path_env: &OsStr,
+    path_ext: &OsStr,
 ) -> Result<PathBuf> {
     // Pass-through: if the command name is an absolute or relative path,
-    // don't do a PATH lookup. Matches execvp semantics.
-    if cmd.contains('/') {
+    // don't do a PATH lookup. Matches execvp/CreateProcess-style explicit
+    // path semantics.
+    if command_has_path_component(cmd) {
         return Ok(PathBuf::from(cmd));
     }
 
@@ -127,9 +135,10 @@ fn resolve_command_skipping_shim_dir_in(
             continue;
         }
         found_outside_shim_dir = true;
-        let candidate = dir.join(cmd);
-        if is_executable_file(&candidate) {
-            return Ok(candidate);
+        for candidate in command_candidates(&dir, cmd, path_ext) {
+            if is_executable_file(&candidate) {
+                return Ok(candidate);
+            }
         }
     }
 
@@ -141,6 +150,51 @@ fn resolve_command_skipping_shim_dir_in(
          Aborting to prevent infinite shim recursion.",
         shim_dir.display()
     );
+}
+
+#[cfg(windows)]
+fn command_has_path_component(cmd: &str) -> bool {
+    cmd.contains('/') || cmd.contains('\\') || Path::new(cmd).is_absolute()
+}
+
+#[cfg(not(windows))]
+fn command_has_path_component(cmd: &str) -> bool {
+    cmd.contains('/')
+}
+
+#[cfg(windows)]
+fn command_candidates(dir: &Path, cmd: &str, path_ext: &OsStr) -> Vec<PathBuf> {
+    let base = dir.join(cmd);
+    let mut candidates = vec![base.clone()];
+    if Path::new(cmd).extension().is_some() {
+        return candidates;
+    }
+
+    let path_ext = path_ext.to_string_lossy();
+    let extensions = if path_ext.trim().is_empty() {
+        ".COM;.EXE;.BAT;.CMD".to_string()
+    } else {
+        path_ext.to_string()
+    };
+
+    for ext in extensions.split(';') {
+        let ext = ext.trim();
+        if ext.is_empty() {
+            continue;
+        }
+        let normalized = if ext.starts_with('.') {
+            ext.to_string()
+        } else {
+            format!(".{ext}")
+        };
+        candidates.push(dir.join(format!("{cmd}{normalized}")));
+    }
+    candidates
+}
+
+#[cfg(not(windows))]
+fn command_candidates(dir: &Path, cmd: &str, _path_ext: &OsStr) -> Vec<PathBuf> {
+    vec![dir.join(cmd)]
 }
 
 #[cfg(feature = "runtime-hardening")]
@@ -184,21 +238,65 @@ mod tests {
         std::env::join_paths(parts.iter().map(|p| p.as_os_str())).unwrap()
     }
 
+    fn path_ext() -> &'static OsStr {
+        OsStr::new(".COM;.EXE;.BAT;.CMD")
+    }
+
     #[test]
     fn resolve_absolute_path_passes_through() {
         let path = path_os(&[]);
-        let r =
-            resolve_command_skipping_shim_dir_in("/usr/bin/env", Path::new("/nonexistent"), &path)
-                .unwrap();
+        let r = resolve_command_skipping_shim_dir_in(
+            "/usr/bin/env",
+            Path::new("/nonexistent"),
+            &path,
+            path_ext(),
+        )
+        .unwrap();
         assert_eq!(r, PathBuf::from("/usr/bin/env"));
     }
 
     #[test]
     fn resolve_relative_with_slash_passes_through() {
         let path = path_os(&[]);
-        let r = resolve_command_skipping_shim_dir_in("./foo/bar", Path::new("/nonexistent"), &path)
-            .unwrap();
+        let r = resolve_command_skipping_shim_dir_in(
+            "./foo/bar",
+            Path::new("/nonexistent"),
+            &path,
+            path_ext(),
+        )
+        .unwrap();
         assert_eq!(r, PathBuf::from("./foo/bar"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn resolve_relative_with_backslash_passes_through() {
+        let path = path_os(&[]);
+        let r = resolve_command_skipping_shim_dir_in(
+            r".\foo\bar.exe",
+            Path::new(r"C:\nonexistent"),
+            &path,
+            path_ext(),
+        )
+        .unwrap();
+        assert_eq!(r, PathBuf::from(r".\foo\bar.exe"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn resolve_honors_pathext() {
+        let tmp = tempfile::tempdir().unwrap();
+        let shim_dir = tmp.path().join("shim");
+        let real_dir = tmp.path().join("real");
+        fs::create_dir_all(&shim_dir).unwrap();
+        fs::create_dir_all(&real_dir).unwrap();
+        mk_executable(&shim_dir.join("mycmd.cmd"));
+        mk_executable(&real_dir.join("mycmd.cmd"));
+
+        let path = path_os(&[shim_dir.as_path(), real_dir.as_path()]);
+        let r =
+            resolve_command_skipping_shim_dir_in("mycmd", &shim_dir, &path, path_ext()).unwrap();
+        assert_eq!(r, real_dir.join("mycmd.cmd"));
     }
 
     #[test]
@@ -212,7 +310,8 @@ mod tests {
         mk_executable(&real_dir.join("mycmd"));
 
         let path = path_os(&[shim_dir.as_path(), real_dir.as_path()]);
-        let r = resolve_command_skipping_shim_dir_in("mycmd", &shim_dir, &path).unwrap();
+        let r =
+            resolve_command_skipping_shim_dir_in("mycmd", &shim_dir, &path, path_ext()).unwrap();
         assert_eq!(r, real_dir.join("mycmd"));
     }
 
@@ -225,7 +324,8 @@ mod tests {
 
         // PATH contains only the shim dir.
         let path = path_os(&[shim_dir.as_path()]);
-        let err = resolve_command_skipping_shim_dir_in("mycmd", &shim_dir, &path).unwrap_err();
+        let err = resolve_command_skipping_shim_dir_in("mycmd", &shim_dir, &path, path_ext())
+            .unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("infinite shim recursion"),
@@ -247,8 +347,8 @@ mod tests {
         // other_dir exists but does not contain the command.
 
         let path = path_os(&[shim_dir.as_path(), other_dir.as_path()]);
-        let err =
-            resolve_command_skipping_shim_dir_in("no-such-cmd", &shim_dir, &path).unwrap_err();
+        let err = resolve_command_skipping_shim_dir_in("no-such-cmd", &shim_dir, &path, path_ext())
+            .unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("not found on PATH"),
@@ -275,7 +375,8 @@ mod tests {
         // recognized and skipped.
         let shim_with_slash: PathBuf = format!("{}/", shim_dir.display()).into();
         let path = path_os(&[shim_with_slash.as_path(), real_dir.as_path()]);
-        let r = resolve_command_skipping_shim_dir_in("mycmd", &shim_dir, &path).unwrap();
+        let r =
+            resolve_command_skipping_shim_dir_in("mycmd", &shim_dir, &path, path_ext()).unwrap();
         assert_eq!(r, real_dir.join("mycmd"));
     }
 
@@ -293,7 +394,8 @@ mod tests {
         // it, so comparison skips; then we check if mycmd exists there
         // (it doesn't), then move on.
         let path = path_os(&[nope.as_path(), shim_dir.as_path(), real_dir.as_path()]);
-        let r = resolve_command_skipping_shim_dir_in("mycmd", &shim_dir, &path).unwrap();
+        let r =
+            resolve_command_skipping_shim_dir_in("mycmd", &shim_dir, &path, path_ext()).unwrap();
         assert_eq!(r, real_dir.join("mycmd"));
     }
 }
