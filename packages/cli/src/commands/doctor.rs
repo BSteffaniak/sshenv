@@ -95,6 +95,17 @@ impl Drop for LocalAllocGuard {
         }
     }
 }
+const fn runtime_hardening_status() -> &'static str {
+    #[cfg(feature = "runtime-hardening")]
+    {
+        crate::runtime_hardening::platform_status()
+    }
+    #[cfg(not(feature = "runtime-hardening"))]
+    {
+        "disabled at compile time"
+    }
+}
+
 pub fn run(ctx: &CmdContext) -> Result<()> {
     let mut ok = true;
 
@@ -211,6 +222,10 @@ pub fn run(ctx: &CmdContext) -> Result<()> {
             }
         }
     }
+
+    // Runtime hardening.
+    println!();
+    println!("Runtime hardening: {}", runtime_hardening_status());
 
     // Shims.
     println!();

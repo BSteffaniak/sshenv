@@ -2,6 +2,20 @@
 
 use anyhow::Result;
 
+/// Human-readable summary of runtime hardening selected for this platform.
+#[must_use]
+pub const fn platform_status() -> &'static str {
+    if cfg!(target_os = "linux") {
+        "Unix core dumps disabled; Linux non-dumpable; best-effort memory lock"
+    } else if cfg!(unix) {
+        "Unix core dumps disabled; best-effort memory lock"
+    } else if cfg!(windows) {
+        "Windows crash dialogs suppressed; heap corruption termination enabled"
+    } else {
+        "No platform-specific runtime hardening available"
+    }
+}
+
 /// Apply best-effort process hardening before secrets are decrypted/injected.
 ///
 /// This intentionally avoids changing user-visible command ergonomics. On Unix
@@ -115,3 +129,19 @@ fn apply_memory_lock_best_effort() {
 
 #[cfg(not(unix))]
 const fn apply_memory_lock_best_effort() {}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn platform_status_matches_target_family() {
+        let status = super::platform_status();
+        #[cfg(target_os = "linux")]
+        assert!(status.contains("Linux non-dumpable"));
+        #[cfg(all(unix, not(target_os = "linux")))]
+        assert!(status.contains("Unix core dumps disabled"));
+        #[cfg(windows)]
+        assert!(status.contains("Windows crash dialogs suppressed"));
+        #[cfg(not(any(unix, windows)))]
+        assert!(status.contains("No platform-specific"));
+    }
+}

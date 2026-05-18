@@ -4536,7 +4536,7 @@ fn binary_shims_rename_updates_binding_and_regenerates_shims() {
     assert!(shim.contains("exec sshenv run \"bedrock\" -- \"bedrock\" \"$@\""));
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn wait_for_stdout_contains(command: &mut Command, needle: &str) -> bool {
     for _ in 0..40 {
         let output = command.output().expect("run polling command");
@@ -4549,7 +4549,24 @@ fn wait_for_stdout_contains(command: &mut Command, needle: &str) -> bool {
     false
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
+fn sleep_command_args() -> Vec<&'static str> {
+    #[cfg(windows)]
+    {
+        vec![
+            "powershell.exe",
+            "-NoProfile",
+            "-Command",
+            "Start-Sleep -Seconds 30",
+        ]
+    }
+    #[cfg(unix)]
+    {
+        vec!["/bin/sleep", "30"]
+    }
+}
+
+#[cfg(any(unix, windows))]
 #[test]
 fn binary_sessions_list_and_kill_tracked_run() {
     let bin = cargo_bin();
@@ -4570,8 +4587,7 @@ fn binary_sessions_list_and_kill_tracked_run() {
         .arg("run")
         .arg("tracked")
         .arg("--")
-        .arg("/bin/sleep")
-        .arg("30")
+        .args(sleep_command_args())
         .env("HOME", &home)
         .env("SSHENV_SESSIONS", &sessions_path)
         .spawn()
@@ -4622,7 +4638,7 @@ fn binary_sessions_list_and_kill_tracked_run() {
     panic!("tracked child was not killed by sessions kill");
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[test]
 fn binary_run_incognito_is_not_tracked() {
     let bin = cargo_bin();
@@ -4644,8 +4660,7 @@ fn binary_run_incognito_is_not_tracked() {
         .arg("--incognito")
         .arg("hidden")
         .arg("--")
-        .arg("/bin/sleep")
-        .arg("30")
+        .args(sleep_command_args())
         .env("HOME", &home)
         .env("SSHENV_SESSIONS", &sessions_path)
         .spawn()
@@ -4679,7 +4694,7 @@ fn binary_run_incognito_is_not_tracked() {
     );
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[test]
 fn binary_sessions_kill_all_targets_current_vault() {
     let bin = cargo_bin();
@@ -4717,8 +4732,7 @@ fn binary_sessions_kill_all_targets_current_vault() {
         .arg("run")
         .arg("one")
         .arg("--")
-        .arg("/bin/sleep")
-        .arg("30")
+        .args(sleep_command_args())
         .env("HOME", &home)
         .env("SSHENV_SESSIONS", &sessions_path)
         .spawn()
@@ -4729,8 +4743,7 @@ fn binary_sessions_kill_all_targets_current_vault() {
         .arg("run")
         .arg("two")
         .arg("--")
-        .arg("/bin/sleep")
-        .arg("30")
+        .args(sleep_command_args())
         .env("HOME", &home)
         .env("SSHENV_SESSIONS", &sessions_path)
         .spawn()
