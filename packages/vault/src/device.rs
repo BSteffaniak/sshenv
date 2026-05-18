@@ -830,6 +830,15 @@ impl Drop for LocalAllocGuard {
     }
 }
 
+#[cfg(all(test, feature = "windows-dpapi", target_os = "windows"))]
+fn test_windows_dpapi_roundtrip() {
+    let secret = [42_u8; KEY_LEN];
+    let protected = dpapi_protect(&secret, "sshenv device seal test").unwrap();
+    assert_ne!(protected, secret);
+    let unprotected = dpapi_unprotect(&protected).unwrap();
+    assert_eq!(unprotected, secret);
+}
+
 #[cfg(all(feature = "macos-keychain", target_os = "macos"))]
 fn store_macos_keychain_secret(secret: &[u8]) -> Result<()> {
     let secret_hex = hex::encode(secret);
@@ -891,6 +900,12 @@ fn local_file_secret_path() -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(all(feature = "windows-dpapi", target_os = "windows"))]
+    #[test]
+    fn windows_dpapi_roundtrips_device_secret() {
+        super::test_windows_dpapi_roundtrip();
+    }
+
     #[cfg(all(feature = "secure-enclave", unix))]
     #[test]
     fn secure_enclave_command_roundtrips_secret_hex() {

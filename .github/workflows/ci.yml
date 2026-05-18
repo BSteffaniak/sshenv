@@ -323,6 +323,13 @@ jobs:
           SSHENV_DEVICE_SEAL_BACKEND: local-file
         run: cargo test --package sshenv --all-features --test integration --no-fail-fast
 
+      - name: Run Windows DPAPI unit coverage
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        run: |
+          cargo test --package sshenv --all-features passphrase_cache::tests::windows_dpapi_roundtrips_cache_payload
+          cargo test --package sshenv_vault --all-features device::tests::windows_dpapi_roundtrips_device_secret
+
   generate-failures-summary:
     name: Generate Workflow Failures Summary
     runs-on: ubuntu-latest

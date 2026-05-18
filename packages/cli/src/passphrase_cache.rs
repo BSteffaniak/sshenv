@@ -452,3 +452,16 @@ impl Drop for LocalAllocGuard {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_dpapi_roundtrips_cache_payload() {
+        let plaintext = br#"{"passphrase":"secret","expires_unix":9999999999}"#;
+        let protected = super::dpapi_protect(plaintext, "sshenv passphrase cache test").unwrap();
+        assert_ne!(protected, plaintext);
+        let unprotected = super::dpapi_unprotect(&protected).unwrap();
+        assert_eq!(unprotected, plaintext);
+    }
+}
