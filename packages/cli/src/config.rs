@@ -31,6 +31,7 @@ pub enum PassphraseCacheBackend {
     #[default]
     Auto,
     MacosKeychain,
+    WindowsDpapi,
 }
 
 #[derive(Debug, Clone, Deserialize)]
