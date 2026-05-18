@@ -32,9 +32,10 @@ secret. Not synced by vault copy. Used to regenerate shim scripts.
 
 ### Shims (`~/.sshenv/bin/<command>`)
 
-Tiny `sh` scripts, one per bound command. Each shim execs
-`sshenv run <profile> -- <command>`. Put `~/.sshenv/bin` at the front of
-`$PATH` and shim-bound commands transparently get their secrets.
+Tiny platform-native launchers, one per bound command. Unix builds generate
+POSIX `sh` scripts named after the command. Windows builds generate `.cmd`
+launchers so normal `PATHEXT` lookup can find them. Put `~/.sshenv/bin` at
+the front of `PATH` and shim-bound commands transparently get their secrets.
 
 ### Sessions (`~/.sshenv/sessions.toml`)
 
@@ -82,8 +83,9 @@ the ability to decrypt — classic asymmetric recipient model. Rotation
 3. Collect env vars for `PROFILE`.
 4. Unless `--incognito` was passed, record the current PID plus a
    platform-specific process-start token in `sessions.toml`.
-5. `execve(cmd, argv, env)` — the child replaces the sshenv process while
-   keeping the same PID. Parent shell never saw the secret.
+5. On Unix, `execve(cmd, argv, env)` replaces the sshenv process while keeping
+   the same PID. On Windows, sshenv spawns the child and exits with the child's
+   status. Parent shell never saw the secret in either case.
 
 ### `sshenv sessions list [--profile PROFILE]`
 
@@ -101,11 +103,13 @@ the ability to decrypt — classic asymmetric recipient model. Rotation
 3. For records matching the current vault and either the requested profile
    or `--all`, re-verify the PID still has the recorded process-start
    token.
-4. Send the requested signal (`TERM` by default).
+4. Send the requested signal (`TERM` by default). On Windows, only `term` and
+   `kill` are supported and both terminate the tracked top-level process;
+   `int` and `hup` are rejected as unsupported.
 
-This targets the tracked top-level exec PID only. If a command daemonizes,
-forks workers, or otherwise leaves descendants after that PID exits, those
-processes are not tracked by the v1 session registry.
+This targets the tracked top-level PID only. If a command daemonizes, forks
+workers, or otherwise leaves descendants after that PID exits, those processes
+are not tracked by the v1 session registry.
 
 ### `sshenv shims bind PROFILE --command CMD`
 

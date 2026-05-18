@@ -31,10 +31,10 @@ encrypted vault file.
   shell never sees them. Default builds apply best-effort runtime hardening
   such as disabling core dumps before injection.
 - To make invocation ergonomic, `sshenv shims bind <profile> --command <name>`
-  writes a shim script at `~/.sshenv/bin/<name>` that execs
-  `sshenv run <profile> -- <name> "$@"`. Add `~/.sshenv/bin` to the front of
-  your `PATH`; then typing `pi-bedrock` (or whatever) transparently loads
-  secrets before running.
+  writes a platform-native shim in `~/.sshenv/bin` (POSIX `sh` on Unix,
+  `.cmd` on Windows) that runs `sshenv run <profile> -- <name> ...`. Add
+  `~/.sshenv/bin` to the front of your `PATH`; then typing `pi-bedrock` (or
+  whatever) transparently loads secrets before running.
 
 ## Quick start
 
@@ -53,6 +53,30 @@ export PATH="$HOME/.sshenv/bin:$PATH"
 pi-bedrock
 pi-openai
 ```
+
+## Platform support
+
+| Feature | Linux | macOS | Windows |
+| --- | --- | --- | --- |
+| Vault/profile/recipient commands | Yes | Yes | Yes |
+| `sshenv run` command injection | `execve` | `execve` | spawn + wait |
+| Shims | POSIX `sh` | POSIX `sh` | `.cmd` via `PATHEXT` |
+| Session tracking | PID + `/proc` start token | PID + `proc_pidinfo` start token | PID + Win32 creation-time token |
+| `sessions kill` | `TERM`/`INT`/`HUP`/`KILL` | `TERM`/`INT`/`HUP`/`KILL` | `term`/`kill` only; `int`/`hup` are unsupported |
+| Private local files | `0600` | `0600` | protected current-user DACL |
+| Runtime hardening | core dumps off, non-dumpable, best-effort memory lock | core dumps off, best-effort memory lock | crash-dialog suppression, heap corruption termination |
+| Device seal | Secret Service or TPM when feature-enabled | Keychain when feature-enabled | DPAPI when feature-enabled |
+| Passphrase cache | unavailable today | Keychain | DPAPI |
+| Release artifacts | x64 + arm64 | x64 + arm64 | x64 |
+
+Windows notes:
+
+- Put the shim directory on `PATH`; `.cmd` shims are resolved through normal
+  Windows `PATHEXT` lookup.
+- `sshenv run` cannot replace itself with `execve` on Windows, so it spawns
+  the child and exits with the child's status.
+- `sessions kill --signal int|hup` is intentionally unsupported on Windows;
+  use `term` or `kill` for tracked top-level processes.
 
 ## Commands
 

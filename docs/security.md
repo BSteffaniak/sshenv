@@ -23,7 +23,9 @@ reporting contact.
    avoid introducing such a temp file.
 5. **Runtime dumps.** Default CLI builds disable core dumps before `run`
    decrypts and injects secrets; Linux builds also request non-dumpable
-   process state where supported.
+   process state where supported. Windows builds apply best-effort crash-dialog
+   suppression and heap-corruption termination, but Windows does not have an
+   exact equivalent for every Unix/Linux hardening primitive.
 6. **Tamper detection.** AES-256-SIV with AAD-bound headers ensures that
    a modified vault body fails to decrypt.
 
@@ -66,8 +68,10 @@ rekey operations can preserve the intended recipient set safely.
 - **Passphrase factor**: `argon2 0.5` using Argon2id. This is an opt-in v2
   factor; it requires both an authorized SSH recipient and the passphrase.
 - **Device-seal factor**: optional v2 factor plumbing. The macOS Keychain
-  backend stores a random factor in Keychain. The local-file backend is for
-  development/testing only and is not theft-resistant.
+  backend stores a random factor in Keychain, Linux builds can use Secret
+  Service or TPM backends when feature-enabled, and Windows builds can use
+  DPAPI when feature-enabled. The local-file backend is for development/testing
+  only and is not theft-resistant.
 - **RNG for data key**: `OsRng` at `init` time.
 
 ## Recipient semantics
@@ -150,29 +154,36 @@ names or values.
 `sshenv sessions kill` verifies the PID still has the recorded
 process-start token before signaling it, so a stale record should not kill
 an unrelated process after PID reuse. Records that cannot be verified are
-garbage-collected or skipped rather than signaled.
+garbage-collected or skipped rather than signaled. Linux uses boot ID plus
+`/proc/<pid>/stat` start time, macOS uses `proc_pidinfo`, and Windows uses
+Win32 process creation time. Windows supports `term` and `kill` by terminating
+the tracked top-level process; `int` and `hup` are intentionally unsupported
+there because they do not map cleanly to a safe, general Win32 process signal.
 
 ## Shim security considerations
 
-Shims are `sh` scripts in `~/.sshenv/bin/`. They:
+Shims are platform-native launchers in `~/.sshenv/bin/`: POSIX `sh` scripts on
+Unix and `.cmd` files on Windows. They:
 
-- are marked `0755` (not secret; they only contain profile/command
-  names),
-- embed `profile: X` and `command: Y` header comments so `shims sync`
-  can detect out-of-sync shims,
-- use `exec sshenv run "<profile>" -- "<command>" "$@"` (no `eval`,
-  no untrusted expansion),
-- shadow the real command on PATH by virtue of `~/.sshenv/bin` being
-  first; if a user needs the real command, they can `command -p
-<name>` or `/absolute/path/to/<name>`.
+- are not secret; they only contain profile/command names,
+- embed profile/command header comments so `shims sync` can detect managed
+  shims,
+- avoid eval-style untrusted expansion (`exec sshenv run ... "$@"` on Unix,
+  argument forwarding with `%*` on Windows),
+- shadow the real command on PATH by virtue of `~/.sshenv/bin` being first; if
+  a user needs the real command, they can use an absolute path or a shell's
+  built-in bypass mechanism.
 
 ## Permissions enforcement
 
-On every vault write, after `rename(2)` we `chmod 0600`. On every
-bindings-file write, we `chmod 0644`. On every sessions-file write, we
-`chmod 0600`.
+On Unix, every vault write is persisted then `chmod 0600`. Bindings files are
+`0644` because they are non-secret local metadata, and sessions files are
+`0600`. On Windows, `0600`-equivalent writes apply a protected DACL for the
+current user after atomic persistence; non-secret files such as bindings keep
+normal/default permissions.
 
-If the vault file exists but has unexpected permissions, `sshenv
-doctor` warns; we do not refuse to operate because the user may have
-intentionally relaxed perms on a local-only setup. (This may become
-stricter in a future version.)
+If the vault file exists but has unexpected permissions, `sshenv doctor` warns;
+we do not refuse to operate because the user may have intentionally relaxed
+perms on a local-only setup. On Windows, doctor reports whether the vault file
+DACL is protected from inheritance. (This may become stricter in a future
+version.)
