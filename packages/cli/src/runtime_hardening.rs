@@ -7,7 +7,8 @@ use anyhow::Result;
 /// This intentionally avoids changing user-visible command ergonomics. On Unix
 /// it disables core dumps for the current process, which is inherited by the
 /// exec'd child. On Linux it also marks the process non-dumpable where
-/// supported.
+/// supported. On Windows it applies best-effort crash-dialog and heap-corruption
+/// hardening for the process before spawning the child.
 ///
 /// # Errors
 ///
@@ -15,6 +16,7 @@ use anyhow::Result;
 pub fn apply_for_secret_runtime() -> Result<()> {
     apply_core_dump_limit()?;
     apply_non_dumpable()?;
+    apply_windows_hardening_best_effort();
     apply_memory_lock_best_effort();
     Ok(())
 }
@@ -54,6 +56,51 @@ fn apply_non_dumpable() -> Result<()> {
 fn apply_non_dumpable() -> Result<()> {
     Ok(())
 }
+
+#[cfg(windows)]
+fn apply_windows_hardening_best_effort() {
+    apply_windows_error_mode();
+    apply_windows_heap_termination_on_corruption();
+}
+
+#[cfg(windows)]
+fn apply_windows_error_mode() {
+    use windows_sys::Win32::System::Diagnostics::Debug::{
+        SEM_NOGPFAULTERRORBOX, SEM_NOOPENFILEERRORBOX, SetErrorMode,
+    };
+
+    // SAFETY: SetErrorMode only updates process-global error UI behavior.
+    unsafe {
+        SetErrorMode(SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
+    }
+}
+
+#[cfg(windows)]
+fn apply_windows_heap_termination_on_corruption() {
+    use windows_sys::Win32::System::Memory::{
+        HeapEnableTerminationOnCorruption, HeapSetInformation,
+    };
+
+    // SAFETY: Passing a null heap handle applies the process default and this
+    // information class requires no input buffer.
+    let rc = unsafe {
+        HeapSetInformation(
+            std::ptr::null_mut(),
+            HeapEnableTerminationOnCorruption,
+            std::ptr::null(),
+            0,
+        )
+    };
+    if rc == 0 {
+        eprintln!(
+            "warning: could not enable Windows heap corruption termination for sshenv runtime hardening: {}",
+            std::io::Error::last_os_error()
+        );
+    }
+}
+
+#[cfg(not(windows))]
+const fn apply_windows_hardening_best_effort() {}
 
 #[cfg(unix)]
 fn apply_memory_lock_best_effort() {
