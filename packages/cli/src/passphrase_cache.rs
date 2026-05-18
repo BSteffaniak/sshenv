@@ -121,7 +121,7 @@ const fn backend_available(backend: PassphraseCacheBackend) -> bool {
     }
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(target_os = "macos")]
 fn account(vault_path: &Path) -> String {
     format!("vault:{}", vault_id(vault_path))
 }
@@ -355,7 +355,7 @@ fn dpapi_protect(plaintext: &[u8], description: &str) -> Result<Vec<u8>> {
         CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN, CryptProtectData,
     };
 
-    let mut input = CRYPT_INTEGER_BLOB {
+    let input = CRYPT_INTEGER_BLOB {
         cbData: u32::try_from(plaintext.len()).context("DPAPI plaintext too large")?,
         pbData: plaintext.as_ptr().cast_mut(),
     };
@@ -370,13 +370,13 @@ fn dpapi_protect(plaintext: &[u8], description: &str) -> Result<Vec<u8>> {
     // SAFETY: All pointers are valid for the duration of the call; output is freed with LocalFree.
     let ok = unsafe {
         CryptProtectData(
-            &mut input,
+            &raw const input,
             description.as_ptr(),
             null(),
             null(),
             null(),
             CRYPTPROTECT_UI_FORBIDDEN,
-            &mut output,
+            &raw mut output,
         )
     };
     if ok == 0 {
@@ -404,7 +404,7 @@ fn dpapi_unprotect(protected: &[u8]) -> Result<Vec<u8>> {
         CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN, CryptUnprotectData,
     };
 
-    let mut input = CRYPT_INTEGER_BLOB {
+    let input = CRYPT_INTEGER_BLOB {
         cbData: u32::try_from(protected.len()).context("DPAPI ciphertext too large")?,
         pbData: protected.as_ptr().cast_mut(),
     };
@@ -415,13 +415,13 @@ fn dpapi_unprotect(protected: &[u8]) -> Result<Vec<u8>> {
     // SAFETY: All pointers are valid for the duration of the call; output is freed with LocalFree.
     let ok = unsafe {
         CryptUnprotectData(
-            &mut input,
+            &raw const input,
             null_mut(),
             null(),
             null(),
             null(),
             CRYPTPROTECT_UI_FORBIDDEN,
-            &mut output,
+            &raw mut output,
         )
     };
     if ok == 0 {

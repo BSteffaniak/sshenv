@@ -179,11 +179,19 @@ fn binary_security_planning_commands_emit_json() {
         return;
     }
 
+    let passphrase_cache_expected = if cfg!(target_os = "macos") {
+        "macos-keychain"
+    } else if cfg!(target_os = "windows") {
+        "windows-dpapi"
+    } else {
+        "unavailable"
+    };
+
     let cases: &[(&[&str], &str, &str)] = &[
         (
             &["security", "passphrase-cache", "plan", "--json"],
             "enabled",
-            "macos-keychain",
+            passphrase_cache_expected,
         ),
         (
             &["security", "device", "plan", "--backend", "tpm", "--json"],
