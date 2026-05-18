@@ -732,7 +732,7 @@ fn dpapi_protect(plaintext: &[u8], description: &str) -> Result<Vec<u8>> {
         CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN, CryptProtectData,
     };
 
-    let mut input = CRYPT_INTEGER_BLOB {
+    let input = CRYPT_INTEGER_BLOB {
         cbData: u32::try_from(plaintext.len()).context("DPAPI plaintext too large")?,
         pbData: plaintext.as_ptr().cast_mut(),
     };
@@ -747,13 +747,13 @@ fn dpapi_protect(plaintext: &[u8], description: &str) -> Result<Vec<u8>> {
     // SAFETY: All pointers are valid for the duration of the call; output is freed with LocalFree.
     let ok = unsafe {
         CryptProtectData(
-            &mut input,
+            &raw const input,
             description.as_ptr(),
             null(),
             null(),
             null(),
             CRYPTPROTECT_UI_FORBIDDEN,
-            &mut output,
+            &raw mut output,
         )
     };
     if ok == 0 {
@@ -781,7 +781,7 @@ fn dpapi_unprotect(protected: &[u8]) -> Result<Vec<u8>> {
         CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN, CryptUnprotectData,
     };
 
-    let mut input = CRYPT_INTEGER_BLOB {
+    let input = CRYPT_INTEGER_BLOB {
         cbData: u32::try_from(protected.len()).context("DPAPI ciphertext too large")?,
         pbData: protected.as_ptr().cast_mut(),
     };
@@ -792,13 +792,13 @@ fn dpapi_unprotect(protected: &[u8]) -> Result<Vec<u8>> {
     // SAFETY: All pointers are valid for the duration of the call; output is freed with LocalFree.
     let ok = unsafe {
         CryptUnprotectData(
-            &mut input,
+            &raw const input,
             null_mut(),
             null(),
             null(),
             null(),
             CRYPTPROTECT_UI_FORBIDDEN,
-            &mut output,
+            &raw mut output,
         )
     };
     if ok == 0 {
@@ -867,8 +867,7 @@ fn store_macos_keychain_secret(secret: &[u8]) -> Result<()> {
     feature = "device-seal-file",
     all(feature = "macos-keychain", target_os = "macos"),
     all(feature = "linux-secret-service", target_os = "linux"),
-    feature = "secure-enclave",
-    all(feature = "windows-dpapi", target_os = "windows")
+    feature = "secure-enclave"
 ))]
 fn parse_hex_secret(value: &str, label: &str) -> Result<Zeroizing<[u8; KEY_LEN]>> {
     let bytes = hex::decode(value).with_context(|| format!("{label} is not valid hex"))?;
