@@ -10,8 +10,7 @@ use std::collections::BTreeMap;
 #[cfg(any(
     all(feature = "linux-secret-service", target_os = "linux"),
     feature = "secure-enclave",
-    all(feature = "tpm-device-seal", target_os = "linux"),
-    all(feature = "windows-dpapi", target_os = "windows")
+    all(feature = "tpm-device-seal", target_os = "linux")
 ))]
 use std::io::Write;
 #[cfg(all(feature = "tpm-device-seal", target_os = "linux"))]
@@ -26,15 +25,13 @@ use std::path::PathBuf;
     all(feature = "macos-keychain", target_os = "macos"),
     all(feature = "linux-secret-service", target_os = "linux"),
     feature = "secure-enclave",
-    all(feature = "tpm-device-seal", target_os = "linux"),
-    all(feature = "windows-dpapi", target_os = "windows")
+    all(feature = "tpm-device-seal", target_os = "linux")
 ))]
 use std::process::Command;
 #[cfg(any(
     all(feature = "linux-secret-service", target_os = "linux"),
     feature = "secure-enclave",
-    all(feature = "tpm-device-seal", target_os = "linux"),
-    all(feature = "windows-dpapi", target_os = "windows")
+    all(feature = "tpm-device-seal", target_os = "linux")
 ))]
 use std::process::Stdio;
 
@@ -691,14 +688,16 @@ fn load_windows_dpapi_secret() -> Result<Zeroizing<[u8; KEY_LEN]>> {
     #[cfg(all(feature = "windows-dpapi", target_os = "windows"))]
     {
         let path = windows_dpapi_secret_path();
-        let protected = std::fs::read_to_string(&path).with_context(|| {
+        let protected_hex = std::fs::read_to_string(&path).with_context(|| {
             format!(
                 "failed to read Windows DPAPI device seal {}",
                 path.display()
             )
         })?;
-        let output = run_dpapi_powershell(DPAPI_UNPROTECT_SCRIPT, protected.trim())?;
-        parse_hex_secret(output.trim(), "Windows DPAPI device seal secret")
+        let protected = hex::decode(protected_hex.trim())
+            .context("Windows DPAPI device seal entry is not valid hex")?;
+        let secret = dpapi_unprotect(&protected)?;
+        parse_binary_secret(&secret, "Windows DPAPI device seal secret")
     }
 
     #[cfg(not(all(feature = "windows-dpapi", target_os = "windows")))]
@@ -707,45 +706,12 @@ fn load_windows_dpapi_secret() -> Result<Zeroizing<[u8; KEY_LEN]>> {
 
 #[cfg(all(feature = "windows-dpapi", target_os = "windows"))]
 fn store_windows_dpapi_secret(secret: &[u8]) -> Result<()> {
-    let protected = run_dpapi_powershell(DPAPI_PROTECT_SCRIPT, &hex::encode(secret))?;
+    let protected = dpapi_protect(secret, "sshenv device seal")?;
     crate::atomic_write(
         &windows_dpapi_secret_path(),
-        format!("{}\n", protected.trim()).as_bytes(),
+        format!("{}\n", hex::encode(protected)).as_bytes(),
         0o600,
     )
-}
-
-#[cfg(all(feature = "windows-dpapi", target_os = "windows"))]
-fn run_dpapi_powershell(script: &str, stdin_text: &str) -> Result<String> {
-    let mut child = Command::new("powershell.exe")
-        .arg("-NoProfile")
-        .arg("-NonInteractive")
-        .arg("-Command")
-        .arg(script)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .context("failed to invoke powershell.exe for Windows DPAPI")?;
-    {
-        let stdin = child
-            .stdin
-            .as_mut()
-            .context("failed to open powershell.exe stdin")?;
-        stdin
-            .write_all(stdin_text.as_bytes())
-            .context("failed to write Windows DPAPI input")?;
-    }
-    let output = child
-        .wait_with_output()
-        .context("failed to wait for Windows DPAPI powershell command")?;
-    if output.status.success() {
-        String::from_utf8(output.stdout).context("Windows DPAPI command returned non-UTF8 output")
-    } else {
-        bail!(
-            "Windows DPAPI command failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        )
-    }
 }
 
 #[cfg(all(feature = "windows-dpapi", target_os = "windows"))]
@@ -757,22 +723,112 @@ fn windows_dpapi_secret_path() -> PathBuf {
 }
 
 #[cfg(all(feature = "windows-dpapi", target_os = "windows"))]
-const DPAPI_PROTECT_SCRIPT: &str = r"
-$hex = [Console]::In.ReadToEnd().Trim()
-if (($hex.Length % 2) -ne 0) { throw 'hex input has odd length' }
-$bytes = New-Object byte[] ($hex.Length / 2)
-for ($i = 0; $i -lt $bytes.Length; $i++) { $bytes[$i] = [Convert]::ToByte($hex.Substring($i * 2, 2), 16) }
-$protected = [System.Security.Cryptography.ProtectedData]::Protect($bytes, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
-[Convert]::ToBase64String($protected)
-";
+fn dpapi_protect(plaintext: &[u8], description: &str) -> Result<Vec<u8>> {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    use std::ptr::{null, null_mut};
+
+    use windows_sys::Win32::Security::Cryptography::{
+        CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN, CryptProtectData,
+    };
+
+    let mut input = CRYPT_INTEGER_BLOB {
+        cbData: u32::try_from(plaintext.len()).context("DPAPI plaintext too large")?,
+        pbData: plaintext.as_ptr().cast_mut(),
+    };
+    let mut output = CRYPT_INTEGER_BLOB {
+        cbData: 0,
+        pbData: null_mut(),
+    };
+    let description: Vec<u16> = OsStr::new(description)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    // SAFETY: All pointers are valid for the duration of the call; output is freed with LocalFree.
+    let ok = unsafe {
+        CryptProtectData(
+            &mut input,
+            description.as_ptr(),
+            null(),
+            null(),
+            null(),
+            CRYPTPROTECT_UI_FORBIDDEN,
+            &mut output,
+        )
+    };
+    if ok == 0 {
+        return Err(std::io::Error::last_os_error())
+            .context("failed to protect device seal with Windows DPAPI");
+    }
+    let output_guard = LocalAllocGuard(output.pbData.cast());
+    // SAFETY: DPAPI returned `cbData` bytes at `pbData` on success.
+    let bytes = unsafe {
+        std::slice::from_raw_parts(
+            output.pbData,
+            usize::try_from(output.cbData).context("DPAPI output length too large")?,
+        )
+    }
+    .to_vec();
+    drop(output_guard);
+    Ok(bytes)
+}
 
 #[cfg(all(feature = "windows-dpapi", target_os = "windows"))]
-const DPAPI_UNPROTECT_SCRIPT: &str = r"
-$encoded = [Console]::In.ReadToEnd().Trim()
-$protected = [Convert]::FromBase64String($encoded)
-$bytes = [System.Security.Cryptography.ProtectedData]::Unprotect($protected, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
-([BitConverter]::ToString($bytes)).Replace('-', '')
-";
+fn dpapi_unprotect(protected: &[u8]) -> Result<Vec<u8>> {
+    use std::ptr::{null, null_mut};
+
+    use windows_sys::Win32::Security::Cryptography::{
+        CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN, CryptUnprotectData,
+    };
+
+    let mut input = CRYPT_INTEGER_BLOB {
+        cbData: u32::try_from(protected.len()).context("DPAPI ciphertext too large")?,
+        pbData: protected.as_ptr().cast_mut(),
+    };
+    let mut output = CRYPT_INTEGER_BLOB {
+        cbData: 0,
+        pbData: null_mut(),
+    };
+    // SAFETY: All pointers are valid for the duration of the call; output is freed with LocalFree.
+    let ok = unsafe {
+        CryptUnprotectData(
+            &mut input,
+            null_mut(),
+            null(),
+            null(),
+            null(),
+            CRYPTPROTECT_UI_FORBIDDEN,
+            &mut output,
+        )
+    };
+    if ok == 0 {
+        return Err(std::io::Error::last_os_error())
+            .context("failed to unprotect device seal with Windows DPAPI");
+    }
+    let output_guard = LocalAllocGuard(output.pbData.cast());
+    // SAFETY: DPAPI returned `cbData` bytes at `pbData` on success.
+    let bytes = unsafe {
+        std::slice::from_raw_parts(
+            output.pbData,
+            usize::try_from(output.cbData).context("DPAPI output length too large")?,
+        )
+    }
+    .to_vec();
+    drop(output_guard);
+    Ok(bytes)
+}
+
+#[cfg(all(feature = "windows-dpapi", target_os = "windows"))]
+struct LocalAllocGuard(windows_sys::Win32::Foundation::HLOCAL);
+
+#[cfg(all(feature = "windows-dpapi", target_os = "windows"))]
+impl Drop for LocalAllocGuard {
+    fn drop(&mut self) {
+        unsafe {
+            windows_sys::Win32::Foundation::LocalFree(self.0);
+        }
+    }
+}
 
 #[cfg(all(feature = "macos-keychain", target_os = "macos"))]
 fn store_macos_keychain_secret(secret: &[u8]) -> Result<()> {
