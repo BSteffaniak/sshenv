@@ -143,7 +143,7 @@ impl SshenvStore {
     ///
     /// Returns an error if the vault cannot be unlocked or saved.
     pub fn set_secret(&self, profile: &str, var: &str, value: Zeroizing<String>) -> Result<()> {
-        let (mut vault, data_key) = self.load_and_unlock()?;
+        let (mut vault, data_key) = self.load_and_unlock_profile(profile)?;
         vault.profiles.set(profile, var, value.as_str().to_string());
         vault.save(&self.config.vault_path, &data_key)
     }
@@ -154,7 +154,7 @@ impl SshenvStore {
     ///
     /// Returns an error if the vault cannot be unlocked or saved.
     pub fn unset_secret(&self, profile: &str, var: &str) -> Result<bool> {
-        let (mut vault, data_key) = self.load_and_unlock()?;
+        let (mut vault, data_key) = self.load_and_unlock_profile(profile)?;
         let removed = vault.profiles.unset(profile, var);
         if removed {
             vault.save(&self.config.vault_path, &data_key)?;
@@ -168,7 +168,7 @@ impl SshenvStore {
     ///
     /// Returns an error if the vault cannot be unlocked.
     pub fn get_secret(&self, profile: &str, var: &str) -> Result<Option<Zeroizing<String>>> {
-        let (vault, _data_key) = self.load_and_unlock()?;
+        let (vault, _data_key) = self.load_and_unlock_profile(profile)?;
         Ok(vault
             .profiles
             .get(profile)
@@ -185,7 +185,7 @@ impl SshenvStore {
         &self,
         profile: &str,
     ) -> Result<Option<BTreeMap<String, Zeroizing<String>>>> {
-        let (vault, _data_key) = self.load_and_unlock()?;
+        let (vault, _data_key) = self.load_and_unlock_profile(profile)?;
         Ok(vault.profiles.get(profile).map(|vars| {
             vars.iter()
                 .map(|(key, value)| (key.clone(), Zeroizing::new(value.clone())))
@@ -205,6 +205,53 @@ impl SshenvStore {
             &self.config.private_key_paths,
         )
     }
+
+    /// Unlock vault metadata and one selected profile.
+    ///
+    /// Other encrypted profile entries remain locked, so unavailable factors on
+    /// unrelated profiles do not block profile-scoped operations.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the vault cannot be read, no configured SSH identity
+    /// can decrypt it, the outer metadata cannot be decrypted, or the selected
+    /// profile's factors cannot be satisfied.
+    pub fn load_and_unlock_profile(&self, profile: &str) -> Result<(Vault, DataKey)> {
+        load_and_unlock_profile_with_private_key_paths(
+            &self.config.vault_path,
+            &self.config.private_key_paths,
+            profile,
+        )
+    }
+
+    /// Replace all variables in one profile without needing to decrypt the
+    /// previous profile entry.
+    ///
+    /// This is intended for explicit reset/re-login flows where the caller has
+    /// decided that any previous contents of `profile` may be discarded. Other
+    /// encrypted profile entries are preserved.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the vault metadata cannot be unlocked or saved.
+    pub fn replace_profile(
+        &self,
+        profile: &str,
+        values: BTreeMap<String, Zeroizing<String>>,
+    ) -> Result<()> {
+        let (mut vault, data_key) = load_and_unlock_metadata_with_private_key_paths(
+            &self.config.vault_path,
+            &self.config.private_key_paths,
+        )?;
+        let values = values
+            .into_iter()
+            .map(|(key, value)| (key, value.as_str().to_string()))
+            .collect();
+        vault.profiles.profile_entries.remove(profile);
+        vault.profiles.profile_policies.remove(profile);
+        vault.profiles.profiles.insert(profile.to_string(), values);
+        vault.save(&self.config.vault_path, &data_key)
+    }
 }
 
 /// Load and unlock a vault using explicit private-key paths.
@@ -218,20 +265,89 @@ pub fn load_and_unlock_with_private_key_paths(
     private_key_paths: &[PathBuf],
 ) -> Result<(Vault, DataKey)> {
     let ciphertext = Vault::load_ciphertext(vault_path)?;
-    let fingerprints: HashSet<String> = ciphertext
+    let fingerprints = recipient_fingerprints(&ciphertext);
+    let identities = load_identities_for_private_key_paths(private_key_paths, &fingerprints)?;
+    let data_key = recipient::unwrap_data_key(&ciphertext.recipients, &identities)
+        .map_err(|_| error_no_identity_unlocked_detailed(private_key_paths, &fingerprints))?;
+    Vault::unlock_with_data_key_and_passphrase(ciphertext, data_key, None)
+}
+
+/// Load and unlock a vault's metadata using explicit private-key paths.
+///
+/// Profile entries remain encrypted. Use this when inspecting or mutating
+/// profile metadata without needing every profile's factors to be available.
+///
+/// # Errors
+///
+/// Returns an error if the vault cannot be read or no configured identity can
+/// decrypt the outer vault metadata.
+pub fn load_and_unlock_metadata_with_private_key_paths(
+    vault_path: &Path,
+    private_key_paths: &[PathBuf],
+) -> Result<(Vault, DataKey)> {
+    let ciphertext = Vault::load_ciphertext(vault_path)?;
+    let fingerprints = recipient_fingerprints(&ciphertext);
+    let identities = load_identities_for_private_key_paths(private_key_paths, &fingerprints)?;
+    Vault::unlock_metadata_with_passphrase(ciphertext, &identities, None)
+        .map_err(|error| preserve_factor_or_identity_error(error, private_key_paths, &fingerprints))
+}
+
+/// Load and unlock one profile using explicit private-key paths.
+///
+/// Other encrypted profile entries remain locked.
+///
+/// # Errors
+///
+/// Returns an error if the vault cannot be read, no configured identity can
+/// decrypt the outer vault metadata, or the selected profile's factors cannot
+/// be satisfied.
+pub fn load_and_unlock_profile_with_private_key_paths(
+    vault_path: &Path,
+    private_key_paths: &[PathBuf],
+    profile: &str,
+) -> Result<(Vault, DataKey)> {
+    let (mut vault, data_key) =
+        load_and_unlock_metadata_with_private_key_paths(vault_path, private_key_paths)?;
+    if vault.profiles.get(profile).is_none() && vault.profiles.profile_entries.contains_key(profile)
+    {
+        vault.unlock_profile_with_passphrase(profile, &data_key, None)?;
+    }
+    Ok((vault, data_key))
+}
+
+fn recipient_fingerprints(ciphertext: &CiphertextVault) -> HashSet<String> {
+    ciphertext
         .recipients
         .iter()
         .map(|recipient| recipient.fingerprint.clone())
-        .collect();
-    let identities = load_identities_for_vault_from_paths(private_key_paths, &fingerprints)?;
+        .collect()
+}
+
+fn load_identities_for_private_key_paths(
+    private_key_paths: &[PathBuf],
+    fingerprints: &HashSet<String>,
+) -> Result<Vec<Box<dyn age::Identity>>> {
+    let identities = load_identities_for_vault_from_paths(private_key_paths, fingerprints)?;
     if identities.is_empty() {
         return Err(error_no_identity_unlocked_detailed(
             private_key_paths,
-            &fingerprints,
+            fingerprints,
         ));
     }
-    Vault::unlock(ciphertext, &identities)
-        .map_err(|_| error_no_identity_unlocked_detailed(private_key_paths, &fingerprints))
+    Ok(identities)
+}
+
+fn preserve_factor_or_identity_error(
+    error: anyhow::Error,
+    private_key_paths: &[PathBuf],
+    fingerprints: &HashSet<String>,
+) -> anyhow::Error {
+    let message = error.to_string();
+    if message.contains("no identity could unwrap any recipient blob") {
+        error_no_identity_unlocked_detailed(private_key_paths, fingerprints)
+    } else {
+        error
+    }
 }
 
 /// An in-memory, decrypted vault: header + recipients + profile map.

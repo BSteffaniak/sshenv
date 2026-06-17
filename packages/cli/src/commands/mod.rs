@@ -84,13 +84,7 @@ pub fn load_and_unlock(vault_path: &Path) -> Result<(Vault, DataKey)> {
         &identities,
         passphrase.as_ref().map(|p| p.as_str()),
     )
-    .map_err(|err| {
-        if requires_extra_factor {
-            err
-        } else {
-            error_no_identity_unlocked_detailed(&discover_private_key_paths(), &fps)
-        }
-    })?;
+    .map_err(|err| unlock_error_or_identity_detail(err, requires_extra_factor, &fps))?;
     cache_vault_passphrase_if_present(vault_path, passphrase.as_ref());
     record_rollback(vault_path, generation)?;
     Ok(unlocked)
@@ -135,13 +129,7 @@ pub fn load_and_unlock_metadata(vault_path: &Path) -> Result<(Vault, DataKey)> {
         &identities,
         passphrase.as_ref().map(|p| p.as_str()),
     )
-    .map_err(|err| {
-        if requires_extra_factor {
-            err
-        } else {
-            error_no_identity_unlocked_detailed(&discover_private_key_paths(), &fps)
-        }
-    })?;
+    .map_err(|err| unlock_error_or_identity_detail(err, requires_extra_factor, &fps))?;
     cache_vault_passphrase_if_present(vault_path, passphrase.as_ref());
     record_rollback(vault_path, generation)?;
     Ok(unlocked)
@@ -195,13 +183,7 @@ pub fn load_and_unlock_profile_with_passphrase(
             &identities,
             passphrase.as_ref().map(|p| p.as_str()),
         )
-        .map_err(|err| {
-            if requires_extra_factor {
-                err
-            } else {
-                error_no_identity_unlocked_detailed(&discover_private_key_paths(), &fps)
-            }
-        })?
+        .map_err(|err| unlock_error_or_identity_detail(err, requires_extra_factor, &fps))?
     };
     cache_vault_passphrase_if_present(vault_path, passphrase.as_ref());
     if vault.profiles.get(profile).is_none() && vault.profiles.profile_entries.contains_key(profile)
@@ -285,14 +267,7 @@ pub fn unlock_ciphertext_with_passphrase(
         passphrase.as_ref().map(|p| p.as_str()),
     )
     .map_err(|err| {
-        if requires_extra_factor {
-            err
-        } else {
-            error_no_identity_unlocked_detailed(
-                &discover_private_key_paths(),
-                recipient_fingerprints,
-            )
-        }
+        unlock_error_or_identity_detail(err, requires_extra_factor, recipient_fingerprints)
     })
 }
 
@@ -573,4 +548,24 @@ fn ciphertext_requires_extra_factor(ciphertext: &CiphertextVault) -> bool {
                     | UnlockFactorKindV2::RemoteKms
             )
         })
+}
+
+fn unlock_error_or_identity_detail(
+    error: anyhow::Error,
+    requires_extra_factor: bool,
+    recipient_fingerprints: &HashSet<String>,
+) -> anyhow::Error {
+    if requires_extra_factor || !looks_like_ssh_unwrap_error(&error) {
+        error
+    } else {
+        error_no_identity_unlocked_detailed(&discover_private_key_paths(), recipient_fingerprints)
+    }
+}
+
+fn looks_like_ssh_unwrap_error(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        let message = cause.to_string();
+        message.contains("no configured SSH identity could unwrap the vault data key")
+            || message.contains("no identity could unwrap any recipient blob")
+    })
 }
