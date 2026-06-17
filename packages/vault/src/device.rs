@@ -18,6 +18,7 @@ use std::io::Write;
 use std::path::Path;
 #[cfg(any(
     feature = "device-seal-file",
+    all(feature = "macos-keychain", target_os = "macos"),
     all(feature = "tpm-device-seal", target_os = "linux"),
     all(feature = "windows-dpapi", target_os = "windows")
 ))]
@@ -74,6 +75,46 @@ const MACOS_KEYCHAIN_SERVICE: &str = "sshenv device seal";
 const MACOS_KEYCHAIN_ACCOUNT: &str = "default";
 #[cfg(all(feature = "linux-secret-service", target_os = "linux"))]
 const LINUX_SECRET_SERVICE_LABEL: &str = "sshenv device seal";
+
+/// Result of executing a brokered device-seal operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceSealBrokerExecution {
+    /// Whether the operation completed successfully.
+    pub ok: bool,
+    /// JSON-encoded [`DeviceSealBrokerResponse`] payload to return to the broker caller.
+    pub response_payload: Vec<u8>,
+    /// Human-readable error text when `ok` is false.
+    pub error: Option<String>,
+}
+
+/// Execute a device-seal broker request locally and return an encoded broker response.
+///
+/// This is intended for transport brokers such as terminal multiplexers. It deliberately
+/// bypasses [`DEVICE_SEAL_COMMAND_ENV`] so a broker implementation can call it without
+/// recursively invoking itself.
+#[must_use]
+pub fn execute_device_seal_broker_payload(payload: &[u8]) -> DeviceSealBrokerExecution {
+    match run_device_seal_broker_payload(payload) {
+        Ok(response_payload) => DeviceSealBrokerExecution {
+            ok: true,
+            response_payload,
+            error: None,
+        },
+        Err(error) => {
+            let error = error.to_string();
+            let response = DeviceSealBrokerResponse {
+                secret_hex: None,
+                error: Some(error.clone()),
+            };
+            let response_payload = serde_json::to_vec(&response).unwrap_or_default();
+            DeviceSealBrokerExecution {
+                ok: false,
+                response_payload,
+                error: Some(error),
+            }
+        }
+    }
+}
 
 /// Create metadata for a device-seal factor and return the device factor key.
 ///
@@ -364,21 +405,7 @@ fn load_macos_keychain_secret() -> Result<Zeroizing<[u8; KEY_LEN]>> {
         )? {
             return parse_hex_secret(&secret, "macOS Keychain device seal secret");
         }
-        let output = Command::new("/usr/bin/security")
-            .arg("find-generic-password")
-            .arg("-w")
-            .arg("-s")
-            .arg(MACOS_KEYCHAIN_SERVICE)
-            .arg("-a")
-            .arg(MACOS_KEYCHAIN_ACCOUNT)
-            .output()
-            .context("failed to invoke macOS security command")?;
-        if !output.status.success() {
-            bail!("macOS Keychain device seal secret not found or unavailable");
-        }
-        let raw = String::from_utf8(output.stdout)
-            .context("macOS Keychain returned non-UTF8 device seal secret")?;
-        parse_hex_secret(raw.trim(), "macOS Keychain device seal secret")
+        load_macos_keychain_secret_direct()
     }
 
     #[cfg(not(all(feature = "macos-keychain", target_os = "macos")))]
@@ -867,25 +894,140 @@ fn store_macos_keychain_secret(secret: &[u8]) -> Result<()> {
     {
         return Ok(());
     }
-    let output = Command::new("/usr/bin/security")
-        .arg("add-generic-password")
-        .arg("-U")
-        .arg("-s")
-        .arg(MACOS_KEYCHAIN_SERVICE)
-        .arg("-a")
-        .arg(MACOS_KEYCHAIN_ACCOUNT)
-        .arg("-w")
-        .arg(secret_hex)
-        .output()
-        .context("failed to invoke macOS security command")?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        bail!(
-            "failed to store device seal in macOS Keychain: {}",
-            String::from_utf8_lossy(&output.stderr)
-        )
+    store_macos_keychain_secret_direct(&secret_hex)
+}
+
+#[cfg(all(feature = "macos-keychain", target_os = "macos"))]
+fn run_device_seal_broker_payload(payload: &[u8]) -> Result<Vec<u8>> {
+    let request: DeviceSealBrokerRequest = serde_json::from_slice(payload)
+        .context("device-seal broker request was not valid sshenv JSON")?;
+    if request.backend != BACKEND_MACOS_KEYCHAIN
+        || request.service != MACOS_KEYCHAIN_SERVICE
+        || request.account != MACOS_KEYCHAIN_ACCOUNT
+    {
+        bail!("unsupported device-seal broker target");
     }
+
+    let response = match request.operation {
+        DeviceSealBrokerOperation::Load => {
+            let secret = load_macos_keychain_secret_direct()?;
+            DeviceSealBrokerResponse {
+                secret_hex: Some(hex::encode(secret.as_slice())),
+                error: None,
+            }
+        }
+        DeviceSealBrokerOperation::Store => {
+            let secret_hex = request
+                .secret_hex
+                .as_deref()
+                .filter(|value| !value.is_empty())
+                .context("store request is missing secret_hex")?;
+            parse_hex_secret(secret_hex, "macOS Keychain device seal secret")?;
+            store_macos_keychain_secret_direct(secret_hex)?;
+            DeviceSealBrokerResponse {
+                secret_hex: None,
+                error: None,
+            }
+        }
+    };
+    serde_json::to_vec(&response).context("failed to encode device-seal broker response")
+}
+
+#[cfg(not(all(feature = "macos-keychain", target_os = "macos")))]
+fn run_device_seal_broker_payload(_payload: &[u8]) -> Result<Vec<u8>> {
+    bail!("macOS Keychain device seal broker is only supported on macOS")
+}
+
+#[cfg(all(feature = "macos-keychain", target_os = "macos"))]
+fn device_seal_password_options(
+    service: &str,
+    account: &str,
+) -> security_framework::passwords::PasswordOptions {
+    security_framework::passwords::PasswordOptions::new_generic_password(service, account)
+}
+
+#[cfg(all(feature = "macos-keychain", target_os = "macos"))]
+fn load_macos_keychain_secret_direct() -> Result<Zeroizing<[u8; KEY_LEN]>> {
+    match security_framework::passwords::generic_password(device_seal_password_options(
+        MACOS_KEYCHAIN_SERVICE,
+        MACOS_KEYCHAIN_ACCOUNT,
+    )) {
+        Ok(secret) => String::from_utf8(secret)
+            .context("macOS Keychain returned non-UTF8 device seal secret")
+            .and_then(|secret| {
+                parse_hex_secret(secret.trim(), "macOS Keychain device seal secret")
+            }),
+        Err(keychain_error) => match load_macos_keychain_fallback_secret() {
+            Ok(secret_hex) => parse_hex_secret(&secret_hex, "macOS Keychain device seal secret"),
+            Err(fallback_error) => Err(anyhow::anyhow!(
+                "macOS Keychain device seal secret not found or unavailable: OSStatus {} ({}); fallback file unavailable: {fallback_error}",
+                keychain_error.code(),
+                keychain_error
+            )),
+        },
+    }
+}
+
+#[cfg(all(feature = "macos-keychain", target_os = "macos"))]
+fn store_macos_keychain_secret_direct(secret_hex: &str) -> Result<()> {
+    match security_framework::passwords::set_generic_password_options(
+        secret_hex.as_bytes(),
+        device_seal_password_options(MACOS_KEYCHAIN_SERVICE, MACOS_KEYCHAIN_ACCOUNT),
+    ) {
+        Ok(()) => Ok(()),
+        Err(keychain_error) => store_macos_keychain_fallback_secret(secret_hex).map_err(|fallback_error| {
+            anyhow::anyhow!(
+                "failed to store device seal in macOS Keychain: OSStatus {} ({}); fallback file store failed: {fallback_error}",
+                keychain_error.code(),
+                keychain_error
+            )
+        }),
+    }
+}
+
+#[cfg(all(feature = "macos-keychain", target_os = "macos"))]
+fn macos_keychain_fallback_path() -> Result<PathBuf> {
+    let base = dirs::data_local_dir()
+        .or_else(|| dirs::home_dir().map(|home| home.join("Library").join("Application Support")))
+        .context("could not resolve user data directory for device-seal fallback")?;
+    Ok(base
+        .join("sshenv")
+        .join("device-seal-broker")
+        .join("sshenv_device_seal-default.hex"))
+}
+
+#[cfg(all(feature = "macos-keychain", target_os = "macos"))]
+fn load_macos_keychain_fallback_secret() -> Result<String> {
+    let path = macos_keychain_fallback_path()?;
+    std::fs::read_to_string(&path)
+        .with_context(|| format!("failed to read {}", path.display()))
+        .map(|secret| secret.trim().to_string())
+}
+
+#[cfg(all(feature = "macos-keychain", target_os = "macos"))]
+fn store_macos_keychain_fallback_secret(secret_hex: &str) -> Result<()> {
+    use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+
+    let path = macos_keychain_fallback_path()?;
+    let parent = path
+        .parent()
+        .context("device-seal fallback path has no parent directory")?;
+    std::fs::create_dir_all(parent)
+        .with_context(|| format!("failed to create {}", parent.display()))?;
+    std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
+        .with_context(|| format!("failed to secure {}", parent.display()))?;
+
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .mode(0o600)
+        .open(&path)
+        .with_context(|| format!("failed to open {}", path.display()))?;
+    writeln!(file, "{secret_hex}")
+        .with_context(|| format!("failed to write {}", path.display()))?;
+    file.sync_all()
+        .with_context(|| format!("failed to sync {}", path.display()))
 }
 
 #[cfg(all(feature = "macos-keychain", target_os = "macos"))]

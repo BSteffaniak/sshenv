@@ -61,6 +61,9 @@ windows-sys = { version = "0.59", features = [
 ], default-features = false }
 zeroize = { workspace = true }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = { workspace = true }
+
 [dev-dependencies]
 ssh-key = { version = "0.6", default-features = false, features = [
     "std",

@@ -47,6 +47,7 @@ dirs = { version = "6", default-features = false }
 hex = { version = "0.4", default-features = false, features = ["std"] }
 libc = { version = "0.2", default-features = false }
 rpassword = { version = "7", default-features = false }
+security-framework = { version = "3.7.0", default-features = false }
 serde = { version = "1", default-features = false, features = [
     "std",
     "derive",
