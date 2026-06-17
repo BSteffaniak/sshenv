@@ -8,6 +8,7 @@
 
 use std::collections::BTreeMap;
 #[cfg(any(
+    all(feature = "macos-keychain", target_os = "macos"),
     all(feature = "linux-secret-service", target_os = "linux"),
     feature = "secure-enclave",
     all(feature = "tpm-device-seal", target_os = "linux")
@@ -29,6 +30,7 @@ use std::path::PathBuf;
 ))]
 use std::process::Command;
 #[cfg(any(
+    all(feature = "macos-keychain", target_os = "macos"),
     all(feature = "linux-secret-service", target_os = "linux"),
     feature = "secure-enclave",
     all(feature = "tpm-device-seal", target_os = "linux")
@@ -47,7 +49,10 @@ use anyhow::{Context, Result, bail};
 use rand_core::RngCore;
 #[cfg(feature = "secure-enclave")]
 use serde::{Deserialize, Serialize};
-use sshenv_vault_models::{UnlockFactorKindV2, UnlockFactorV2};
+use sshenv_vault_models::{
+    DEVICE_SEAL_COMMAND_ENV, DeviceSealBrokerOperation, DeviceSealBrokerRequest,
+    DeviceSealBrokerResponse, UnlockFactorKindV2, UnlockFactorV2,
+};
 use zeroize::Zeroizing;
 
 const DEVICE_SEAL_FACTOR_ID: &str = "device-seal:default";
@@ -350,6 +355,15 @@ fn load_local_file_secret() -> Result<Zeroizing<[u8; KEY_LEN]>> {
 fn load_macos_keychain_secret() -> Result<Zeroizing<[u8; KEY_LEN]>> {
     #[cfg(all(feature = "macos-keychain", target_os = "macos"))]
     {
+        if let Some(secret) = invoke_device_seal_broker(
+            DeviceSealBrokerOperation::Load,
+            BACKEND_MACOS_KEYCHAIN,
+            MACOS_KEYCHAIN_SERVICE,
+            MACOS_KEYCHAIN_ACCOUNT,
+            None,
+        )? {
+            return parse_hex_secret(&secret, "macOS Keychain device seal secret");
+        }
         let output = Command::new("/usr/bin/security")
             .arg("find-generic-password")
             .arg("-w")
@@ -842,6 +856,17 @@ fn test_windows_dpapi_roundtrip() {
 #[cfg(all(feature = "macos-keychain", target_os = "macos"))]
 fn store_macos_keychain_secret(secret: &[u8]) -> Result<()> {
     let secret_hex = hex::encode(secret);
+    if invoke_device_seal_broker(
+        DeviceSealBrokerOperation::Store,
+        BACKEND_MACOS_KEYCHAIN,
+        MACOS_KEYCHAIN_SERVICE,
+        MACOS_KEYCHAIN_ACCOUNT,
+        Some(secret_hex.clone()),
+    )?
+    .is_some()
+    {
+        return Ok(());
+    }
     let output = Command::new("/usr/bin/security")
         .arg("add-generic-password")
         .arg("-U")
@@ -861,6 +886,67 @@ fn store_macos_keychain_secret(secret: &[u8]) -> Result<()> {
             String::from_utf8_lossy(&output.stderr)
         )
     }
+}
+
+#[cfg(all(feature = "macos-keychain", target_os = "macos"))]
+fn invoke_device_seal_broker(
+    operation: DeviceSealBrokerOperation,
+    backend: &str,
+    service: &str,
+    account: &str,
+    secret_hex: Option<String>,
+) -> Result<Option<String>> {
+    let Some(raw_command) = std::env::var_os(DEVICE_SEAL_COMMAND_ENV) else {
+        return Ok(None);
+    };
+    if raw_command.is_empty() {
+        return Ok(None);
+    }
+    let raw_command = raw_command.to_string_lossy();
+    let mut parts = raw_command.split_whitespace();
+    let Some(program) = parts.next() else {
+        return Ok(None);
+    };
+    let request = DeviceSealBrokerRequest {
+        operation,
+        backend: backend.to_string(),
+        service: service.to_string(),
+        account: account.to_string(),
+        secret_hex,
+    };
+    let input =
+        serde_json::to_vec(&request).context("failed to encode device-seal broker request")?;
+    let mut child = Command::new(program)
+        .args(parts)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| format!("failed to invoke device-seal broker '{program}'"))?;
+    child
+        .stdin
+        .as_mut()
+        .context("device-seal broker stdin was unavailable")?
+        .write_all(&input)
+        .context("failed to write device-seal broker request")?;
+    let output = child
+        .wait_with_output()
+        .context("failed to wait for device-seal broker")?;
+    if !output.status.success() {
+        bail!(
+            "device-seal broker failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let response: DeviceSealBrokerResponse = serde_json::from_slice(&output.stdout)
+        .context("device-seal broker response was not valid JSON")?;
+    if let Some(error) = response.error {
+        bail!("device-seal broker failed: {error}");
+    }
+    Ok(match operation {
+        DeviceSealBrokerOperation::Load => response.secret_hex,
+        DeviceSealBrokerOperation::Store => Some(String::new()),
+    })
 }
 
 #[cfg(any(

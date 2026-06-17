@@ -280,6 +280,38 @@ pub struct RemoteFactorMetadataV2 {
     pub params: BTreeMap<String, String>,
 }
 
+/// Environment variable used to route device-seal operations through an
+/// interactive broker process.
+pub const DEVICE_SEAL_COMMAND_ENV: &str = "SSHENV_DEVICE_SEAL_COMMAND";
+
+/// Device-seal broker operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DeviceSealBrokerOperation {
+    Load,
+    Store,
+}
+
+/// JSON request sent to a device-seal broker command.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceSealBrokerRequest {
+    pub operation: DeviceSealBrokerOperation,
+    pub backend: String,
+    pub service: String,
+    pub account: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret_hex: Option<String>,
+}
+
+/// JSON response returned by a device-seal broker command.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceSealBrokerResponse {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret_hex: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
 /// The plaintext payload of a vault: the full profile → var map.
 ///
 /// Serialized as JSON into the encrypted body. Individual secret values
