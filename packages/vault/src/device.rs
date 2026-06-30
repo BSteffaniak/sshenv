@@ -592,7 +592,6 @@ fn local_file_backend_requested() -> Result<bool> {
     }
 }
 
-#[cfg(feature = "device-seal-file")]
 fn load_local_file_secret() -> Result<Zeroizing<[u8; KEY_LEN]>> {
     #[cfg(feature = "device-seal-file")]
     {
