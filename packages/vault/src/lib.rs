@@ -923,6 +923,23 @@ impl Vault {
     /// available, or a device-seal factor is already configured.
     #[cfg(feature = "device-seal")]
     pub fn enable_device_seal_factor(&mut self) -> Result<()> {
+        self.enable_device_seal_factor_with_options(device::DeviceSealOptions::default())
+    }
+
+    /// Require a selected device-local seal factor in addition to SSH recipient unlock.
+    ///
+    /// The vault must already be migrated to v2. The caller must save the
+    /// vault with the original data key after enabling the factor.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the vault is not v2, no matching device-seal backend
+    /// is available, or a device-seal factor is already configured.
+    #[cfg(feature = "device-seal")]
+    pub fn enable_device_seal_factor_with_options(
+        &mut self,
+        options: device::DeviceSealOptions,
+    ) -> Result<()> {
         ensure_v2_for_device_seal(self.header.version)?;
         if self.device_seal_factor_enabled() {
             return Err(anyhow!("device-seal factor is already enabled"));
@@ -930,7 +947,7 @@ impl Vault {
         let metadata = self
             .policy_metadata
             .get_or_insert_with(|| policy_metadata_from_recipients(&self.recipients));
-        let (factor, factor_key) = device::create_factor()?;
+        let (factor, factor_key) = device::create_factor_with_options(options)?;
         metadata.policies.push(sshenv_vault_models::UnlockPolicyV2 {
             id: "ssh+device-seal".to_string(),
             threshold: None,

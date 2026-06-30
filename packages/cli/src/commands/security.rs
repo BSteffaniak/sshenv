@@ -19,22 +19,24 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use sshenv_cli_models::{
     ChangePassphraseArgs, DeviceBackendArg, DevicePlanArgs, DisablePassphraseArgs,
-    EnablePassphraseArgs, HardenArgs, HardwareDiscoverArgs, HardwareEnrollArgs, HardwareKindArg,
-    HardwarePlanArgs, HardwareStatusArgs, HardwareValidateRecipientArgs, PassphraseCacheStatusArgs,
-    ProfilePolicyApplyAllArgs, ProfilePolicyApplyArgs, ProfilePolicyBackupsArgs,
-    ProfilePolicyChangePassphraseArgs, ProfilePolicyCheckArgs, ProfilePolicyDisablePassphraseArgs,
-    ProfilePolicyPruneBackupsArgs, ProfilePolicyRepairAllArgs, ProfilePolicyRepairArgs,
-    ProfilePolicyRequirePassphraseArgs, ProfilePolicyRequirementArgs,
-    ProfilePolicyRestoreBackupArgs, ProfilePolicyRotateKeyArgs, ProfilePolicySetArgs,
-    ProfilePolicyStatusArgs, ProfilePolicyVerifyBackupArgs, RecoveryCombineArgs, RecoveryListArgs,
-    RecoveryMetadataArgs, RecoveryPlanArgs, RecoveryRecoverRecipientArgs, RecoveryRemoveArgs,
-    RecoveryShareFileArgs, RecoverySplitArgs, RecoveryVaultKeySplitArgs, RemoteBackendArg,
-    RemoteCommandUnwrapArgs, RemoteCommandWrapArgs, RemoteEnableCommandArgs, RemoteListArgs,
-    RemoteMetadataArgs, RemotePlanArgs, RemoteRemoveArgs, RemoteRequestArgs,
-    RemoteRequestTemplateArgs, RollbackBackendArg, RollbackCheckpointArgs,
+    EnableDeviceSealArgs, EnablePassphraseArgs, HardenArgs, HardwareDiscoverArgs,
+    HardwareEnrollArgs, HardwareKindArg, HardwarePlanArgs, HardwareStatusArgs,
+    HardwareValidateRecipientArgs, PassphraseCacheStatusArgs, ProfilePolicyApplyAllArgs,
+    ProfilePolicyApplyArgs, ProfilePolicyBackupsArgs, ProfilePolicyChangePassphraseArgs,
+    ProfilePolicyCheckArgs, ProfilePolicyDisablePassphraseArgs, ProfilePolicyPruneBackupsArgs,
+    ProfilePolicyRepairAllArgs, ProfilePolicyRepairArgs, ProfilePolicyRequirePassphraseArgs,
+    ProfilePolicyRequirementArgs, ProfilePolicyRestoreBackupArgs, ProfilePolicyRotateKeyArgs,
+    ProfilePolicySetArgs, ProfilePolicyStatusArgs, ProfilePolicyVerifyBackupArgs,
+    RecoveryCombineArgs, RecoveryListArgs, RecoveryMetadataArgs, RecoveryPlanArgs,
+    RecoveryRecoverRecipientArgs, RecoveryRemoveArgs, RecoveryShareFileArgs, RecoverySplitArgs,
+    RecoveryVaultKeySplitArgs, RemoteBackendArg, RemoteCommandUnwrapArgs, RemoteCommandWrapArgs,
+    RemoteEnableCommandArgs, RemoteListArgs, RemoteMetadataArgs, RemotePlanArgs, RemoteRemoveArgs,
+    RemoteRequestArgs, RemoteRequestTemplateArgs, RollbackBackendArg, RollbackCheckpointArgs,
     RollbackCheckpointTemplateArgs, RollbackPlanArgs, RollbackStatusArgs, SecurityPresetArg,
     SecurityPresetArgs,
 };
+#[cfg(feature = "device-seal")]
+use sshenv_cli_models::{DeviceSealBackendArg, DeviceSealModeArg};
 use sshenv_vault::models::{
     ProfileFactorRequirement, ProfilePolicy, ProfilePolicyFinding, ProfilePolicyFindingCode,
     ProfilePolicyPreset, ProfilePolicyRepairAction, ProfilePolicyRepairPlan,
@@ -587,17 +589,58 @@ fn rollback_failure_modes(backend: RollbackBackendArg) -> Vec<String> {
 }
 
 #[cfg(feature = "device-seal")]
-pub fn enable_device_seal(ctx: &CmdContext) -> Result<()> {
+pub fn enable_device_seal(ctx: &CmdContext, args: EnableDeviceSealArgs) -> Result<()> {
     let (ciphertext, recipients) = load_ciphertext_and_fps(&ctx.vault_path)?;
     let (mut vault, data_key) = unlock_ciphertext(ciphertext, &recipients)?;
-    vault.enable_device_seal_factor()?;
+    vault.enable_device_seal_factor_with_options(device_seal_options_from_args(args))?;
     save_vault(ctx, &mut vault, &data_key)?;
     eprintln!("Enabled device-seal factor for this v2 vault.");
     Ok(())
 }
 
+#[cfg(feature = "device-seal")]
+fn device_seal_options_from_args(
+    args: EnableDeviceSealArgs,
+) -> sshenv_vault::device::DeviceSealOptions {
+    let selection = if let Some(backend) = args.backend {
+        sshenv_vault::device::DeviceSealSelection::Backend(match backend {
+            DeviceSealBackendArg::MacosKeychain => {
+                sshenv_vault::device::DeviceSealBackendSelection::MacosKeychain
+            }
+            DeviceSealBackendArg::MacosKeychainDeviceOnly => {
+                sshenv_vault::device::DeviceSealBackendSelection::MacosKeychainDeviceOnly
+            }
+            DeviceSealBackendArg::WindowsDpapiCurrentUser => {
+                sshenv_vault::device::DeviceSealBackendSelection::WindowsDpapiCurrentUser
+            }
+            DeviceSealBackendArg::LinuxTpm => {
+                sshenv_vault::device::DeviceSealBackendSelection::LinuxTpm
+            }
+            DeviceSealBackendArg::LinuxSecretService => {
+                sshenv_vault::device::DeviceSealBackendSelection::LinuxSecretService
+            }
+            DeviceSealBackendArg::LocalFile => {
+                sshenv_vault::device::DeviceSealBackendSelection::LocalFile
+            }
+        })
+    } else {
+        sshenv_vault::device::DeviceSealSelection::Policy(
+            match args.mode.unwrap_or(DeviceSealModeArg::Default) {
+                DeviceSealModeArg::Default => sshenv_vault::device::DeviceSealPolicy::Default,
+                DeviceSealModeArg::TransparentDeviceOnly => {
+                    sshenv_vault::device::DeviceSealPolicy::TransparentDeviceOnly
+                }
+            },
+        )
+    };
+    sshenv_vault::device::DeviceSealOptions {
+        selection,
+        strict: args.strict,
+    }
+}
+
 #[cfg(not(feature = "device-seal"))]
-pub fn enable_device_seal(_ctx: &CmdContext) -> Result<()> {
+pub fn enable_device_seal(_ctx: &CmdContext, _args: EnableDeviceSealArgs) -> Result<()> {
     anyhow::bail!("this sshenv build was compiled without device-seal support")
 }
 
@@ -636,7 +679,14 @@ pub fn device_list(ctx: &CmdContext) -> Result<()> {
 
 #[cfg(feature = "device-seal")]
 pub fn device_authorize(ctx: &CmdContext) -> Result<()> {
-    enable_device_seal(ctx)
+    enable_device_seal(
+        ctx,
+        EnableDeviceSealArgs {
+            mode: None,
+            backend: None,
+            strict: false,
+        },
+    )
 }
 
 #[cfg(not(feature = "device-seal"))]

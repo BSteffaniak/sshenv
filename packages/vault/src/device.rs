@@ -58,9 +58,12 @@ use zeroize::Zeroizing;
 
 const DEVICE_SEAL_FACTOR_ID: &str = "device-seal:default";
 const BACKEND: &str = "backend";
+const POLICY: &str = "policy";
+const STRICT: &str = "strict";
 const BACKEND_LOCAL_FILE: &str = "local-file";
 const BACKEND_LINUX_SECRET_SERVICE: &str = "linux-secret-service";
 const BACKEND_MACOS_KEYCHAIN: &str = "macos-keychain";
+const BACKEND_MACOS_KEYCHAIN_DEVICE_ONLY: &str = "macos-keychain-device-only";
 const BACKEND_SECURE_ENCLAVE: &str = "secure-enclave";
 const BACKEND_TPM: &str = "tpm";
 const BACKEND_WINDOWS_DPAPI: &str = "windows-dpapi";
@@ -72,9 +75,72 @@ const DEVICE_SEAL_BACKEND_ENV: &str = "SSHENV_DEVICE_SEAL_BACKEND";
 #[cfg(all(feature = "macos-keychain", target_os = "macos"))]
 const MACOS_KEYCHAIN_SERVICE: &str = "sshenv device seal";
 #[cfg(all(feature = "macos-keychain", target_os = "macos"))]
+const MACOS_DEVICE_ONLY_KEYCHAIN_SERVICE: &str = "sshenv device seal device-only";
+#[cfg(all(feature = "macos-keychain", target_os = "macos"))]
 const MACOS_KEYCHAIN_ACCOUNT: &str = "default";
 #[cfg(all(feature = "linux-secret-service", target_os = "linux"))]
 const LINUX_SECRET_SERVICE_LABEL: &str = "sshenv device seal";
+
+/// Requested high-level device-seal policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceSealPolicy {
+    /// Pick a non-interactive backend that stores a random seal outside the vault
+    /// and binds it to this device where the platform supports that guarantee.
+    TransparentDeviceOnly,
+    /// Preserve the legacy platform default behavior.
+    Default,
+}
+
+impl DeviceSealPolicy {
+    #[must_use]
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::TransparentDeviceOnly => "transparent-device-only",
+            Self::Default => "default",
+        }
+    }
+}
+
+/// Concrete device-seal backend requested by an advanced caller.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceSealBackendSelection {
+    /// Use the legacy macOS Keychain item.
+    MacosKeychain,
+    /// Use a non-synchronizing, device-only macOS Keychain item.
+    MacosKeychainDeviceOnly,
+    /// Use Windows DPAPI scoped to the current user.
+    WindowsDpapiCurrentUser,
+    /// Use the Linux TPM backend.
+    LinuxTpm,
+    /// Use the Linux Secret Service backend.
+    LinuxSecretService,
+    /// Use the development local-file backend.
+    LocalFile,
+}
+
+/// Device-seal selection requested by a caller.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceSealSelection {
+    /// Select a backend by high-level policy.
+    Policy(DeviceSealPolicy),
+    /// Select a concrete backend explicitly.
+    Backend(DeviceSealBackendSelection),
+}
+
+impl Default for DeviceSealSelection {
+    fn default() -> Self {
+        Self::Policy(DeviceSealPolicy::Default)
+    }
+}
+
+/// Options controlling device-seal creation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct DeviceSealOptions {
+    /// Requested policy or concrete backend.
+    pub selection: DeviceSealSelection,
+    /// Whether weaker fallback behavior must be rejected.
+    pub strict: bool,
+}
 
 /// Result of executing a brokered device-seal operation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -123,9 +189,29 @@ pub fn execute_device_seal_broker_payload(payload: &[u8]) -> DeviceSealBrokerExe
 /// Returns an error if this build has no available device-seal backend or if
 /// the backend cannot create/load its secret.
 pub fn create_factor() -> Result<(UnlockFactorV2, Zeroizing<[u8; KEY_LEN]>)> {
-    let (backend, factor_key) = load_or_create_device_secret()?;
+    create_factor_with_options(DeviceSealOptions::default())
+}
+
+/// Create metadata for a selected device-seal factor and return the factor key.
+///
+/// # Errors
+///
+/// Returns an error if this build has no available device-seal backend or if
+/// the selected backend cannot create/load its secret.
+pub fn create_factor_with_options(
+    options: DeviceSealOptions,
+) -> Result<(UnlockFactorV2, Zeroizing<[u8; KEY_LEN]>)> {
+    let (backend, factor_key) = load_or_create_device_secret(options)?;
     let mut params = BTreeMap::new();
     params.insert(BACKEND.to_string(), backend.to_string());
+    if let DeviceSealSelection::Policy(policy) = options.selection {
+        if policy != DeviceSealPolicy::Default {
+            params.insert(POLICY.to_string(), policy.as_str().to_string());
+        }
+    }
+    if options.strict {
+        params.insert(STRICT.to_string(), "true".to_string());
+    }
     Ok((
         UnlockFactorV2 {
             id: DEVICE_SEAL_FACTOR_ID.to_string(),
@@ -153,6 +239,7 @@ pub fn derive_factor_from_metadata(factor: &UnlockFactorV2) -> Result<Zeroizing<
         .context("device-seal factor is missing backend")?;
     match backend.as_str() {
         BACKEND_MACOS_KEYCHAIN => load_macos_keychain_secret(),
+        BACKEND_MACOS_KEYCHAIN_DEVICE_ONLY => load_macos_device_only_keychain_secret(),
         BACKEND_SECURE_ENCLAVE => load_secure_enclave_secret(),
         BACKEND_LINUX_SECRET_SERVICE => load_linux_secret_service_secret(),
         BACKEND_TPM => load_tpm_secret(),
@@ -236,7 +323,21 @@ pub const fn backend_status() -> &'static str {
     }
 }
 
-fn load_or_create_device_secret() -> Result<(&'static str, Zeroizing<[u8; KEY_LEN]>)> {
+fn load_or_create_device_secret(
+    options: DeviceSealOptions,
+) -> Result<(&'static str, Zeroizing<[u8; KEY_LEN]>)> {
+    match options.selection {
+        DeviceSealSelection::Policy(DeviceSealPolicy::TransparentDeviceOnly) => {
+            load_or_create_transparent_device_only_secret(options.strict)
+        }
+        DeviceSealSelection::Policy(DeviceSealPolicy::Default) => {
+            load_or_create_default_device_secret()
+        }
+        DeviceSealSelection::Backend(backend) => load_or_create_explicit_backend_secret(backend),
+    }
+}
+
+fn load_or_create_default_device_secret() -> Result<(&'static str, Zeroizing<[u8; KEY_LEN]>)> {
     #[cfg(feature = "device-seal-file")]
     if local_file_backend_requested()? {
         return load_or_create_local_file_secret();
@@ -332,21 +433,154 @@ fn load_or_create_device_secret() -> Result<(&'static str, Zeroizing<[u8; KEY_LE
         feature = "device-seal-file",
         all(feature = "macos-keychain", target_os = "macos"),
         all(feature = "linux-secret-service", target_os = "linux"),
-        feature = "secure-enclave",
-        all(feature = "tpm-device-seal", target_os = "linux"),
-        all(feature = "windows-dpapi", target_os = "windows")
+        all(feature = "windows-dpapi", target_os = "windows"),
+        all(feature = "tpm-device-seal", target_os = "linux")
     )))]
-    bail!("no device-seal backend is available in this build")
+    bail!("this sshenv build has no device-seal backend enabled")
 }
 
-#[cfg(any(
-    feature = "device-seal-file",
-    all(feature = "macos-keychain", target_os = "macos"),
-    all(feature = "linux-secret-service", target_os = "linux"),
-    feature = "secure-enclave",
-    all(feature = "tpm-device-seal", target_os = "linux"),
-    all(feature = "windows-dpapi", target_os = "windows")
-))]
+fn load_or_create_transparent_device_only_secret(
+    _strict: bool,
+) -> Result<(&'static str, Zeroizing<[u8; KEY_LEN]>)> {
+    #[cfg(all(feature = "macos-keychain", target_os = "macos"))]
+    {
+        load_or_create_macos_device_only_secret()
+    }
+
+    #[cfg(all(
+        feature = "windows-dpapi",
+        target_os = "windows",
+        not(all(feature = "macos-keychain", target_os = "macos"))
+    ))]
+    {
+        return load_or_create_windows_dpapi_secret();
+    }
+
+    #[cfg(all(
+        feature = "tpm-device-seal",
+        target_os = "linux",
+        not(all(feature = "macos-keychain", target_os = "macos")),
+        not(all(feature = "windows-dpapi", target_os = "windows"))
+    ))]
+    {
+        return load_or_create_tpm_secret();
+    }
+
+    #[cfg(all(
+        feature = "linux-secret-service",
+        target_os = "linux",
+        not(all(feature = "macos-keychain", target_os = "macos")),
+        not(all(feature = "windows-dpapi", target_os = "windows")),
+        not(all(feature = "tpm-device-seal", target_os = "linux"))
+    ))]
+    {
+        if _strict {
+            bail!(
+                "transparent-device-only strict mode requires a hardware/device-bound backend; Linux Secret Service is transparent but not guaranteed device-bound"
+            );
+        }
+        return load_or_create_linux_secret_service_secret();
+    }
+
+    #[cfg(not(any(
+        all(feature = "macos-keychain", target_os = "macos"),
+        all(feature = "windows-dpapi", target_os = "windows"),
+        all(feature = "tpm-device-seal", target_os = "linux"),
+        all(feature = "linux-secret-service", target_os = "linux")
+    )))]
+    bail!("transparent-device-only device seal is not available in this build/on this platform")
+}
+
+fn load_or_create_explicit_backend_secret(
+    backend: DeviceSealBackendSelection,
+) -> Result<(&'static str, Zeroizing<[u8; KEY_LEN]>)> {
+    match backend {
+        DeviceSealBackendSelection::MacosKeychain => load_or_create_macos_keychain_secret(),
+        DeviceSealBackendSelection::MacosKeychainDeviceOnly => {
+            load_or_create_macos_device_only_secret()
+        }
+        DeviceSealBackendSelection::WindowsDpapiCurrentUser => {
+            load_or_create_windows_dpapi_secret()
+        }
+        DeviceSealBackendSelection::LinuxTpm => load_or_create_tpm_secret(),
+        DeviceSealBackendSelection::LinuxSecretService => {
+            load_or_create_linux_secret_service_secret()
+        }
+        DeviceSealBackendSelection::LocalFile => load_or_create_local_file_secret(),
+    }
+}
+
+fn load_or_create_macos_keychain_secret() -> Result<(&'static str, Zeroizing<[u8; KEY_LEN]>)> {
+    #[cfg(all(feature = "macos-keychain", target_os = "macos"))]
+    {
+        if let Ok(secret) = load_macos_keychain_secret() {
+            return Ok((BACKEND_MACOS_KEYCHAIN, secret));
+        }
+        let secret = create_random_secret();
+        store_macos_keychain_secret(secret.as_slice())?;
+        Ok((BACKEND_MACOS_KEYCHAIN, secret))
+    }
+    #[cfg(not(all(feature = "macos-keychain", target_os = "macos")))]
+    bail!("macOS Keychain device-seal backend is not available in this build")
+}
+
+fn load_or_create_macos_device_only_secret() -> Result<(&'static str, Zeroizing<[u8; KEY_LEN]>)> {
+    #[cfg(all(feature = "macos-keychain", target_os = "macos"))]
+    {
+        if let Ok(secret) = load_macos_device_only_keychain_secret() {
+            return Ok((BACKEND_MACOS_KEYCHAIN_DEVICE_ONLY, secret));
+        }
+        let secret = create_random_secret();
+        store_macos_device_only_keychain_secret(secret.as_slice())?;
+        Ok((BACKEND_MACOS_KEYCHAIN_DEVICE_ONLY, secret))
+    }
+    #[cfg(not(all(feature = "macos-keychain", target_os = "macos")))]
+    bail!("macOS device-only Keychain device-seal backend is not available in this build")
+}
+
+fn load_or_create_windows_dpapi_secret() -> Result<(&'static str, Zeroizing<[u8; KEY_LEN]>)> {
+    #[cfg(all(feature = "windows-dpapi", target_os = "windows"))]
+    {
+        if let Ok(secret) = load_windows_dpapi_secret() {
+            return Ok((BACKEND_WINDOWS_DPAPI, secret));
+        }
+        let secret = create_random_secret();
+        store_windows_dpapi_secret(secret.as_slice())?;
+        return Ok((BACKEND_WINDOWS_DPAPI, secret));
+    }
+    #[cfg(not(all(feature = "windows-dpapi", target_os = "windows")))]
+    bail!("Windows DPAPI device-seal backend is not available in this build")
+}
+
+fn load_or_create_tpm_secret() -> Result<(&'static str, Zeroizing<[u8; KEY_LEN]>)> {
+    #[cfg(all(feature = "tpm-device-seal", target_os = "linux"))]
+    {
+        if let Ok(secret) = load_tpm_secret() {
+            return Ok((BACKEND_TPM, secret));
+        }
+        let secret = create_random_secret();
+        store_tpm_secret(secret.as_slice())?;
+        return Ok((BACKEND_TPM, secret));
+    }
+    #[cfg(not(all(feature = "tpm-device-seal", target_os = "linux")))]
+    bail!("Linux TPM device-seal backend is not available in this build")
+}
+
+fn load_or_create_linux_secret_service_secret() -> Result<(&'static str, Zeroizing<[u8; KEY_LEN]>)>
+{
+    #[cfg(all(feature = "linux-secret-service", target_os = "linux"))]
+    {
+        if let Ok(secret) = load_linux_secret_service_secret() {
+            return Ok((BACKEND_LINUX_SECRET_SERVICE, secret));
+        }
+        let secret = create_random_secret();
+        store_linux_secret_service_secret(secret.as_slice())?;
+        return Ok((BACKEND_LINUX_SECRET_SERVICE, secret));
+    }
+    #[cfg(not(all(feature = "linux-secret-service", target_os = "linux")))]
+    bail!("Linux Secret Service device-seal backend is not available in this build")
+}
+
 fn create_random_secret() -> Zeroizing<[u8; KEY_LEN]> {
     let mut secret = [0_u8; KEY_LEN];
     rand_core::OsRng.fill_bytes(&mut secret);
@@ -410,6 +644,25 @@ fn load_macos_keychain_secret() -> Result<Zeroizing<[u8; KEY_LEN]>> {
 
     #[cfg(not(all(feature = "macos-keychain", target_os = "macos")))]
     bail!("macOS Keychain device-seal backend is not available in this build")
+}
+
+fn load_macos_device_only_keychain_secret() -> Result<Zeroizing<[u8; KEY_LEN]>> {
+    #[cfg(all(feature = "macos-keychain", target_os = "macos"))]
+    {
+        if let Some(secret) = invoke_device_seal_broker(
+            DeviceSealBrokerOperation::Load,
+            BACKEND_MACOS_KEYCHAIN_DEVICE_ONLY,
+            MACOS_DEVICE_ONLY_KEYCHAIN_SERVICE,
+            MACOS_KEYCHAIN_ACCOUNT,
+            None,
+        )? {
+            return parse_hex_secret(&secret, "macOS device-only Keychain device seal secret");
+        }
+        load_macos_device_only_keychain_secret_direct()
+    }
+
+    #[cfg(not(all(feature = "macos-keychain", target_os = "macos")))]
+    bail!("macOS device-only Keychain device-seal backend is not available in this build")
 }
 
 #[cfg(feature = "secure-enclave")]
@@ -898,19 +1151,31 @@ fn store_macos_keychain_secret(secret: &[u8]) -> Result<()> {
 }
 
 #[cfg(all(feature = "macos-keychain", target_os = "macos"))]
+fn store_macos_device_only_keychain_secret(secret: &[u8]) -> Result<()> {
+    let secret_hex = hex::encode(secret);
+    if invoke_device_seal_broker(
+        DeviceSealBrokerOperation::Store,
+        BACKEND_MACOS_KEYCHAIN_DEVICE_ONLY,
+        MACOS_DEVICE_ONLY_KEYCHAIN_SERVICE,
+        MACOS_KEYCHAIN_ACCOUNT,
+        Some(secret_hex.clone()),
+    )?
+    .is_some()
+    {
+        return Ok(());
+    }
+    store_macos_device_only_keychain_secret_direct(&secret_hex)
+}
+
+#[cfg(all(feature = "macos-keychain", target_os = "macos"))]
 fn run_device_seal_broker_payload(payload: &[u8]) -> Result<Vec<u8>> {
     let request: DeviceSealBrokerRequest = serde_json::from_slice(payload)
         .context("device-seal broker request was not valid sshenv JSON")?;
-    if request.backend != BACKEND_MACOS_KEYCHAIN
-        || request.service != MACOS_KEYCHAIN_SERVICE
-        || request.account != MACOS_KEYCHAIN_ACCOUNT
-    {
-        bail!("unsupported device-seal broker target");
-    }
+    let target = macos_broker_target(&request)?;
 
     let response = match request.operation {
         DeviceSealBrokerOperation::Load => {
-            let secret = load_macos_keychain_secret_direct()?;
+            let secret = target.load()?;
             DeviceSealBrokerResponse {
                 secret_hex: Some(hex::encode(secret.as_slice())),
                 error: None,
@@ -922,8 +1187,8 @@ fn run_device_seal_broker_payload(payload: &[u8]) -> Result<Vec<u8>> {
                 .as_deref()
                 .filter(|value| !value.is_empty())
                 .context("store request is missing secret_hex")?;
-            parse_hex_secret(secret_hex, "macOS Keychain device seal secret")?;
-            store_macos_keychain_secret_direct(secret_hex)?;
+            parse_hex_secret(secret_hex, target.description)?;
+            target.store(secret_hex)?;
             DeviceSealBrokerResponse {
                 secret_hex: None,
                 error: None,
@@ -931,6 +1196,46 @@ fn run_device_seal_broker_payload(payload: &[u8]) -> Result<Vec<u8>> {
         }
     };
     serde_json::to_vec(&response).context("failed to encode device-seal broker response")
+}
+
+#[cfg(all(feature = "macos-keychain", target_os = "macos"))]
+struct MacosBrokerTarget {
+    description: &'static str,
+    load: fn() -> Result<Zeroizing<[u8; KEY_LEN]>>,
+    store: fn(&str) -> Result<()>,
+}
+
+#[cfg(all(feature = "macos-keychain", target_os = "macos"))]
+impl MacosBrokerTarget {
+    fn load(&self) -> Result<Zeroizing<[u8; KEY_LEN]>> {
+        (self.load)()
+    }
+
+    fn store(&self, secret_hex: &str) -> Result<()> {
+        (self.store)(secret_hex)
+    }
+}
+
+#[cfg(all(feature = "macos-keychain", target_os = "macos"))]
+fn macos_broker_target(request: &DeviceSealBrokerRequest) -> Result<MacosBrokerTarget> {
+    if request.account != MACOS_KEYCHAIN_ACCOUNT {
+        bail!("unsupported device-seal broker account");
+    }
+    match (request.backend.as_str(), request.service.as_str()) {
+        (BACKEND_MACOS_KEYCHAIN, MACOS_KEYCHAIN_SERVICE) => Ok(MacosBrokerTarget {
+            description: "macOS Keychain device seal secret",
+            load: load_macos_keychain_secret_direct,
+            store: store_macos_keychain_secret_direct,
+        }),
+        (BACKEND_MACOS_KEYCHAIN_DEVICE_ONLY, MACOS_DEVICE_ONLY_KEYCHAIN_SERVICE) => {
+            Ok(MacosBrokerTarget {
+                description: "macOS device-only Keychain device seal secret",
+                load: load_macos_device_only_keychain_secret_direct,
+                store: store_macos_device_only_keychain_secret_direct,
+            })
+        }
+        _ => bail!("unsupported device-seal broker target"),
+    }
 }
 
 #[cfg(not(all(feature = "macos-keychain", target_os = "macos")))]
@@ -944,6 +1249,23 @@ fn device_seal_password_options(
     account: &str,
 ) -> security_framework::passwords::PasswordOptions {
     security_framework::passwords::PasswordOptions::new_generic_password(service, account)
+}
+
+#[cfg(all(feature = "macos-keychain", target_os = "macos"))]
+fn device_only_password_options(
+    service: &str,
+    account: &str,
+) -> Result<security_framework::passwords::PasswordOptions> {
+    let mut options =
+        security_framework::passwords::PasswordOptions::new_generic_password(service, account);
+    options.set_access_synchronized(Some(false));
+    let access_control = security_framework::access_control::SecAccessControl::create_with_protection(
+        Some(security_framework::access_control::ProtectionMode::AccessibleAfterFirstUnlockThisDeviceOnly),
+        0,
+    )
+    .context("failed to create macOS device-only Keychain access control")?;
+    options.set_access_control(access_control);
+    Ok(options)
 }
 
 #[cfg(all(feature = "macos-keychain", target_os = "macos"))]
@@ -983,6 +1305,43 @@ fn store_macos_keychain_secret_direct(secret_hex: &str) -> Result<()> {
             )
         }),
     }
+}
+
+#[cfg(all(feature = "macos-keychain", target_os = "macos"))]
+fn load_macos_device_only_keychain_secret_direct() -> Result<Zeroizing<[u8; KEY_LEN]>> {
+    match security_framework::passwords::generic_password(device_only_password_options(
+        MACOS_DEVICE_ONLY_KEYCHAIN_SERVICE,
+        MACOS_KEYCHAIN_ACCOUNT,
+    )?) {
+        Ok(secret) => String::from_utf8(secret)
+            .context("macOS device-only Keychain returned non-UTF8 device seal secret")
+            .and_then(|secret| {
+                parse_hex_secret(
+                    secret.trim(),
+                    "macOS device-only Keychain device seal secret",
+                )
+            }),
+        Err(keychain_error) => Err(anyhow::anyhow!(
+            "macOS device-only Keychain device seal secret not found or unavailable: OSStatus {} ({})",
+            keychain_error.code(),
+            keychain_error
+        )),
+    }
+}
+
+#[cfg(all(feature = "macos-keychain", target_os = "macos"))]
+fn store_macos_device_only_keychain_secret_direct(secret_hex: &str) -> Result<()> {
+    security_framework::passwords::set_generic_password_options(
+        secret_hex.as_bytes(),
+        device_only_password_options(MACOS_DEVICE_ONLY_KEYCHAIN_SERVICE, MACOS_KEYCHAIN_ACCOUNT)?,
+    )
+    .map_err(|keychain_error| {
+        anyhow::anyhow!(
+            "failed to store device seal in macOS device-only Keychain: OSStatus {} ({})",
+            keychain_error.code(),
+            keychain_error
+        )
+    })
 }
 
 #[cfg(all(feature = "macos-keychain", target_os = "macos"))]

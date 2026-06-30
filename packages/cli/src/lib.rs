@@ -50,7 +50,9 @@ pub fn run(cli: Cli) -> Result<()> {
             SecurityCommand::DisablePassphrase(args) => {
                 commands::security::disable_passphrase(&ctx, args)
             }
-            SecurityCommand::EnableDeviceSeal => commands::security::enable_device_seal(&ctx),
+            SecurityCommand::EnableDeviceSeal(args) => {
+                commands::security::enable_device_seal(&ctx, args)
+            }
             SecurityCommand::Preset(args) => commands::security::preset(&ctx, args),
             SecurityCommand::PassphraseCache(sub) => match sub {
                 PassphraseCacheCommand::Status(args) => {

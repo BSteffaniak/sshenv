@@ -130,7 +130,7 @@ pub enum SecurityCommand {
     /// Remove the existing sshenv vault passphrase factor.
     DisablePassphrase(DisablePassphraseArgs),
     /// Require a local device seal in addition to SSH recipient unlock.
-    EnableDeviceSeal,
+    EnableDeviceSeal(EnableDeviceSealArgs),
     /// Apply a named security preset.
     Preset(SecurityPresetArgs),
     /// Inspect future passphrase-cache design and controls.
@@ -154,6 +154,36 @@ pub enum SecurityCommand {
     /// Manage advisory per-profile security policy metadata.
     #[command(subcommand)]
     ProfilePolicy(ProfilePolicyCommand),
+}
+
+#[derive(Debug, clap::Args)]
+pub struct EnableDeviceSealArgs {
+    /// High-level device-seal policy to satisfy.
+    #[arg(long, value_enum, conflicts_with = "backend")]
+    pub mode: Option<DeviceSealModeArg>,
+    /// Concrete device-seal backend to use.
+    #[arg(long, value_enum, conflicts_with = "mode")]
+    pub backend: Option<DeviceSealBackendArg>,
+    /// Reject weaker fallback behavior such as plaintext local-file storage or
+    /// transparent stores that are not guaranteed device-bound.
+    #[arg(long)]
+    pub strict: bool,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum DeviceSealModeArg {
+    Default,
+    TransparentDeviceOnly,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum DeviceSealBackendArg {
+    MacosKeychain,
+    MacosKeychainDeviceOnly,
+    WindowsDpapiCurrentUser,
+    LinuxTpm,
+    LinuxSecretService,
+    LocalFile,
 }
 
 #[derive(Debug, Subcommand)]
