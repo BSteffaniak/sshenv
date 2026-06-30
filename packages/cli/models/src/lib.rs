@@ -183,6 +183,7 @@ pub enum DeviceSealBackendArg {
     WindowsDpapiCurrentUser,
     LinuxTpm,
     LinuxSecretService,
+    SecureEnclave,
     LocalFile,
 }
 

@@ -619,6 +619,9 @@ fn device_seal_options_from_args(
             DeviceSealBackendArg::LinuxSecretService => {
                 sshenv_vault::device::DeviceSealBackendSelection::LinuxSecretService
             }
+            DeviceSealBackendArg::SecureEnclave => {
+                sshenv_vault::device::DeviceSealBackendSelection::SecureEnclave
+            }
             DeviceSealBackendArg::LocalFile => {
                 sshenv_vault::device::DeviceSealBackendSelection::LocalFile
             }

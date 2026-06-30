@@ -826,6 +826,21 @@ impl Vault {
     /// is missing, or if no device-seal backend is available.
     #[cfg(feature = "device-seal")]
     pub fn require_profile_device_seal(&mut self, profile: &str) -> Result<()> {
+        self.require_profile_device_seal_with_options(profile, device::DeviceSealOptions::default())
+    }
+
+    /// Require a selected device seal only for one profile.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if this is not a v2 profile-key vault, if the profile
+    /// is missing, or if no matching device-seal backend is available.
+    #[cfg(feature = "device-seal")]
+    pub fn require_profile_device_seal_with_options(
+        &mut self,
+        profile: &str,
+        options: device::DeviceSealOptions,
+    ) -> Result<()> {
         ensure_v2_for_device_seal(self.header.version)?;
         if !self.profile_keys_enabled() {
             return Err(anyhow!(
@@ -842,7 +857,7 @@ impl Vault {
                 factor_metadata: Vec::new(),
             },
         );
-        let (factor, factor_key) = device::create_factor()?;
+        let (factor, factor_key) = device::create_factor_with_options(options)?;
         policy
             .factor_metadata
             .retain(|factor| factor.kind != UnlockFactorKindV2::DeviceSeal);

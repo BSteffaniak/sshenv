@@ -114,8 +114,38 @@ pub enum DeviceSealBackendSelection {
     LinuxTpm,
     /// Use the Linux Secret Service backend.
     LinuxSecretService,
+    /// Use an external Secure Enclave backend command.
+    SecureEnclave,
     /// Use the development local-file backend.
     LocalFile,
+}
+
+impl DeviceSealBackendSelection {
+    #[must_use]
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::MacosKeychain => BACKEND_MACOS_KEYCHAIN,
+            Self::MacosKeychainDeviceOnly => BACKEND_MACOS_KEYCHAIN_DEVICE_ONLY,
+            Self::WindowsDpapiCurrentUser => BACKEND_WINDOWS_DPAPI,
+            Self::LinuxTpm => BACKEND_TPM,
+            Self::LinuxSecretService => BACKEND_LINUX_SECRET_SERVICE,
+            Self::SecureEnclave => BACKEND_SECURE_ENCLAVE,
+            Self::LocalFile => BACKEND_LOCAL_FILE,
+        }
+    }
+
+    fn from_backend_name(name: &str) -> Option<Self> {
+        match name {
+            BACKEND_MACOS_KEYCHAIN => Some(Self::MacosKeychain),
+            BACKEND_MACOS_KEYCHAIN_DEVICE_ONLY => Some(Self::MacosKeychainDeviceOnly),
+            BACKEND_WINDOWS_DPAPI => Some(Self::WindowsDpapiCurrentUser),
+            BACKEND_TPM => Some(Self::LinuxTpm),
+            BACKEND_LINUX_SECRET_SERVICE => Some(Self::LinuxSecretService),
+            BACKEND_SECURE_ENCLAVE => Some(Self::SecureEnclave),
+            BACKEND_LOCAL_FILE => Some(Self::LocalFile),
+            _ => None,
+        }
+    }
 }
 
 /// Device-seal selection requested by a caller.
@@ -203,7 +233,7 @@ pub fn create_factor_with_options(
 ) -> Result<(UnlockFactorV2, Zeroizing<[u8; KEY_LEN]>)> {
     let (backend, factor_key) = load_or_create_device_secret(options)?;
     let mut params = BTreeMap::new();
-    params.insert(BACKEND.to_string(), backend.to_string());
+    params.insert(BACKEND.to_string(), backend.as_str().to_string());
     if let DeviceSealSelection::Policy(policy) = options.selection {
         if policy != DeviceSealPolicy::Default {
             params.insert(POLICY.to_string(), policy.as_str().to_string());
@@ -237,16 +267,10 @@ pub fn derive_factor_from_metadata(factor: &UnlockFactorV2) -> Result<Zeroizing<
         .params
         .get(BACKEND)
         .context("device-seal factor is missing backend")?;
-    match backend.as_str() {
-        BACKEND_MACOS_KEYCHAIN => load_macos_keychain_secret(),
-        BACKEND_MACOS_KEYCHAIN_DEVICE_ONLY => load_macos_device_only_keychain_secret(),
-        BACKEND_SECURE_ENCLAVE => load_secure_enclave_secret(),
-        BACKEND_LINUX_SECRET_SERVICE => load_linux_secret_service_secret(),
-        BACKEND_TPM => load_tpm_secret(),
-        BACKEND_WINDOWS_DPAPI => load_windows_dpapi_secret(),
-        BACKEND_LOCAL_FILE => load_local_file_secret(),
-        _ => bail!("device-seal backend '{backend}' is not supported by this build"),
-    }
+    let backend = DeviceSealBackendSelection::from_backend_name(backend).with_context(|| {
+        format!("device-seal backend '{backend}' is not supported by this build")
+    })?;
+    load_device_secret(backend)
 }
 
 /// True when the factor is a device-seal factor.
@@ -325,266 +349,231 @@ pub const fn backend_status() -> &'static str {
 
 fn load_or_create_device_secret(
     options: DeviceSealOptions,
-) -> Result<(&'static str, Zeroizing<[u8; KEY_LEN]>)> {
+) -> Result<(DeviceSealBackendSelection, Zeroizing<[u8; KEY_LEN]>)> {
+    let backend = resolve_device_seal_backend(options)?;
+    let secret = load_or_create_backend_secret(backend)?;
+    Ok((backend, secret))
+}
+
+fn resolve_device_seal_backend(options: DeviceSealOptions) -> Result<DeviceSealBackendSelection> {
     match options.selection {
         DeviceSealSelection::Policy(DeviceSealPolicy::TransparentDeviceOnly) => {
-            load_or_create_transparent_device_only_secret(options.strict)
+            resolve_transparent_device_only_backend(options.strict)
         }
-        DeviceSealSelection::Policy(DeviceSealPolicy::Default) => {
-            load_or_create_default_device_secret()
-        }
-        DeviceSealSelection::Backend(backend) => load_or_create_explicit_backend_secret(backend),
+        DeviceSealSelection::Policy(DeviceSealPolicy::Default) => resolve_default_backend(),
+        DeviceSealSelection::Backend(backend) => Ok(backend),
     }
 }
 
-fn load_or_create_default_device_secret() -> Result<(&'static str, Zeroizing<[u8; KEY_LEN]>)> {
+fn resolve_default_backend() -> Result<DeviceSealBackendSelection> {
     #[cfg(feature = "device-seal-file")]
     if local_file_backend_requested()? {
-        return load_or_create_local_file_secret();
+        return Ok(DeviceSealBackendSelection::LocalFile);
     }
 
     #[cfg(feature = "secure-enclave")]
     if secure_enclave_command_path().is_some() {
-        if let Ok(secret) = load_secure_enclave_secret() {
-            return Ok((BACKEND_SECURE_ENCLAVE, secret));
-        }
-        let secret = create_random_secret();
-        store_secure_enclave_secret(secret.as_slice())?;
-        return Ok((BACKEND_SECURE_ENCLAVE, secret));
-    };
+        return Ok(DeviceSealBackendSelection::SecureEnclave);
+    }
 
+    default_backend_candidates()
+        .first()
+        .map(|candidate| candidate.backend)
+        .context("this sshenv build has no device-seal backend enabled")
+}
+
+fn resolve_transparent_device_only_backend(strict: bool) -> Result<DeviceSealBackendSelection> {
+    transparent_device_only_candidates()
+        .iter()
+        .copied()
+        .find(|candidate| !strict || candidate.strict_transparent_device_only)
+        .map(|candidate| candidate.backend)
+        .with_context(|| {
+            if strict {
+                "transparent-device-only strict mode requires a hardware/device-bound backend".to_string()
+            } else {
+                "transparent-device-only device seal is not available in this build/on this platform".to_string()
+            }
+        })
+}
+
+#[must_use]
+const fn default_backend_candidates() -> &'static [DeviceSealBackendCandidate] {
     #[cfg(all(feature = "macos-keychain", target_os = "macos"))]
     {
-        if let Ok(secret) = load_macos_keychain_secret() {
-            return Ok((BACKEND_MACOS_KEYCHAIN, secret));
-        }
-        let secret = create_random_secret();
-        store_macos_keychain_secret(secret.as_slice())?;
-        Ok((BACKEND_MACOS_KEYCHAIN, secret))
+        &[DeviceSealBackendCandidate {
+            backend: DeviceSealBackendSelection::MacosKeychain,
+            strict_transparent_device_only: false,
+        }]
     }
-
     #[cfg(all(
+        not(all(feature = "macos-keychain", target_os = "macos")),
         feature = "linux-secret-service",
-        target_os = "linux",
-        not(all(feature = "macos-keychain", target_os = "macos"))
+        target_os = "linux"
     ))]
     {
-        if let Ok(secret) = load_linux_secret_service_secret() {
-            return Ok((BACKEND_LINUX_SECRET_SERVICE, secret));
-        }
-        let secret = create_random_secret();
-        store_linux_secret_service_secret(secret.as_slice())?;
-        Ok((BACKEND_LINUX_SECRET_SERVICE, secret))
+        &[DeviceSealBackendCandidate {
+            backend: DeviceSealBackendSelection::LinuxSecretService,
+            strict_transparent_device_only: false,
+        }]
     }
-
     #[cfg(all(
-        feature = "windows-dpapi",
-        target_os = "windows",
         not(all(feature = "macos-keychain", target_os = "macos")),
+        not(all(feature = "linux-secret-service", target_os = "linux")),
+        feature = "windows-dpapi",
+        target_os = "windows"
+    ))]
+    {
+        &[DeviceSealBackendCandidate {
+            backend: DeviceSealBackendSelection::WindowsDpapiCurrentUser,
+            strict_transparent_device_only: true,
+        }]
+    }
+    #[cfg(all(
+        not(all(feature = "macos-keychain", target_os = "macos")),
+        not(all(feature = "linux-secret-service", target_os = "linux")),
+        not(all(feature = "windows-dpapi", target_os = "windows")),
+        feature = "tpm-device-seal",
+        target_os = "linux"
+    ))]
+    {
+        &[DeviceSealBackendCandidate {
+            backend: DeviceSealBackendSelection::LinuxTpm,
+            strict_transparent_device_only: true,
+        }]
+    }
+    #[cfg(all(
+        not(all(feature = "macos-keychain", target_os = "macos")),
+        not(all(feature = "linux-secret-service", target_os = "linux")),
+        not(all(feature = "windows-dpapi", target_os = "windows")),
+        not(all(feature = "tpm-device-seal", target_os = "linux")),
+        feature = "device-seal-file"
+    ))]
+    {
+        &[DeviceSealBackendCandidate {
+            backend: DeviceSealBackendSelection::LocalFile,
+            strict_transparent_device_only: false,
+        }]
+    }
+    #[cfg(all(
+        not(all(feature = "macos-keychain", target_os = "macos")),
+        not(all(feature = "linux-secret-service", target_os = "linux")),
+        not(all(feature = "windows-dpapi", target_os = "windows")),
+        not(all(feature = "tpm-device-seal", target_os = "linux")),
+        not(feature = "device-seal-file")
+    ))]
+    {
+        &[]
+    }
+}
+
+#[must_use]
+const fn transparent_device_only_candidates() -> &'static [DeviceSealBackendCandidate] {
+    #[cfg(all(feature = "macos-keychain", target_os = "macos"))]
+    {
+        &[DeviceSealBackendCandidate {
+            backend: DeviceSealBackendSelection::MacosKeychainDeviceOnly,
+            strict_transparent_device_only: true,
+        }]
+    }
+    #[cfg(all(
+        not(all(feature = "macos-keychain", target_os = "macos")),
+        feature = "windows-dpapi",
+        target_os = "windows"
+    ))]
+    {
+        &[DeviceSealBackendCandidate {
+            backend: DeviceSealBackendSelection::WindowsDpapiCurrentUser,
+            strict_transparent_device_only: true,
+        }]
+    }
+    #[cfg(all(
+        not(all(feature = "macos-keychain", target_os = "macos")),
+        not(all(feature = "windows-dpapi", target_os = "windows")),
+        feature = "tpm-device-seal",
+        target_os = "linux"
+    ))]
+    {
+        &[DeviceSealBackendCandidate {
+            backend: DeviceSealBackendSelection::LinuxTpm,
+            strict_transparent_device_only: true,
+        }]
+    }
+    #[cfg(all(
+        not(all(feature = "macos-keychain", target_os = "macos")),
+        not(all(feature = "windows-dpapi", target_os = "windows")),
+        not(all(feature = "tpm-device-seal", target_os = "linux")),
+        feature = "linux-secret-service",
+        target_os = "linux"
+    ))]
+    {
+        &[DeviceSealBackendCandidate {
+            backend: DeviceSealBackendSelection::LinuxSecretService,
+            strict_transparent_device_only: false,
+        }]
+    }
+    #[cfg(all(
+        not(all(feature = "macos-keychain", target_os = "macos")),
+        not(all(feature = "windows-dpapi", target_os = "windows")),
+        not(all(feature = "tpm-device-seal", target_os = "linux")),
         not(all(feature = "linux-secret-service", target_os = "linux"))
     ))]
     {
-        if let Ok(secret) = load_windows_dpapi_secret() {
-            return Ok((BACKEND_WINDOWS_DPAPI, secret));
-        }
-        let secret = create_random_secret();
-        store_windows_dpapi_secret(secret.as_slice())?;
-        Ok((BACKEND_WINDOWS_DPAPI, secret))
+        &[]
     }
-
-    #[cfg(all(
-        feature = "tpm-device-seal",
-        target_os = "linux",
-        not(all(feature = "macos-keychain", target_os = "macos")),
-        not(all(feature = "linux-secret-service", target_os = "linux")),
-        not(all(feature = "windows-dpapi", target_os = "windows"))
-    ))]
-    {
-        if let Ok(secret) = load_tpm_secret() {
-            return Ok((BACKEND_TPM, secret));
-        }
-        let secret = create_random_secret();
-        store_tpm_secret(secret.as_slice())?;
-        Ok((BACKEND_TPM, secret))
-    }
-
-    #[cfg(all(
-        feature = "device-seal-file",
-        not(all(feature = "macos-keychain", target_os = "macos")),
-        not(all(feature = "linux-secret-service", target_os = "linux")),
-        not(all(feature = "windows-dpapi", target_os = "windows")),
-        not(all(feature = "tpm-device-seal", target_os = "linux"))
-    ))]
-    {
-        load_or_create_local_file_secret()
-    }
-
-    #[cfg(all(
-        feature = "secure-enclave",
-        not(feature = "device-seal-file"),
-        not(all(feature = "macos-keychain", target_os = "macos")),
-        not(all(feature = "linux-secret-service", target_os = "linux")),
-        not(all(feature = "tpm-device-seal", target_os = "linux")),
-        not(all(feature = "windows-dpapi", target_os = "windows"))
-    ))]
-    bail!("Secure Enclave device-seal backend requires SSHENV_SECURE_ENCLAVE_DEVICE_SEAL_COMMAND");
-
-    #[cfg(not(any(
-        feature = "device-seal-file",
-        all(feature = "macos-keychain", target_os = "macos"),
-        all(feature = "linux-secret-service", target_os = "linux"),
-        all(feature = "windows-dpapi", target_os = "windows"),
-        all(feature = "tpm-device-seal", target_os = "linux")
-    )))]
-    bail!("this sshenv build has no device-seal backend enabled")
 }
 
-fn load_or_create_transparent_device_only_secret(
-    _strict: bool,
-) -> Result<(&'static str, Zeroizing<[u8; KEY_LEN]>)> {
-    #[cfg(all(feature = "macos-keychain", target_os = "macos"))]
-    {
-        load_or_create_macos_device_only_secret()
-    }
-
-    #[cfg(all(
-        feature = "windows-dpapi",
-        target_os = "windows",
-        not(all(feature = "macos-keychain", target_os = "macos"))
-    ))]
-    {
-        return load_or_create_windows_dpapi_secret();
-    }
-
-    #[cfg(all(
-        feature = "tpm-device-seal",
-        target_os = "linux",
-        not(all(feature = "macos-keychain", target_os = "macos")),
-        not(all(feature = "windows-dpapi", target_os = "windows"))
-    ))]
-    {
-        return load_or_create_tpm_secret();
-    }
-
-    #[cfg(all(
-        feature = "linux-secret-service",
-        target_os = "linux",
-        not(all(feature = "macos-keychain", target_os = "macos")),
-        not(all(feature = "windows-dpapi", target_os = "windows")),
-        not(all(feature = "tpm-device-seal", target_os = "linux"))
-    ))]
-    {
-        if _strict {
-            bail!(
-                "transparent-device-only strict mode requires a hardware/device-bound backend; Linux Secret Service is transparent but not guaranteed device-bound"
-            );
-        }
-        return load_or_create_linux_secret_service_secret();
-    }
-
-    #[cfg(not(any(
-        all(feature = "macos-keychain", target_os = "macos"),
-        all(feature = "windows-dpapi", target_os = "windows"),
-        all(feature = "tpm-device-seal", target_os = "linux"),
-        all(feature = "linux-secret-service", target_os = "linux")
-    )))]
-    bail!("transparent-device-only device seal is not available in this build/on this platform")
-}
-
-fn load_or_create_explicit_backend_secret(
+fn load_or_create_backend_secret(
     backend: DeviceSealBackendSelection,
-) -> Result<(&'static str, Zeroizing<[u8; KEY_LEN]>)> {
+) -> Result<Zeroizing<[u8; KEY_LEN]>> {
+    match load_device_secret(backend) {
+        Ok(secret) => Ok(secret),
+        Err(_) => {
+            let secret = create_random_secret();
+            store_device_secret(backend, secret.as_slice())?;
+            Ok(secret)
+        }
+    }
+}
+
+fn load_device_secret(backend: DeviceSealBackendSelection) -> Result<Zeroizing<[u8; KEY_LEN]>> {
     match backend {
-        DeviceSealBackendSelection::MacosKeychain => load_or_create_macos_keychain_secret(),
+        DeviceSealBackendSelection::MacosKeychain => load_macos_keychain_secret(),
         DeviceSealBackendSelection::MacosKeychainDeviceOnly => {
-            load_or_create_macos_device_only_secret()
+            load_macos_device_only_keychain_secret()
         }
-        DeviceSealBackendSelection::WindowsDpapiCurrentUser => {
-            load_or_create_windows_dpapi_secret()
-        }
-        DeviceSealBackendSelection::LinuxTpm => load_or_create_tpm_secret(),
-        DeviceSealBackendSelection::LinuxSecretService => {
-            load_or_create_linux_secret_service_secret()
-        }
-        DeviceSealBackendSelection::LocalFile => load_or_create_local_file_secret(),
+        DeviceSealBackendSelection::WindowsDpapiCurrentUser => load_windows_dpapi_secret(),
+        DeviceSealBackendSelection::LinuxTpm => load_tpm_secret(),
+        DeviceSealBackendSelection::LinuxSecretService => load_linux_secret_service_secret(),
+        DeviceSealBackendSelection::SecureEnclave => load_secure_enclave_secret(),
+        DeviceSealBackendSelection::LocalFile => load_local_file_secret(),
     }
 }
 
-fn load_or_create_macos_keychain_secret() -> Result<(&'static str, Zeroizing<[u8; KEY_LEN]>)> {
-    #[cfg(all(feature = "macos-keychain", target_os = "macos"))]
-    {
-        if let Ok(secret) = load_macos_keychain_secret() {
-            return Ok((BACKEND_MACOS_KEYCHAIN, secret));
+fn store_device_secret(backend: DeviceSealBackendSelection, secret: &[u8]) -> Result<()> {
+    match backend {
+        DeviceSealBackendSelection::MacosKeychain => store_macos_keychain_secret(secret),
+        DeviceSealBackendSelection::MacosKeychainDeviceOnly => {
+            store_macos_device_only_keychain_secret(secret)
         }
-        let secret = create_random_secret();
-        store_macos_keychain_secret(secret.as_slice())?;
-        Ok((BACKEND_MACOS_KEYCHAIN, secret))
+        DeviceSealBackendSelection::WindowsDpapiCurrentUser => store_windows_dpapi_secret(secret),
+        DeviceSealBackendSelection::LinuxTpm => store_tpm_secret(secret),
+        DeviceSealBackendSelection::LinuxSecretService => store_linux_secret_service_secret(secret),
+        DeviceSealBackendSelection::SecureEnclave => store_secure_enclave_secret(secret),
+        DeviceSealBackendSelection::LocalFile => store_local_file_secret(secret),
     }
-    #[cfg(not(all(feature = "macos-keychain", target_os = "macos")))]
-    bail!("macOS Keychain device-seal backend is not available in this build")
-}
-
-fn load_or_create_macos_device_only_secret() -> Result<(&'static str, Zeroizing<[u8; KEY_LEN]>)> {
-    #[cfg(all(feature = "macos-keychain", target_os = "macos"))]
-    {
-        if let Ok(secret) = load_macos_device_only_keychain_secret() {
-            return Ok((BACKEND_MACOS_KEYCHAIN_DEVICE_ONLY, secret));
-        }
-        let secret = create_random_secret();
-        store_macos_device_only_keychain_secret(secret.as_slice())?;
-        Ok((BACKEND_MACOS_KEYCHAIN_DEVICE_ONLY, secret))
-    }
-    #[cfg(not(all(feature = "macos-keychain", target_os = "macos")))]
-    bail!("macOS device-only Keychain device-seal backend is not available in this build")
-}
-
-fn load_or_create_windows_dpapi_secret() -> Result<(&'static str, Zeroizing<[u8; KEY_LEN]>)> {
-    #[cfg(all(feature = "windows-dpapi", target_os = "windows"))]
-    {
-        if let Ok(secret) = load_windows_dpapi_secret() {
-            return Ok((BACKEND_WINDOWS_DPAPI, secret));
-        }
-        let secret = create_random_secret();
-        store_windows_dpapi_secret(secret.as_slice())?;
-        return Ok((BACKEND_WINDOWS_DPAPI, secret));
-    }
-    #[cfg(not(all(feature = "windows-dpapi", target_os = "windows")))]
-    bail!("Windows DPAPI device-seal backend is not available in this build")
-}
-
-fn load_or_create_tpm_secret() -> Result<(&'static str, Zeroizing<[u8; KEY_LEN]>)> {
-    #[cfg(all(feature = "tpm-device-seal", target_os = "linux"))]
-    {
-        if let Ok(secret) = load_tpm_secret() {
-            return Ok((BACKEND_TPM, secret));
-        }
-        let secret = create_random_secret();
-        store_tpm_secret(secret.as_slice())?;
-        return Ok((BACKEND_TPM, secret));
-    }
-    #[cfg(not(all(feature = "tpm-device-seal", target_os = "linux")))]
-    bail!("Linux TPM device-seal backend is not available in this build")
-}
-
-fn load_or_create_linux_secret_service_secret() -> Result<(&'static str, Zeroizing<[u8; KEY_LEN]>)>
-{
-    #[cfg(all(feature = "linux-secret-service", target_os = "linux"))]
-    {
-        if let Ok(secret) = load_linux_secret_service_secret() {
-            return Ok((BACKEND_LINUX_SECRET_SERVICE, secret));
-        }
-        let secret = create_random_secret();
-        store_linux_secret_service_secret(secret.as_slice())?;
-        return Ok((BACKEND_LINUX_SECRET_SERVICE, secret));
-    }
-    #[cfg(not(all(feature = "linux-secret-service", target_os = "linux")))]
-    bail!("Linux Secret Service device-seal backend is not available in this build")
 }
 
 fn create_random_secret() -> Zeroizing<[u8; KEY_LEN]> {
     let mut secret = [0_u8; KEY_LEN];
     rand_core::OsRng.fill_bytes(&mut secret);
     Zeroizing::new(secret)
+}
+
+#[derive(Clone, Copy)]
+struct DeviceSealBackendCandidate {
+    backend: DeviceSealBackendSelection,
+    strict_transparent_device_only: bool,
 }
 
 #[cfg(feature = "device-seal-file")]
@@ -604,16 +593,6 @@ fn local_file_backend_requested() -> Result<bool> {
 }
 
 #[cfg(feature = "device-seal-file")]
-fn load_or_create_local_file_secret() -> Result<(&'static str, Zeroizing<[u8; KEY_LEN]>)> {
-    if let Ok(secret) = load_local_file_secret() {
-        return Ok((BACKEND_LOCAL_FILE, secret));
-    }
-    let secret = create_random_secret();
-    let encoded = format!("{}\n", hex::encode(secret.as_slice()));
-    crate::atomic_write(&local_file_secret_path(), encoded.as_bytes(), 0o600)?;
-    Ok((BACKEND_LOCAL_FILE, secret))
-}
-
 fn load_local_file_secret() -> Result<Zeroizing<[u8; KEY_LEN]>> {
     #[cfg(feature = "device-seal-file")]
     {
@@ -621,6 +600,17 @@ fn load_local_file_secret() -> Result<Zeroizing<[u8; KEY_LEN]>> {
         let raw = std::fs::read_to_string(&path)
             .with_context(|| format!("failed to read device seal secret {}", path.display()))?;
         parse_hex_secret(raw.trim(), "device seal secret")
+    }
+
+    #[cfg(not(feature = "device-seal-file"))]
+    bail!("local-file device-seal backend is not available in this build")
+}
+
+fn store_local_file_secret(secret: &[u8]) -> Result<()> {
+    #[cfg(feature = "device-seal-file")]
+    {
+        let encoded = format!("{}\n", hex::encode(secret));
+        crate::atomic_write(&local_file_secret_path(), encoded.as_bytes(), 0o600)
     }
 
     #[cfg(not(feature = "device-seal-file"))]
@@ -702,13 +692,18 @@ fn load_secure_enclave_secret() -> Result<Zeroizing<[u8; KEY_LEN]>> {
     bail!("Secure Enclave device-seal backend is not available in this build")
 }
 
-#[cfg(feature = "secure-enclave")]
 fn store_secure_enclave_secret(secret: &[u8]) -> Result<()> {
-    let command_path = secure_enclave_command_path().with_context(|| {
-        format!("Secure Enclave device-seal backend requires {SECURE_ENCLAVE_COMMAND_ENV}")
-    })?;
-    invoke_secure_enclave_command(&command_path, "store", Some(secret))?;
-    Ok(())
+    #[cfg(feature = "secure-enclave")]
+    {
+        let command_path = secure_enclave_command_path().with_context(|| {
+            format!("Secure Enclave device-seal backend requires {SECURE_ENCLAVE_COMMAND_ENV}")
+        })?;
+        invoke_secure_enclave_command(&command_path, "store", Some(secret))?;
+        Ok(())
+    }
+
+    #[cfg(not(feature = "secure-enclave"))]
+    bail!("Secure Enclave device-seal backend is not available in this build")
 }
 
 #[cfg(feature = "secure-enclave")]
@@ -766,32 +761,37 @@ fn load_linux_secret_service_secret() -> Result<Zeroizing<[u8; KEY_LEN]>> {
     bail!("Linux Secret Service device-seal backend is not available in this build")
 }
 
-#[cfg(all(feature = "linux-secret-service", target_os = "linux"))]
-fn store_linux_secret_service_secret(secret: &[u8]) -> Result<()> {
-    let secret_hex = hex::encode(secret);
-    let mut child = secret_tool_store_command()
-        .stdin(Stdio::piped())
-        .spawn()
-        .context("failed to invoke secret-tool for Linux Secret Service")?;
+fn store_linux_secret_service_secret(_secret: &[u8]) -> Result<()> {
+    #[cfg(all(feature = "linux-secret-service", target_os = "linux"))]
     {
-        let stdin = child
-            .stdin
-            .as_mut()
-            .context("failed to open secret-tool stdin")?;
-        stdin
-            .write_all(secret_hex.as_bytes())
-            .context("failed to write device seal to secret-tool stdin")?;
+        let secret_hex = hex::encode(_secret);
+        let mut child = secret_tool_store_command()
+            .stdin(Stdio::piped())
+            .spawn()
+            .context("failed to invoke secret-tool for Linux Secret Service")?;
+        {
+            let stdin = child
+                .stdin
+                .as_mut()
+                .context("failed to open secret-tool stdin")?;
+            stdin
+                .write_all(secret_hex.as_bytes())
+                .context("failed to write device seal to secret-tool stdin")?;
+        }
+        let status = child
+            .wait()
+            .context("failed to wait for secret-tool to store device seal")?;
+        if status.success() {
+            Ok(())
+        } else {
+            bail!(
+                "failed to store device seal in Linux Secret Service; ensure secret-tool and an unlocked collection are available"
+            )
+        }
     }
-    let status = child
-        .wait()
-        .context("failed to wait for secret-tool to store device seal")?;
-    if status.success() {
-        Ok(())
-    } else {
-        bail!(
-            "failed to store device seal in Linux Secret Service; ensure secret-tool and an unlocked collection are available"
-        )
-    }
+
+    #[cfg(not(all(feature = "linux-secret-service", target_os = "linux")))]
+    bail!("Linux Secret Service device-seal backend is not available in this build")
 }
 
 #[cfg(all(feature = "linux-secret-service", target_os = "linux"))]
@@ -854,27 +854,27 @@ fn load_tpm_secret() -> Result<Zeroizing<[u8; KEY_LEN]>> {
     bail!("TPM device-seal backend is not available in this build")
 }
 
-#[cfg(all(
-    feature = "tpm-device-seal",
-    target_os = "linux",
-    not(all(feature = "linux-secret-service", target_os = "linux")),
-    not(all(feature = "windows-dpapi", target_os = "windows"))
-))]
-fn store_tpm_secret(secret: &[u8]) -> Result<()> {
-    let state = tpm_state_dir();
-    std::fs::create_dir_all(&state).with_context(|| {
-        format!(
-            "failed to create TPM device seal state dir {}",
-            state.display()
-        )
-    })?;
-    let primary = state.join("primary.ctx");
-    let public = state.join("seal.pub");
-    let private = state.join("seal.priv");
-    let seal = state.join("seal.ctx");
-    create_tpm_primary(&primary)?;
-    create_tpm_sealed_object(&primary, &public, &private, secret)?;
-    load_tpm_sealed_object(&primary, &public, &private, &seal)
+fn store_tpm_secret(_secret: &[u8]) -> Result<()> {
+    #[cfg(all(feature = "tpm-device-seal", target_os = "linux"))]
+    {
+        let state = tpm_state_dir();
+        std::fs::create_dir_all(&state).with_context(|| {
+            format!(
+                "failed to create TPM device seal state dir {}",
+                state.display()
+            )
+        })?;
+        let primary = state.join("primary.ctx");
+        let public = state.join("seal.pub");
+        let private = state.join("seal.priv");
+        let seal = state.join("seal.ctx");
+        create_tpm_primary(&primary)?;
+        create_tpm_sealed_object(&primary, &public, &private, _secret)?;
+        load_tpm_sealed_object(&primary, &public, &private, &seal)
+    }
+
+    #[cfg(not(all(feature = "tpm-device-seal", target_os = "linux")))]
+    bail!("TPM device-seal backend is not available in this build")
 }
 
 #[cfg(all(feature = "tpm-device-seal", target_os = "linux"))]
@@ -891,12 +891,7 @@ fn create_tpm_primary(primary: &Path) -> Result<()> {
     )
 }
 
-#[cfg(all(
-    feature = "tpm-device-seal",
-    target_os = "linux",
-    not(all(feature = "linux-secret-service", target_os = "linux")),
-    not(all(feature = "windows-dpapi", target_os = "windows"))
-))]
+#[cfg(all(feature = "tpm-device-seal", target_os = "linux"))]
 fn create_tpm_sealed_object(
     primary: &Path,
     public: &Path,
@@ -998,14 +993,19 @@ fn load_windows_dpapi_secret() -> Result<Zeroizing<[u8; KEY_LEN]>> {
     bail!("Windows DPAPI device-seal backend is not available in this build")
 }
 
-#[cfg(all(feature = "windows-dpapi", target_os = "windows"))]
-fn store_windows_dpapi_secret(secret: &[u8]) -> Result<()> {
-    let protected = dpapi_protect(secret, "sshenv device seal")?;
-    crate::atomic_write(
-        &windows_dpapi_secret_path(),
-        format!("{}\n", hex::encode(protected)).as_bytes(),
-        0o600,
-    )
+fn store_windows_dpapi_secret(_secret: &[u8]) -> Result<()> {
+    #[cfg(all(feature = "windows-dpapi", target_os = "windows"))]
+    {
+        let protected = dpapi_protect(_secret, "sshenv device seal")?;
+        return crate::atomic_write(
+            &windows_dpapi_secret_path(),
+            format!("{}\n", hex::encode(protected)).as_bytes(),
+            0o600,
+        );
+    }
+
+    #[cfg(not(all(feature = "windows-dpapi", target_os = "windows")))]
+    bail!("Windows DPAPI device-seal backend is not available in this build")
 }
 
 #[cfg(all(feature = "windows-dpapi", target_os = "windows"))]
