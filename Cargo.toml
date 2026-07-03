@@ -44,6 +44,7 @@ clap = { version = "4", default-features = false, features = [
     "suggestions",
 ] }
 core-foundation = { version = "0.10", default-features = false }
+core-foundation-sys = { version = "0.8", default-features = false }
 dirs = { version = "6", default-features = false }
 hex = { version = "0.4", default-features = false, features = ["std"] }
 libc = { version = "0.2", default-features = false }

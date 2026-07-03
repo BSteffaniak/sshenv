@@ -63,6 +63,7 @@ zeroize = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation        = { workspace = true }
+core-foundation-sys    = { workspace = true }
 security-framework     = { workspace = true }
 security-framework-sys = { workspace = true }
 
