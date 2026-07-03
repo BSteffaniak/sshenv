@@ -93,9 +93,7 @@ pub const SECURE_ENCLAVE_COMMAND_ENV: &str = "SSHENV_SECURE_ENCLAVE_DEVICE_SEAL_
 const DEVICE_SEAL_BACKEND_ENV: &str = "SSHENV_DEVICE_SEAL_BACKEND";
 #[cfg(all(feature = "macos-keychain", target_os = "macos"))]
 const MACOS_KEYCHAIN_SERVICE: &str = "sshenv device seal";
-#[cfg(all(feature = "macos-keychain", target_os = "macos"))]
 const MACOS_DEVICE_ONLY_KEYCHAIN_SERVICE: &str = "sshenv device seal device-only noninteractive v1";
-#[cfg(all(feature = "macos-keychain", target_os = "macos"))]
 const MACOS_DEVICE_ONLY_ANY_APPLICATION_KEYCHAIN_SERVICE: &str =
     "sshenv device seal transparent device-only any-application v1";
 #[cfg(all(feature = "macos-keychain", target_os = "macos"))]
@@ -240,6 +238,91 @@ pub fn execute_device_seal_broker_payload(payload: &[u8]) -> DeviceSealBrokerExe
                 error: Some(error),
             }
         }
+    }
+}
+
+/// Return whether existing device-seal factor metadata satisfies selected options.
+///
+/// This helper lets callers decide whether a stored factor should be rebound
+/// without duplicating sshenv backend names or backend-specific storage
+/// metadata rules.
+#[must_use]
+pub fn factor_matches_options(factor: &UnlockFactorV2, options: DeviceSealOptions) -> bool {
+    if factor.kind != UnlockFactorKindV2::DeviceSeal {
+        return false;
+    }
+    factor_backend_selection(factor)
+        .is_some_and(|backend| backend_satisfies_options(backend, options))
+        && factor_storage_matches(&factor.params)
+        && factor
+            .params
+            .get(POLICY)
+            .is_none_or(|policy| policy_matches_options(policy, options))
+        && factor
+            .params
+            .get(STRICT)
+            .is_none_or(|strict| parse_bool_setting(strict, options.strict) == options.strict)
+}
+
+fn factor_backend_selection(factor: &UnlockFactorV2) -> Option<DeviceSealBackendSelection> {
+    factor
+        .params
+        .get(BACKEND)
+        .and_then(|backend| DeviceSealBackendSelection::from_backend_name(backend))
+}
+
+fn backend_satisfies_options(
+    backend: DeviceSealBackendSelection,
+    options: DeviceSealOptions,
+) -> bool {
+    match options.selection {
+        DeviceSealSelection::Backend(expected) => backend == expected,
+        DeviceSealSelection::Policy(DeviceSealPolicy::Default) => {
+            resolve_default_backend().is_ok_and(|expected| backend == expected)
+        }
+        DeviceSealSelection::Policy(DeviceSealPolicy::TransparentDeviceOnly) => {
+            transparent_device_only_candidates()
+                .iter()
+                .any(|candidate| {
+                    candidate.backend == backend
+                        && (!options.strict || candidate.strict_transparent_device_only)
+                })
+        }
+    }
+}
+
+fn factor_storage_matches(params: &BTreeMap<String, String>) -> bool {
+    params
+        .get(BACKEND)
+        .is_none_or(|backend| match backend.as_str() {
+            BACKEND_MACOS_KEYCHAIN_DEVICE_ONLY => {
+                keychain_service_matches(params, MACOS_DEVICE_ONLY_KEYCHAIN_SERVICE)
+            }
+            BACKEND_MACOS_KEYCHAIN_DEVICE_ONLY_ANY_APPLICATION => {
+                keychain_service_matches(params, MACOS_DEVICE_ONLY_ANY_APPLICATION_KEYCHAIN_SERVICE)
+            }
+            _ => true,
+        })
+}
+
+fn keychain_service_matches(params: &BTreeMap<String, String>, expected: &str) -> bool {
+    params
+        .get(KEYCHAIN_SERVICE)
+        .is_some_and(|service| service == expected)
+}
+
+fn parse_bool_setting(value: &str, default: bool) -> bool {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => true,
+        "0" | "false" | "no" | "off" => false,
+        _ => default,
+    }
+}
+
+fn policy_matches_options(policy: &str, options: DeviceSealOptions) -> bool {
+    match options.selection {
+        DeviceSealSelection::Policy(expected) => policy == expected.as_str(),
+        DeviceSealSelection::Backend(_) => true,
     }
 }
 
@@ -1868,6 +1951,79 @@ fn local_file_secret_path() -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
+    use sshenv_vault_models::{UnlockFactorKindV2, UnlockFactorV2};
+
+    fn device_seal_factor(params: BTreeMap<String, String>) -> UnlockFactorV2 {
+        UnlockFactorV2 {
+            id: "device-seal".to_string(),
+            kind: UnlockFactorKindV2::DeviceSeal,
+            recipient_fingerprint: None,
+            params,
+        }
+    }
+
+    #[test]
+    fn factor_matches_device_only_any_application_metadata() {
+        let mut params = BTreeMap::new();
+        params.insert(
+            super::BACKEND.to_string(),
+            super::BACKEND_MACOS_KEYCHAIN_DEVICE_ONLY_ANY_APPLICATION.to_string(),
+        );
+        params.insert(
+            super::KEYCHAIN_SERVICE.to_string(),
+            super::MACOS_DEVICE_ONLY_ANY_APPLICATION_KEYCHAIN_SERVICE.to_string(),
+        );
+        params.insert(
+            super::POLICY.to_string(),
+            super::DeviceSealPolicy::TransparentDeviceOnly
+                .as_str()
+                .to_string(),
+        );
+        params.insert(super::STRICT.to_string(), "true".to_string());
+
+        assert!(super::factor_matches_options(
+            &device_seal_factor(params),
+            super::DeviceSealOptions {
+                selection: super::DeviceSealSelection::Backend(
+                    super::DeviceSealBackendSelection::MacosKeychainDeviceOnlyAnyApplication,
+                ),
+                strict: true,
+            },
+        ));
+    }
+
+    #[test]
+    fn factor_rejects_stale_macos_device_only_any_application_service_metadata() {
+        let mut params = BTreeMap::new();
+        params.insert(
+            super::BACKEND.to_string(),
+            super::BACKEND_MACOS_KEYCHAIN_DEVICE_ONLY_ANY_APPLICATION.to_string(),
+        );
+        params.insert(
+            super::KEYCHAIN_SERVICE.to_string(),
+            super::MACOS_DEVICE_ONLY_KEYCHAIN_SERVICE.to_string(),
+        );
+        params.insert(
+            super::POLICY.to_string(),
+            super::DeviceSealPolicy::TransparentDeviceOnly
+                .as_str()
+                .to_string(),
+        );
+        params.insert(super::STRICT.to_string(), "true".to_string());
+
+        assert!(!super::factor_matches_options(
+            &device_seal_factor(params),
+            super::DeviceSealOptions {
+                selection: super::DeviceSealSelection::Backend(
+                    super::DeviceSealBackendSelection::MacosKeychainDeviceOnlyAnyApplication,
+                ),
+                strict: true,
+            },
+        ));
+    }
+
     #[cfg(all(feature = "windows-dpapi", target_os = "windows"))]
     #[test]
     fn windows_dpapi_roundtrips_device_secret() {
