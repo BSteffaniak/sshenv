@@ -43,7 +43,6 @@ use std::ptr;
 use anyhow::{Context, Result, bail};
 #[cfg(all(feature = "macos-keychain", target_os = "macos"))]
 use core_foundation::{
-    array::CFArray,
     base::{CFType, TCFType as _},
     string::CFString,
 };
@@ -94,8 +93,10 @@ const DEVICE_SEAL_BACKEND_ENV: &str = "SSHENV_DEVICE_SEAL_BACKEND";
 #[cfg(all(feature = "macos-keychain", target_os = "macos"))]
 const MACOS_KEYCHAIN_SERVICE: &str = "sshenv device seal";
 const MACOS_DEVICE_ONLY_KEYCHAIN_SERVICE: &str = "sshenv device seal device-only noninteractive v1";
-const MACOS_DEVICE_ONLY_ANY_APPLICATION_KEYCHAIN_SERVICE: &str =
+const MACOS_DEVICE_ONLY_ANY_APPLICATION_KEYCHAIN_SERVICE_V1: &str =
     "sshenv device seal transparent device-only any-application v1";
+const MACOS_DEVICE_ONLY_ANY_APPLICATION_KEYCHAIN_SERVICE: &str =
+    "sshenv device seal transparent device-only any-application v2";
 #[cfg(all(feature = "macos-keychain", target_os = "macos"))]
 const MACOS_KEYCHAIN_ACCOUNT: &str = "default";
 #[cfg(all(feature = "linux-secret-service", target_os = "linux"))]
@@ -299,7 +300,7 @@ fn factor_storage_matches(params: &BTreeMap<String, String>) -> bool {
                 keychain_service_matches(params, MACOS_DEVICE_ONLY_KEYCHAIN_SERVICE)
             }
             BACKEND_MACOS_KEYCHAIN_DEVICE_ONLY_ANY_APPLICATION => {
-                keychain_service_matches(params, MACOS_DEVICE_ONLY_ANY_APPLICATION_KEYCHAIN_SERVICE)
+                any_application_keychain_service_matches(params)
             }
             _ => true,
         })
@@ -309,6 +310,14 @@ fn keychain_service_matches(params: &BTreeMap<String, String>, expected: &str) -
     params
         .get(KEYCHAIN_SERVICE)
         .is_some_and(|service| service == expected)
+}
+
+fn any_application_keychain_service_matches(params: &BTreeMap<String, String>) -> bool {
+    let service = params.get(KEYCHAIN_SERVICE).map(String::as_str);
+    if service == Some(MACOS_DEVICE_ONLY_ANY_APPLICATION_KEYCHAIN_SERVICE_V1) {
+        return false;
+    }
+    service == Some(MACOS_DEVICE_ONLY_ANY_APPLICATION_KEYCHAIN_SERVICE)
 }
 
 fn parse_bool_setting(value: &str, default: bool) -> bool {
@@ -1564,13 +1573,12 @@ fn set_macos_any_application_access(
 #[cfg(all(feature = "macos-keychain", target_os = "macos"))]
 fn create_macos_any_application_access(access_name: &str) -> Result<CFType> {
     let description = CFString::from(access_name);
-    let trusted_apps: CFArray<CFType> = CFArray::from_CFTypes(&[]);
     let mut access = ptr::null_mut();
     check_macos_security_status(
         unsafe {
             SecAccessCreate(
                 description.as_concrete_TypeRef(),
-                trusted_apps.as_concrete_TypeRef(),
+                ptr::null(),
                 ptr::addr_of_mut!(access),
             )
         },
@@ -1796,6 +1804,21 @@ fn store_macos_device_only_any_application_keychain_secret_direct(
     service: &str,
     secret_hex: &str,
 ) -> Result<()> {
+    match security_framework::passwords::delete_generic_password_options(
+        device_only_password_options(service, MACOS_KEYCHAIN_ACCOUNT),
+    ) {
+        Ok(()) => {}
+        Err(keychain_error)
+            if keychain_error.code() == security_framework_sys::base::errSecItemNotFound => {}
+        Err(keychain_error) => {
+            return Err(anyhow::anyhow!(
+                "failed to delete existing macOS device-only any-application Keychain item before recreating it: OSStatus {} ({})",
+                keychain_error.code(),
+                keychain_error
+            ));
+        }
+    }
+
     security_framework::passwords::set_generic_password_options(
         secret_hex.as_bytes(),
         device_only_any_application_password_options(service, MACOS_KEYCHAIN_ACCOUNT)?,
@@ -2004,6 +2027,36 @@ mod tests {
         params.insert(
             super::KEYCHAIN_SERVICE.to_string(),
             super::MACOS_DEVICE_ONLY_KEYCHAIN_SERVICE.to_string(),
+        );
+        params.insert(
+            super::POLICY.to_string(),
+            super::DeviceSealPolicy::TransparentDeviceOnly
+                .as_str()
+                .to_string(),
+        );
+        params.insert(super::STRICT.to_string(), "true".to_string());
+
+        assert!(!super::factor_matches_options(
+            &device_seal_factor(params),
+            super::DeviceSealOptions {
+                selection: super::DeviceSealSelection::Backend(
+                    super::DeviceSealBackendSelection::MacosKeychainDeviceOnlyAnyApplication,
+                ),
+                strict: true,
+            },
+        ));
+    }
+
+    #[test]
+    fn factor_rejects_prompting_macos_device_only_any_application_v1_metadata() {
+        let mut params = BTreeMap::new();
+        params.insert(
+            super::BACKEND.to_string(),
+            super::BACKEND_MACOS_KEYCHAIN_DEVICE_ONLY_ANY_APPLICATION.to_string(),
+        );
+        params.insert(
+            super::KEYCHAIN_SERVICE.to_string(),
+            super::MACOS_DEVICE_ONLY_ANY_APPLICATION_KEYCHAIN_SERVICE_V1.to_string(),
         );
         params.insert(
             super::POLICY.to_string(),
