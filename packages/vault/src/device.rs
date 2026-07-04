@@ -95,8 +95,10 @@ const MACOS_KEYCHAIN_SERVICE: &str = "sshenv device seal";
 const MACOS_DEVICE_ONLY_KEYCHAIN_SERVICE: &str = "sshenv device seal device-only noninteractive v1";
 const MACOS_DEVICE_ONLY_ANY_APPLICATION_KEYCHAIN_SERVICE_V1: &str =
     "sshenv device seal transparent device-only any-application v1";
-const MACOS_DEVICE_ONLY_ANY_APPLICATION_KEYCHAIN_SERVICE: &str =
+const MACOS_DEVICE_ONLY_ANY_APPLICATION_KEYCHAIN_SERVICE_V2: &str =
     "sshenv device seal transparent device-only any-application v2";
+const MACOS_DEVICE_ONLY_ANY_APPLICATION_KEYCHAIN_SERVICE: &str =
+    "sshenv device seal transparent device-only any-application v3";
 #[cfg(all(feature = "macos-keychain", target_os = "macos"))]
 const MACOS_KEYCHAIN_ACCOUNT: &str = "default";
 #[cfg(all(feature = "linux-secret-service", target_os = "linux"))]
@@ -314,7 +316,13 @@ fn keychain_service_matches(params: &BTreeMap<String, String>, expected: &str) -
 
 fn any_application_keychain_service_matches(params: &BTreeMap<String, String>) -> bool {
     let service = params.get(KEYCHAIN_SERVICE).map(String::as_str);
-    if service == Some(MACOS_DEVICE_ONLY_ANY_APPLICATION_KEYCHAIN_SERVICE_V1) {
+    if matches!(
+        service,
+        Some(
+            MACOS_DEVICE_ONLY_ANY_APPLICATION_KEYCHAIN_SERVICE_V1
+                | MACOS_DEVICE_ONLY_ANY_APPLICATION_KEYCHAIN_SERVICE_V2,
+        )
+    ) {
         return false;
     }
     service == Some(MACOS_DEVICE_ONLY_ANY_APPLICATION_KEYCHAIN_SERVICE)
@@ -1482,8 +1490,16 @@ fn run_device_seal_broker_payload(_payload: &[u8]) -> Result<Vec<u8>> {
 #[cfg(all(feature = "macos-keychain", target_os = "macos"))]
 unsafe extern "C" {
     static kSecAttrAccessible: core_foundation::string::CFStringRef;
-    static kSecAttrAccess: core_foundation::string::CFStringRef;
 
+    fn SecKeychainItemCreateFromContent(
+        item_class: u32,
+        attr_list: *mut SecKeychainAttributeList,
+        length: u32,
+        data: *const std::ffi::c_void,
+        keychain_ref: security_framework_sys::base::SecKeychainRef,
+        initial_access: security_framework_sys::base::SecAccessRef,
+        item_ref: *mut security_framework_sys::base::SecKeychainItemRef,
+    ) -> OSStatus;
     fn SecAccessCreate(
         descriptor: CFStringRef,
         trusted_list: CFArrayRef,
@@ -1513,6 +1529,21 @@ type SecAclRef = *mut std::ffi::c_void;
 
 #[cfg(all(feature = "macos-keychain", target_os = "macos"))]
 #[repr(C)]
+struct SecKeychainAttribute {
+    tag: u32,
+    length: u32,
+    data: *mut std::ffi::c_void,
+}
+
+#[cfg(all(feature = "macos-keychain", target_os = "macos"))]
+#[repr(C)]
+struct SecKeychainAttributeList {
+    count: u32,
+    attr: *mut SecKeychainAttribute,
+}
+
+#[cfg(all(feature = "macos-keychain", target_os = "macos"))]
+#[repr(C)]
 #[derive(Clone, Copy)]
 struct CssmAclKeychainPromptSelector {
     version: u16,
@@ -1523,6 +1554,12 @@ struct CssmAclKeychainPromptSelector {
 const CSSM_ACL_AUTHORIZATION_DECRYPT: u32 = 24;
 #[cfg(all(feature = "macos-keychain", target_os = "macos"))]
 const CSSM_ACL_KEYCHAIN_PROMPT_REQUIRE_PASSPHRASE: u16 = 0x0001;
+#[cfg(all(feature = "macos-keychain", target_os = "macos"))]
+const K_SEC_GENERIC_PASSWORD_ITEM_CLASS: u32 = u32::from_be_bytes(*b"genp");
+#[cfg(all(feature = "macos-keychain", target_os = "macos"))]
+const K_SEC_ACCOUNT_ITEM_ATTR: u32 = u32::from_be_bytes(*b"acct");
+#[cfg(all(feature = "macos-keychain", target_os = "macos"))]
+const K_SEC_SERVICE_ITEM_ATTR: u32 = u32::from_be_bytes(*b"svce");
 
 #[cfg(all(feature = "macos-keychain", target_os = "macos"))]
 fn device_seal_password_options(
@@ -1542,32 +1579,6 @@ fn device_only_password_options(
     options.set_access_synchronized(Some(false));
     set_macos_device_only_accessibility(&mut options);
     options
-}
-
-#[cfg(all(feature = "macos-keychain", target_os = "macos"))]
-fn device_only_any_application_password_options(
-    service: &str,
-    account: &str,
-) -> Result<security_framework::passwords::PasswordOptions> {
-    let mut options = device_only_password_options(service, account);
-    set_macos_any_application_access(&mut options, service)?;
-    Ok(options)
-}
-
-#[cfg(all(feature = "macos-keychain", target_os = "macos"))]
-fn set_macos_any_application_access(
-    options: &mut security_framework::passwords::PasswordOptions,
-    access_name: &str,
-) -> Result<()> {
-    let access = create_macos_any_application_access(access_name)?;
-    #[allow(deprecated)]
-    options.query.push(unsafe {
-        (
-            CFString::wrap_under_get_rule(kSecAttrAccess),
-            access.into_CFType(),
-        )
-    });
-    Ok(())
 }
 
 #[cfg(all(feature = "macos-keychain", target_os = "macos"))]
@@ -1819,17 +1830,57 @@ fn store_macos_device_only_any_application_keychain_secret_direct(
         }
     }
 
-    security_framework::passwords::set_generic_password_options(
-        secret_hex.as_bytes(),
-        device_only_any_application_password_options(service, MACOS_KEYCHAIN_ACCOUNT)?,
-    )
-    .map_err(|keychain_error| {
-        anyhow::anyhow!(
-            "failed to store device seal in macOS device-only any-application Keychain: OSStatus {} ({})",
-            keychain_error.code(),
-            keychain_error
-        )
-    })
+    create_macos_any_application_generic_password(service, MACOS_KEYCHAIN_ACCOUNT, secret_hex)
+}
+
+#[cfg(all(feature = "macos-keychain", target_os = "macos"))]
+fn create_macos_any_application_generic_password(
+    service: &str,
+    account: &str,
+    secret_hex: &str,
+) -> Result<()> {
+    let service_bytes = service.as_bytes();
+    let account_bytes = account.as_bytes();
+    let secret_bytes = secret_hex.as_bytes();
+    let mut attributes = [
+        SecKeychainAttribute {
+            tag: K_SEC_SERVICE_ITEM_ATTR,
+            length: u32::try_from(service_bytes.len()).context("Keychain service name too long")?,
+            data: service_bytes.as_ptr().cast_mut().cast::<std::ffi::c_void>(),
+        },
+        SecKeychainAttribute {
+            tag: K_SEC_ACCOUNT_ITEM_ATTR,
+            length: u32::try_from(account_bytes.len()).context("Keychain account name too long")?,
+            data: account_bytes.as_ptr().cast_mut().cast::<std::ffi::c_void>(),
+        },
+    ];
+    let mut attribute_list = SecKeychainAttributeList {
+        count: u32::try_from(attributes.len()).context("too many Keychain attributes")?,
+        attr: attributes.as_mut_ptr(),
+    };
+    let access = create_macos_any_application_access(service)?;
+    let mut item_ref = ptr::null_mut();
+    check_macos_security_status(
+        unsafe {
+            SecKeychainItemCreateFromContent(
+                K_SEC_GENERIC_PASSWORD_ITEM_CLASS,
+                ptr::addr_of_mut!(attribute_list),
+                u32::try_from(secret_bytes.len()).context("Keychain secret too long")?,
+                secret_bytes.as_ptr().cast::<std::ffi::c_void>(),
+                ptr::null_mut(),
+                access
+                    .as_CFTypeRef()
+                    .cast_mut()
+                    .cast::<security_framework_sys::base::OpaqueSecAccessRef>(),
+                ptr::addr_of_mut!(item_ref),
+            )
+        },
+        "SecKeychainItemCreateFromContent",
+    )?;
+    if !item_ref.is_null() {
+        unsafe { CFRelease(item_ref.cast::<std::ffi::c_void>().cast_const() as CFTypeRef) };
+    }
+    Ok(())
 }
 
 #[cfg(all(feature = "macos-keychain", target_os = "macos"))]
@@ -2057,6 +2108,36 @@ mod tests {
         params.insert(
             super::KEYCHAIN_SERVICE.to_string(),
             super::MACOS_DEVICE_ONLY_ANY_APPLICATION_KEYCHAIN_SERVICE_V1.to_string(),
+        );
+        params.insert(
+            super::POLICY.to_string(),
+            super::DeviceSealPolicy::TransparentDeviceOnly
+                .as_str()
+                .to_string(),
+        );
+        params.insert(super::STRICT.to_string(), "true".to_string());
+
+        assert!(!super::factor_matches_options(
+            &device_seal_factor(params),
+            super::DeviceSealOptions {
+                selection: super::DeviceSealSelection::Backend(
+                    super::DeviceSealBackendSelection::MacosKeychainDeviceOnlyAnyApplication,
+                ),
+                strict: true,
+            },
+        ));
+    }
+
+    #[test]
+    fn factor_rejects_prompting_macos_device_only_any_application_v2_metadata() {
+        let mut params = BTreeMap::new();
+        params.insert(
+            super::BACKEND.to_string(),
+            super::BACKEND_MACOS_KEYCHAIN_DEVICE_ONLY_ANY_APPLICATION.to_string(),
+        );
+        params.insert(
+            super::KEYCHAIN_SERVICE.to_string(),
+            super::MACOS_DEVICE_ONLY_ANY_APPLICATION_KEYCHAIN_SERVICE_V2.to_string(),
         );
         params.insert(
             super::POLICY.to_string(),
