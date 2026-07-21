@@ -52,23 +52,17 @@ use core_foundation_sys::{
     base::{CFRelease, CFTypeRef, OSStatus},
     string::CFStringRef,
 };
-#[cfg(any(
-    feature = "device-seal-file",
-    all(feature = "macos-keychain", target_os = "macos"),
-    all(feature = "linux-secret-service", target_os = "linux"),
-    feature = "secure-enclave",
-    all(feature = "tpm-device-seal", target_os = "linux"),
-    all(feature = "windows-dpapi", target_os = "windows")
-))]
+#[cfg(feature = "device-seal")]
 use rand_core::RngCore;
 #[cfg(all(feature = "macos-keychain", target_os = "macos"))]
 use security_framework_sys::access_control::kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly;
 #[cfg(feature = "secure-enclave")]
 use serde::{Deserialize, Serialize};
+#[cfg(all(feature = "macos-keychain", target_os = "macos"))]
 use sshenv_vault_models::{
     DEVICE_SEAL_COMMAND_ENV, DeviceSealBrokerOperation, DeviceSealBrokerRequest,
-    DeviceSealBrokerResponse, UnlockFactorKindV2, UnlockFactorV2,
 };
+use sshenv_vault_models::{DeviceSealBrokerResponse, UnlockFactorKindV2, UnlockFactorV2};
 use zeroize::Zeroizing;
 
 const DEVICE_SEAL_FACTOR_ID: &str = "device-seal:default";
@@ -1366,6 +1360,11 @@ fn store_macos_keychain_secret(secret: &[u8]) -> Result<()> {
     store_macos_keychain_secret_direct(&secret_hex)
 }
 
+#[cfg(not(all(feature = "macos-keychain", target_os = "macos")))]
+fn store_macos_keychain_secret(_secret: &[u8]) -> Result<()> {
+    bail!("macOS Keychain device-seal backend is not available in this build")
+}
+
 #[cfg(all(feature = "macos-keychain", target_os = "macos"))]
 fn store_macos_device_only_keychain_secret(secret: &[u8]) -> Result<()> {
     let secret_hex = hex::encode(secret);
@@ -1381,6 +1380,11 @@ fn store_macos_device_only_keychain_secret(secret: &[u8]) -> Result<()> {
         return Ok(());
     }
     store_macos_device_only_keychain_secret_direct(MACOS_DEVICE_ONLY_KEYCHAIN_SERVICE, &secret_hex)
+}
+
+#[cfg(not(all(feature = "macos-keychain", target_os = "macos")))]
+fn store_macos_device_only_keychain_secret(_secret: &[u8]) -> Result<()> {
+    bail!("macOS device-only Keychain device-seal backend is not available in this build")
 }
 
 #[cfg(all(feature = "macos-keychain", target_os = "macos"))]
@@ -1400,6 +1404,13 @@ fn store_macos_device_only_any_application_keychain_secret(secret: &[u8]) -> Res
     store_macos_device_only_any_application_keychain_secret_direct(
         MACOS_DEVICE_ONLY_ANY_APPLICATION_KEYCHAIN_SERVICE,
         &secret_hex,
+    )
+}
+
+#[cfg(not(all(feature = "macos-keychain", target_os = "macos")))]
+fn store_macos_device_only_any_application_keychain_secret(_secret: &[u8]) -> Result<()> {
+    bail!(
+        "macOS device-only any-application Keychain device-seal backend is not available in this build"
     )
 }
 
@@ -2156,6 +2167,21 @@ mod tests {
                 strict: true,
             },
         ));
+    }
+
+    #[cfg(not(all(feature = "macos-keychain", target_os = "macos")))]
+    #[test]
+    fn unavailable_macos_store_backends_return_errors() {
+        let secret = [42_u8; super::KEY_LEN];
+        for backend in [
+            super::DeviceSealBackendSelection::MacosKeychain,
+            super::DeviceSealBackendSelection::MacosKeychainDeviceOnly,
+            super::DeviceSealBackendSelection::MacosKeychainDeviceOnlyAnyApplication,
+        ] {
+            let error = super::store_device_secret(backend, &secret)
+                .expect_err("unavailable macOS backend must return an error");
+            assert!(error.to_string().contains("not available in this build"));
+        }
     }
 
     #[cfg(all(feature = "windows-dpapi", target_os = "windows"))]
