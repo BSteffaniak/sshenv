@@ -1,6 +1,7 @@
 //! Symmetric crypto: derive an AES-256-SIV key from a 32-byte data key,
 //! then encrypt/decrypt vault payloads.
 
+use crate::locked::{LockedBytes, LockedSecret};
 use aes_siv::Aes256SivAead;
 use aes_siv::aead::generic_array::GenericArray;
 use aes_siv::aead::{Aead, KeyInit, Payload};
@@ -13,10 +14,10 @@ use zeroize::Zeroizing;
 
 /// Generate a cryptographically random 32-byte data key.
 #[must_use]
-pub fn generate_data_key() -> Zeroizing<[u8; DATA_KEY_LEN]> {
+pub fn generate_data_key() -> LockedSecret<DATA_KEY_LEN> {
     let mut key = [0_u8; DATA_KEY_LEN];
     rand_core::OsRng.fill_bytes(&mut key);
-    Zeroizing::new(key)
+    LockedSecret::new(key)
 }
 
 /// Derive a 64-byte AES-SIV key from the 32-byte data key.
@@ -86,7 +87,7 @@ pub fn encrypt_payload_with_aad(data_key: &[u8], plaintext: &[u8], aad: &[u8]) -
 ///
 /// Returns an error if `data_key` does not match, if AAD differs, or if
 /// the ciphertext has been tampered with.
-pub fn decrypt_payload(data_key: &[u8], ciphertext: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
+pub fn decrypt_payload(data_key: &[u8], ciphertext: &[u8]) -> Result<LockedBytes> {
     decrypt_payload_with_aad(data_key, ciphertext, PAYLOAD_AAD)
 }
 
@@ -100,7 +101,7 @@ pub fn decrypt_payload_with_aad(
     data_key: &[u8],
     ciphertext: &[u8],
     aad: &[u8],
-) -> Result<Zeroizing<Vec<u8>>> {
+) -> Result<LockedBytes> {
     let siv = derive_siv_key(data_key);
     let cipher = Aes256SivAead::new(GenericArray::from_slice(siv.as_slice()));
     let nonce = GenericArray::from_slice(&[0_u8; 16]);
@@ -113,7 +114,7 @@ pub fn decrypt_payload_with_aad(
             },
         )
         .map_err(|e| anyhow::anyhow!("failed to decrypt vault payload: {e}"))?;
-    Ok(Zeroizing::new(plaintext))
+    Ok(LockedBytes::new(plaintext))
 }
 
 #[cfg(test)]
@@ -125,7 +126,7 @@ mod tests {
         let key = [7_u8; DATA_KEY_LEN];
         let ct = encrypt_payload(&key, b"").expect("encrypt");
         let pt = decrypt_payload(&key, &ct).expect("decrypt");
-        assert_eq!(pt.as_slice(), b"");
+        assert_eq!(&*pt, b"");
     }
 
     #[test]
@@ -134,7 +135,7 @@ mod tests {
         let msg = b"{\"profiles\":{}}";
         let ct = encrypt_payload(&key, msg).expect("encrypt");
         let pt = decrypt_payload(&key, &ct).expect("decrypt");
-        assert_eq!(pt.as_slice(), msg);
+        assert_eq!(&*pt, msg);
     }
 
     #[test]

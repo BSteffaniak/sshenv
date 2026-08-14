@@ -43,6 +43,7 @@ argon2 = { workspace = true, optional = true }
 base64 = { version = "0.22", default-features = false, features = ["std"] }
 dirs = { workspace = true }
 hex = { workspace = true }
+libc = { workspace = true }
 rand_core = { version = "0.6", default-features = false, features = [
     "std",
     "getrandom",

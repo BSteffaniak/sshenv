@@ -323,7 +323,11 @@ fn unlock_ciphertext_with_recovery_env(
         "unlocked vault with recovery shares; metadata verified: {}",
         if metadata_verified { "yes" } else { "no" }
     );
-    Vault::unlock_with_data_key_and_passphrase(ciphertext, Zeroizing::new(raw_key), passphrase)
+    Vault::unlock_with_data_key_and_passphrase(
+        ciphertext,
+        sshenv_vault::LockedSecret::new(raw_key),
+        passphrase,
+    )
 }
 
 #[cfg(not(feature = "shamir-sharing"))]

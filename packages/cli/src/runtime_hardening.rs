@@ -7,6 +7,8 @@ use anyhow::Result;
 pub const fn platform_status() -> &'static str {
     if cfg!(target_os = "linux") {
         "Unix core dumps disabled; Linux non-dumpable; best-effort memory lock"
+    } else if cfg!(target_os = "macos") {
+        "Unix core dumps disabled; best-effort per-allocation secret memory locking (macOS has no mlockall)"
     } else if cfg!(unix) {
         "Unix core dumps disabled; best-effort memory lock"
     } else if cfg!(windows) {
@@ -116,7 +118,7 @@ fn apply_windows_heap_termination_on_corruption() {
 #[cfg(not(windows))]
 const fn apply_windows_hardening_best_effort() {}
 
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "macos")))]
 fn apply_memory_lock_best_effort() {
     let rc = unsafe { libc::mlockall(libc::MCL_CURRENT | libc::MCL_FUTURE) };
     if rc != 0 {
@@ -126,6 +128,12 @@ fn apply_memory_lock_best_effort() {
         );
     }
 }
+
+// Darwin ships `mlockall` as an unimplemented stub that always fails with
+// `ENOSYS`, so calling it can only produce a misleading warning. Secret memory
+// on macOS is instead locked per allocation by `sshenv_vault::locked`.
+#[cfg(target_os = "macos")]
+const fn apply_memory_lock_best_effort() {}
 
 #[cfg(not(unix))]
 const fn apply_memory_lock_best_effort() {}
@@ -137,6 +145,8 @@ mod tests {
         let status = super::platform_status();
         #[cfg(target_os = "linux")]
         assert!(status.contains("Linux non-dumpable"));
+        #[cfg(target_os = "macos")]
+        assert!(status.contains("secret memory locking"));
         #[cfg(all(unix, not(target_os = "linux")))]
         assert!(status.contains("Unix core dumps disabled"));
         #[cfg(windows)]

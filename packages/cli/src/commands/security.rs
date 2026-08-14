@@ -1781,7 +1781,7 @@ pub fn recovery_recover_recipient(
     }
     let mut raw_key = [0_u8; sshenv_vault::models::DATA_KEY_LEN];
     raw_key.copy_from_slice(recovered.as_slice());
-    let data_key = zeroize::Zeroizing::new(raw_key);
+    let data_key = sshenv_vault::LockedSecret::new(raw_key);
     let (ciphertext, _fps) = load_ciphertext_and_fps(&ctx.vault_path)?;
     let (mut vault, mut data_key) = sshenv_vault::Vault::unlock_with_data_key_and_passphrase(
         ciphertext,

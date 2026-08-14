@@ -16,6 +16,7 @@ pub mod format;
 #[cfg(feature = "hardware-recipient")]
 pub mod hardware;
 pub mod identity;
+mod locked;
 #[cfg(feature = "passphrase-factor")]
 pub mod passphrase;
 pub mod recipient;
@@ -41,6 +42,7 @@ use sshenv_vault_models::{
 };
 use zeroize::Zeroizing;
 
+pub use locked::{LockedBytes, LockedSecret};
 pub use sshenv_vault_models as models;
 
 #[cfg(any(
@@ -58,8 +60,8 @@ use crate::identity::{
 #[cfg(feature = "remote-factor")]
 use crate::remote::RemoteFactorBackend;
 
-/// Shorthand alias for the fixed-size, auto-zeroizing data key.
-pub type DataKey = Zeroizing<[u8; DATA_KEY_LEN]>;
+/// Shorthand alias for the fixed-size, auto-zeroizing, page-locking data key.
+pub type DataKey = LockedSecret<DATA_KEY_LEN>;
 
 /// Configurable embeddable sshenv vault store.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1029,7 +1031,8 @@ impl Vault {
             ));
         }
         let backend = remote::CommandRemoteFactorBackend::from_metadata(remote_metadata.clone())?;
-        let factor_key = generate_data_key();
+        let generated_factor_key = generate_data_key();
+        let factor_key = Zeroizing::new(*generated_factor_key);
         let response = backend.wrap_payload_key(request, factor_key.as_slice())?;
         let mut params = BTreeMap::new();
         params.insert("metadata-id".to_string(), remote_metadata.id.clone());
@@ -1598,7 +1601,7 @@ fn decode_profiles_from_payload(
         }
         let requirements = profile_factor_requirements(&profiles, profile);
         let profile_payload_key = profile_payload_key_for_requirements(
-            profile_key.as_slice(),
+            &profile_key,
             requirements,
             payload_key_factors,
             profile_factor_keys.get(profile).map_or(&[], Vec::as_slice),
@@ -1719,7 +1722,7 @@ fn profile_entry_matches_vars(
         return Ok(false);
     }
     let profile_payload_key = profile_payload_key_for_requirements(
-        profile_key.as_slice(),
+        &profile_key,
         requirements,
         payload_key_factors,
         profile_factor_keys,
@@ -1762,7 +1765,7 @@ fn decrypt_profile_entry(
         ));
     }
     let profile_payload_key = profile_payload_key_for_requirements(
-        profile_key.as_slice(),
+        &profile_key,
         requirements,
         payload_key_factors,
         profile_factor_keys,
@@ -3038,12 +3041,8 @@ mod tests {
         .expect("unwrap profile key");
 
         assert!(
-            decrypt_payload_with_aad(
-                raw_profile_key.as_slice(),
-                &entry.ciphertext,
-                V2_PROFILE_PAYLOAD_AAD,
-            )
-            .is_err(),
+            decrypt_payload_with_aad(&raw_profile_key, &entry.ciphertext, V2_PROFILE_PAYLOAD_AAD,)
+                .is_err(),
             "raw profile key should not decrypt factor-bound profile payload"
         );
         let passphrase_factor = factor_keys
@@ -3051,7 +3050,7 @@ mod tests {
             .find(|factor| factor.kind == UnlockFactorKindV2::Passphrase)
             .expect("passphrase factor key");
         let bound_profile_key =
-            bind_data_key_to_factor(raw_profile_key.as_slice(), passphrase_factor.key.as_slice());
+            bind_data_key_to_factor(&raw_profile_key, passphrase_factor.key.as_slice());
         let profile_plaintext = decrypt_payload_with_aad(
             bound_profile_key.as_slice(),
             &entry.ciphertext,

@@ -15,7 +15,8 @@ use age::{Decryptor, Encryptor};
 use anyhow::{Context, Result, bail};
 use sha2::{Digest, Sha256};
 use sshenv_vault_models::{DATA_KEY_LEN, RecipientEntry, UnlockFactorKindV2};
-use zeroize::Zeroizing;
+
+use crate::LockedSecret;
 
 /// Supported SSH key types for recipients. Must match a subset of what
 /// `age`'s `ssh` feature supports.
@@ -239,7 +240,7 @@ fn build_entry_for_age_plugin_recipient(
 pub fn unwrap_data_key(
     recipients: &[RecipientEntry],
     identities: &[Box<dyn age::Identity>],
-) -> Result<Zeroizing<[u8; DATA_KEY_LEN]>> {
+) -> Result<LockedSecret<DATA_KEY_LEN>> {
     for recipient in recipients {
         for identity in identities {
             let Ok(decryptor) =
@@ -260,7 +261,7 @@ pub fn unwrap_data_key(
             if reader.read(&mut one).ok() != Some(0) {
                 continue;
             }
-            return Ok(Zeroizing::new(out));
+            return Ok(LockedSecret::new(out));
         }
     }
     bail!("no identity could unwrap any recipient blob")

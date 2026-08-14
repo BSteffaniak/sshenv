@@ -1893,6 +1893,7 @@ dependencies = [
  "dirs",
  "hex",
  "hkdf",
+ "libc",
  "rand_core",
  "rpassword",
  "security-framework",
