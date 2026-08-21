@@ -26,11 +26,11 @@ sshenv_vault        = { version = "0.0.1-alpha.1", path = "packages/vault" }
 sshenv_vault_models = { version = "0.0.1-alpha.1", path = "packages/vault/models" }
 
 # Crypto
-aes-siv = { version = "0.7.0", default-features = false }
-age     = { version = "0.11.1", default-features = false, features = ["ssh"] }
+aes-siv = { version = "0.8.0", default-features = false }
+age     = { version = "0.12.1", default-features = false, features = ["ssh"] }
 argon2  = { version = "0.5", default-features = false, features = ["alloc"] }
-hkdf    = { version = "0.12.4", default-features = false }
-sha2    = { version = "0.10.8", default-features = false, features = ["std"] }
+hkdf    = { version = "0.13.0", default-features = false }
+sha2    = { version = "0.11.0", default-features = false }
 
 # Core
 anyhow = { version = "1", default-features = false, features = ["std"] }
@@ -62,9 +62,10 @@ ssh-key = { version = "0.6", default-features = false, features = [
 ] }
 tempfile = { version = "3", default-features = false }
 thiserror = { version = "2", default-features = false }
-toml = { version = "0.8", default-features = false, features = [
+toml = { version = "1.1", default-features = false, features = [
     "parse",
     "display",
+    "serde",
 ] }
 zeroize = { version = "1", default-features = false, features = [
     "std",

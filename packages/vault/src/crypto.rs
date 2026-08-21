@@ -2,9 +2,8 @@
 //! then encrypt/decrypt vault payloads.
 
 use crate::locked::{LockedBytes, LockedSecret};
-use aes_siv::Aes256SivAead;
-use aes_siv::aead::generic_array::GenericArray;
 use aes_siv::aead::{Aead, KeyInit, Payload};
+use aes_siv::{Aes256SivAead, Key, Nonce};
 use anyhow::Result;
 use hkdf::Hkdf;
 use rand_core::RngCore;
@@ -65,11 +64,13 @@ pub fn encrypt_payload(data_key: &[u8], plaintext: &[u8]) -> Result<Vec<u8>> {
 /// Returns an error if the AES-SIV implementation rejects the operation.
 pub fn encrypt_payload_with_aad(data_key: &[u8], plaintext: &[u8], aad: &[u8]) -> Result<Vec<u8>> {
     let siv = derive_siv_key(data_key);
-    let cipher = Aes256SivAead::new(GenericArray::from_slice(siv.as_slice()));
-    let nonce = GenericArray::from_slice(&[0_u8; 16]);
+    let cipher = Aes256SivAead::new(
+        &Key::<Aes256SivAead>::try_from(siv.as_slice()).expect("SIV key has the required length"),
+    );
+    let nonce = Nonce::try_from(&[0_u8; 16][..]).expect("nonce has the required length");
     cipher
         .encrypt(
-            nonce,
+            &nonce,
             Payload {
                 msg: plaintext,
                 aad,
@@ -103,11 +104,13 @@ pub fn decrypt_payload_with_aad(
     aad: &[u8],
 ) -> Result<LockedBytes> {
     let siv = derive_siv_key(data_key);
-    let cipher = Aes256SivAead::new(GenericArray::from_slice(siv.as_slice()));
-    let nonce = GenericArray::from_slice(&[0_u8; 16]);
+    let cipher = Aes256SivAead::new(
+        &Key::<Aes256SivAead>::try_from(siv.as_slice()).expect("SIV key has the required length"),
+    );
+    let nonce = Nonce::try_from(&[0_u8; 16][..]).expect("nonce has the required length");
     let plaintext = cipher
         .decrypt(
-            nonce,
+            &nonce,
             Payload {
                 msg: ciphertext,
                 aad,
