@@ -40,20 +40,17 @@ ssh-key = { workspace = true, features = ["ed25519"] }
 
 anyhow = { workspace = true }
 argon2 = { workspace = true, optional = true }
-base64 = { version = "0.23", default-features = false, features = ["std"] }
+base64 = { workspace = true }
 dirs = { workspace = true }
 hex = { workspace = true }
 libc = { workspace = true }
-rand_core = { version = "0.6", default-features = false, features = [
-    "std",
-    "getrandom",
-] }
+rand_core = { workspace = true }
 rpassword = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
-windows-sys = { version = "0.61", features = [
+windows-sys = { workspace = true, features = [
     "Win32_Foundation",
     "Win32_Security",
     "Win32_Security_Authorization",
@@ -69,7 +66,7 @@ security-framework     = { workspace = true }
 security-framework-sys = { workspace = true }
 
 [dev-dependencies]
-ssh-key = { version = "0.6", default-features = false, features = [
+ssh-key = { workspace = true, features = [
     "std",
     "alloc",
     "ed25519",

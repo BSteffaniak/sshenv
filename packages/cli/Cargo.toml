@@ -66,7 +66,7 @@ serde_json = { workspace = true }
 ssh-key = { workspace = true, features = ["ed25519"] }
 tempfile = { workspace = true }
 toml = { workspace = true }
-windows-sys = { version = "0.61", features = [
+windows-sys = { workspace = true, features = [
     "Win32_Foundation",
     "Win32_Security",
     "Win32_Security_Authorization",
@@ -78,11 +78,8 @@ windows-sys = { version = "0.61", features = [
 zeroize = { workspace = true }
 
 [dev-dependencies]
-rand_core = { version = "0.6", default-features = false, features = [
-    "std",
-    "getrandom",
-] }
-ssh-key = { version = "0.6", default-features = false, features = [
+rand_core = { workspace = true }
+ssh-key = { workspace = true, features = [
     "std",
     "alloc",
     "ed25519",
