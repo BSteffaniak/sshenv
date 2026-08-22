@@ -280,11 +280,11 @@ const fn v2_recipient_wire_len(recipient: &RecipientEntry) -> usize {
         + recipient.wrapped_key.len()
 }
 
-fn read_u16_be(bytes: &[u8]) -> u16 {
+const fn read_u16_be(bytes: &[u8]) -> u16 {
     u16::from_be_bytes([bytes[0], bytes[1]])
 }
 
-fn read_u32_be(bytes: &[u8]) -> u32 {
+const fn read_u32_be(bytes: &[u8]) -> u32 {
     u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
 }
 
