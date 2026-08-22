@@ -172,6 +172,9 @@ fn unlock(ptr: NonNull<u8>, len: usize) {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
+const fn unlock(_ptr: NonNull<u8>, _len: usize) {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
