@@ -236,7 +236,33 @@ fn lock_file(file: &File) -> Result<()> {
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn lock_file(file: &File) -> Result<()> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{LOCKFILE_EXCLUSIVE_LOCK, LockFileEx};
+    use windows_sys::Win32::System::IO::OVERLAPPED;
+
+    let mut overlapped = OVERLAPPED::default();
+    // SAFETY: `file` owns a valid handle for the duration of the call, and
+    // `overlapped` remains live while the synchronous lock is acquired.
+    let locked = unsafe {
+        LockFileEx(
+            file.as_raw_handle(),
+            LOCKFILE_EXCLUSIVE_LOCK,
+            0,
+            u32::MAX,
+            u32::MAX,
+            &raw mut overlapped,
+        )
+    };
+    if locked != 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error()).context("LockFileEx failed")
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
 #[allow(clippy::missing_const_for_fn, clippy::unnecessary_wraps)]
 fn lock_file(_file: &File) -> Result<()> {
     Ok(())
@@ -253,7 +279,29 @@ impl Drop for RegistryLock {
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+impl Drop for RegistryLock {
+    fn drop(&mut self) {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Storage::FileSystem::UnlockFileEx;
+        use windows_sys::Win32::System::IO::OVERLAPPED;
+
+        let mut overlapped = OVERLAPPED::default();
+        // SAFETY: `self.file` owns the same valid handle whose full range was
+        // locked in `lock_file`; unlocking during drop is best effort.
+        unsafe {
+            UnlockFileEx(
+                self.file.as_raw_handle(),
+                0,
+                u32::MAX,
+                u32::MAX,
+                &raw mut overlapped,
+            );
+        }
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
 impl Drop for RegistryLock {
     fn drop(&mut self) {}
 }
