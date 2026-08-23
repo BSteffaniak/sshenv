@@ -971,10 +971,10 @@ fn load_linux_secret_service_secret() -> Result<Zeroizing<[u8; KEY_LEN]>> {
     bail!("Linux Secret Service device-seal backend is not available in this build")
 }
 
-fn store_linux_secret_service_secret(_secret: &[u8]) -> Result<()> {
+fn store_linux_secret_service_secret(secret: &[u8]) -> Result<()> {
     #[cfg(all(feature = "linux-secret-service", target_os = "linux"))]
     {
-        let secret_hex = hex::encode(_secret);
+        let secret_hex = hex::encode(secret);
         let mut child = secret_tool_store_command()
             .stdin(Stdio::piped())
             .spawn()
@@ -1001,7 +1001,10 @@ fn store_linux_secret_service_secret(_secret: &[u8]) -> Result<()> {
     }
 
     #[cfg(not(all(feature = "linux-secret-service", target_os = "linux")))]
-    bail!("Linux Secret Service device-seal backend is not available in this build")
+    {
+        let _ = secret;
+        bail!("Linux Secret Service device-seal backend is not available in this build")
+    }
 }
 
 #[cfg(all(feature = "linux-secret-service", target_os = "linux"))]
@@ -1064,7 +1067,7 @@ fn load_tpm_secret() -> Result<Zeroizing<[u8; KEY_LEN]>> {
     bail!("TPM device-seal backend is not available in this build")
 }
 
-fn store_tpm_secret(_secret: &[u8]) -> Result<()> {
+fn store_tpm_secret(secret: &[u8]) -> Result<()> {
     #[cfg(all(feature = "tpm-device-seal", target_os = "linux"))]
     {
         let state = tpm_state_dir();
@@ -1079,12 +1082,15 @@ fn store_tpm_secret(_secret: &[u8]) -> Result<()> {
         let private = state.join("seal.priv");
         let seal = state.join("seal.ctx");
         create_tpm_primary(&primary)?;
-        create_tpm_sealed_object(&primary, &public, &private, _secret)?;
+        create_tpm_sealed_object(&primary, &public, &private, secret)?;
         load_tpm_sealed_object(&primary, &public, &private, &seal)
     }
 
     #[cfg(not(all(feature = "tpm-device-seal", target_os = "linux")))]
-    bail!("TPM device-seal backend is not available in this build")
+    {
+        let _ = secret;
+        bail!("TPM device-seal backend is not available in this build")
+    }
 }
 
 #[cfg(all(feature = "tpm-device-seal", target_os = "linux"))]
@@ -1203,10 +1209,10 @@ fn load_windows_dpapi_secret() -> Result<Zeroizing<[u8; KEY_LEN]>> {
     bail!("Windows DPAPI device-seal backend is not available in this build")
 }
 
-fn store_windows_dpapi_secret(_secret: &[u8]) -> Result<()> {
+fn store_windows_dpapi_secret(secret: &[u8]) -> Result<()> {
     #[cfg(all(feature = "windows-dpapi", target_os = "windows"))]
     {
-        let protected = dpapi_protect(_secret, "sshenv device seal")?;
+        let protected = dpapi_protect(secret, "sshenv device seal")?;
         return crate::atomic_write(
             &windows_dpapi_secret_path(),
             format!("{}\n", hex::encode(protected)).as_bytes(),
