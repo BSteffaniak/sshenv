@@ -403,7 +403,7 @@ fn insert_backend_metadata(
 }
 
 #[cfg(not(all(feature = "macos-keychain", target_os = "macos")))]
-fn insert_backend_metadata(
+const fn insert_backend_metadata(
     _params: &mut BTreeMap<String, String>,
     _backend: DeviceSealBackendSelection,
 ) {
