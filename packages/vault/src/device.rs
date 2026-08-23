@@ -1213,15 +1213,18 @@ fn store_windows_dpapi_secret(secret: &[u8]) -> Result<()> {
     #[cfg(all(feature = "windows-dpapi", target_os = "windows"))]
     {
         let protected = dpapi_protect(secret, "sshenv device seal")?;
-        return crate::atomic_write(
+        crate::atomic_write(
             &windows_dpapi_secret_path(),
             format!("{}\n", hex::encode(protected)).as_bytes(),
             0o600,
-        );
+        )
     }
 
     #[cfg(not(all(feature = "windows-dpapi", target_os = "windows")))]
-    bail!("Windows DPAPI device-seal backend is not available in this build")
+    {
+        let _ = secret;
+        bail!("Windows DPAPI device-seal backend is not available in this build")
+    }
 }
 
 #[cfg(all(feature = "windows-dpapi", target_os = "windows"))]
