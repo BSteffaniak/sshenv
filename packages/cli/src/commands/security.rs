@@ -1791,7 +1791,7 @@ pub fn recovery_recover_recipient(
     let entry = vault.add_recipient(&args.recipient_key, &data_key)?;
     let fingerprint = entry.fingerprint.clone();
     let rotated = rotate_recovered_vault_key_if_possible(&mut vault, &mut data_key)?;
-    vault.save(&args.output, &data_key)?;
+    vault.save_as_new(&args.output, &data_key)?;
     eprintln!(
         "Recovered vault to {} with new recipient {}. Metadata verified: {}. Data key rotated: {}.",
         args.output.display(),

@@ -1515,6 +1515,26 @@ impl Vault {
     /// Returns an error if encryption fails, the file cannot be written,
     /// or the rename fails.
     pub fn save(&self, path: &Path, data_key: &[u8; DATA_KEY_LEN]) -> Result<()> {
+        self.save_with_expected_digest(path, data_key, self.source_digest.get())
+    }
+
+    /// Save this vault to a new path without overwriting an existing file.
+    ///
+    /// After success, ordinary saves track the newly written snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the destination exists, encryption fails, or writing fails.
+    pub fn save_as_new(&self, path: &Path, data_key: &[u8; DATA_KEY_LEN]) -> Result<()> {
+        self.save_with_expected_digest(path, data_key, None)
+    }
+
+    fn save_with_expected_digest(
+        &self,
+        path: &Path,
+        data_key: &[u8; DATA_KEY_LEN],
+        expected_digest: Option<[u8; 32]>,
+    ) -> Result<()> {
         let payload_key = payload_key_for_data_key(data_key.as_slice(), &self.payload_key_factors);
         let plaintext = encode_profiles_for_payload(
             &self.profiles,
@@ -1547,10 +1567,10 @@ impl Vault {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
             Err(error) => return Err(error.into()),
         };
-        if current != self.source_digest.get() {
+        if current != expected_digest {
             return Err(VaultWriteConflict.into());
         }
-        atomic_write(path, &encoded, 0o600)?;
+        atomic_write_with_overwrite(path, &encoded, 0o600, expected_digest.is_some())?;
         self.source_digest.set(Some(vault_digest(&encoded)));
         Ok(())
     }
@@ -2312,6 +2332,15 @@ fn format_fingerprint_list(values: &[&String]) -> String {
 }
 
 pub fn atomic_write(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
+    atomic_write_with_overwrite(path, bytes, mode, true)
+}
+
+fn atomic_write_with_overwrite(
+    path: &Path,
+    bytes: &[u8],
+    mode: u32,
+    overwrite: bool,
+) -> Result<()> {
     let parent = path
         .parent()
         .ok_or_else(|| anyhow!("vault path has no parent directory: {}", path.display()))?;
@@ -2340,8 +2369,12 @@ pub fn atomic_write(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
     set_permissions_mode_on_file(tmp.as_file(), mode)
         .with_context(|| format!("failed to set mode {mode:o} on {}", tmp.path().display()))?;
 
-    tmp.persist(path)
-        .with_context(|| format!("failed to persist vault at {}", path.display()))?;
+    if overwrite {
+        tmp.persist(path)
+    } else {
+        tmp.persist_noclobber(path)
+    }
+    .with_context(|| format!("failed to persist vault at {}", path.display()))?;
     restrict_private_file_permissions(path, mode)
         .with_context(|| format!("failed to restrict permissions on {}", path.display()))?;
     Ok(())
@@ -2622,6 +2655,48 @@ mod tests {
         first.save(&path, &first_key).unwrap();
         std::fs::remove_file(&path).unwrap();
         assert!(first.save(&path, &first_key).is_err());
+    }
+
+    #[test]
+    fn save_as_new_preserves_source_and_tracks_destination() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("vault");
+        let destination = temp.path().join("recovered-vault");
+        let (public, identity) = generate_keypair();
+        let (original, key) = Vault::create(&public).unwrap();
+        original.save(&source, &key).unwrap();
+        let source_bytes = fs::read(&source).unwrap();
+        let identities = vec![identity];
+        let (mut recovered, key) =
+            Vault::unlock(Vault::load_ciphertext(&source).unwrap(), &identities).unwrap();
+        recovered
+            .profiles
+            .set("test", "KEY", "recovered".to_owned());
+        assert!(recovered.save(&destination, &key).is_err());
+        recovered.save_as_new(&destination, &key).unwrap();
+        assert_eq!(fs::read(&source).unwrap(), source_bytes);
+        let (loaded, _) =
+            Vault::unlock(Vault::load_ciphertext(&destination).unwrap(), &identities).unwrap();
+        assert_eq!(loaded.profiles.profiles["test"]["KEY"], "recovered");
+        recovered.save(&destination, &key).unwrap();
+        let destination_bytes = fs::read(&destination).unwrap();
+        assert!(recovered.save_as_new(&destination, &key).is_err());
+        assert_eq!(fs::read(&destination).unwrap(), destination_bytes);
+        // A failed save-as-new must not reset ordinary conflict detection.
+        recovered.save(&destination, &key).unwrap();
+        assert!(recovered.save(&source, &key).is_err());
+        assert_eq!(fs::read(&source).unwrap(), source_bytes);
+    }
+
+    #[test]
+    fn save_as_new_refuses_existing_unrelated_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("existing");
+        fs::write(&path, b"not a vault").unwrap();
+        let (public, _) = generate_keypair();
+        let (vault, key) = Vault::create(&public).unwrap();
+        assert!(vault.save_as_new(&path, &key).is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"not a vault");
     }
 
     /// Generate a fresh `ssh-ed25519` keypair on demand, returning
