@@ -139,11 +139,36 @@ impl SshenvStore {
         Ok(true)
     }
 
-    /// Set or replace one secret value.
+    /// Insert a credential only when absent, with optimistic conflict detection.
+    ///
+    /// All saves through this library reject stale snapshots under the same writer lock.
     ///
     /// # Errors
-    ///
-    /// Returns an error if the vault cannot be unlocked or saved.
+    /// Returns an error if the credential exists, unlock fails, or another writer commits first.
+    pub fn insert_secret_if_absent(
+        &self,
+        profile: &str,
+        var: &str,
+        value: Zeroizing<String>,
+    ) -> Result<()> {
+        let (mut vault, data_key) = self.load_and_unlock_profile(profile)?;
+        if vault
+            .profiles
+            .profiles
+            .get(profile)
+            .is_some_and(|values| values.contains_key(var))
+        {
+            anyhow::bail!("credential already exists; import does not overwrite it");
+        }
+        vault
+            .profiles
+            .profiles
+            .entry(profile.to_owned())
+            .or_default()
+            .insert(var.to_owned(), value.to_string());
+        vault.save(&self.config.vault_path, &data_key)
+    }
+
     pub fn set_secret(&self, profile: &str, var: &str, value: Zeroizing<String>) -> Result<()> {
         let (mut vault, data_key) = self.load_and_unlock_profile(profile)?;
         vault.profiles.set(profile, var, value.as_str().to_string());
@@ -361,6 +386,7 @@ pub struct Vault {
     pub profiles: ProfileMap,
     payload_key_factors: Vec<PayloadKeyFactor>,
     profile_key_rotations: BTreeSet<String>,
+    source_digest: std::cell::Cell<Option<[u8; 32]>>,
     profile_factor_keys: BTreeMap<String, Vec<PayloadKeyFactor>>,
 }
 
@@ -400,6 +426,7 @@ impl Vault {
             policy_metadata: None,
             recipients: vec![recipient],
             profiles: ProfileMap::default(),
+            source_digest: std::cell::Cell::new(None),
             payload_key_factors: Vec::new(),
             profile_key_rotations: BTreeSet::new(),
             profile_factor_keys: BTreeMap::new(),
@@ -422,6 +449,7 @@ impl Vault {
             policy_metadata: parsed.policy_metadata,
             recipients: parsed.recipients,
             payload_ciphertext: parsed.payload,
+            source_digest: vault_digest(&bytes),
         })
     }
 
@@ -503,6 +531,7 @@ impl Vault {
                 payload_key_factors,
                 profile_key_rotations: BTreeSet::new(),
                 profile_factor_keys,
+                source_digest: std::cell::Cell::new(Some(ciphertext.source_digest)),
             },
             data_key,
         ))
@@ -550,6 +579,7 @@ impl Vault {
                 payload_key_factors,
                 profile_key_rotations: BTreeSet::new(),
                 profile_factor_keys: BTreeMap::new(),
+                source_digest: std::cell::Cell::new(Some(ciphertext.source_digest)),
             },
             data_key,
         ))
@@ -1511,13 +1541,58 @@ impl Vault {
             }
             version => return Err(VaultModelsError::UnsupportedVersion(version).into()),
         };
+        let _writer = lock_vault_writer(path)?;
+        let current = match fs::read(path) {
+            Ok(bytes) => Some(vault_digest(&bytes)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error.into()),
+        };
+        if current != self.source_digest.get() {
+            return Err(VaultWriteConflict.into());
+        }
         atomic_write(path, &encoded, 0o600)?;
+        self.source_digest.set(Some(vault_digest(&encoded)));
         Ok(())
     }
 }
 
+/// A concurrent writer changed the encrypted vault after it was loaded.
+#[derive(Debug, thiserror::Error)]
+#[error("vault changed since it was loaded; reload before retrying")]
+pub struct VaultWriteConflict;
+
+fn vault_digest(bytes: &[u8]) -> [u8; 32] {
+    use sha2::Digest as _;
+    sha2::Sha256::digest(bytes).into()
+}
+
+fn lock_vault_writer(path: &Path) -> Result<std::fs::File> {
+    let parent = path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent)?;
+    let parent = parent.canonicalize()?;
+    let name = path
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("vault filename is missing"))?;
+    let mut lock_name = name.to_os_string();
+    lock_name.push(".lock");
+    let mut options = fs::OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    let file = options.open(parent.join(lock_name))?;
+    file.lock()?;
+    Ok(file)
+}
+
 /// A parsed but still-encrypted vault file.
 pub struct CiphertextVault {
+    source_digest: [u8; 32],
     pub header: VaultHeader,
     pub policy_metadata: Option<VaultPolicyMetadataV2>,
     pub recipients: Vec<RecipientEntry>,
@@ -2448,6 +2523,106 @@ pub fn default_vault_path() -> PathBuf {
 mod tests {
     use super::*;
     use sshenv_vault_models::MAGIC;
+
+    #[test]
+    fn insert_if_absent_preserves_existing_value() {
+        let temp = tempfile::tempdir().unwrap();
+        let private =
+            ssh_key::PrivateKey::random(&mut rand_core::OsRng, ssh_key::Algorithm::Ed25519)
+                .unwrap();
+        let private_path = temp.path().join("identity");
+        std::fs::write(
+            &private_path,
+            private
+                .to_openssh(ssh_key::LineEnding::LF)
+                .unwrap()
+                .as_bytes(),
+        )
+        .unwrap();
+        let store = SshenvStore::new(
+            SshenvStoreConfig::new(temp.path().join("vault"))
+                .with_private_key_paths(vec![private_path]),
+        );
+        store
+            .init(&private.public_key().to_openssh().unwrap())
+            .unwrap();
+        store
+            .insert_secret_if_absent("test", "KEY", Zeroizing::new("first".to_owned()))
+            .unwrap();
+        assert!(
+            store
+                .insert_secret_if_absent("test", "KEY", Zeroizing::new("second".to_owned()))
+                .is_err()
+        );
+        assert_eq!(
+            store.get_secret("test", "KEY").unwrap().unwrap().as_str(),
+            "first"
+        );
+    }
+
+    #[test]
+    fn simultaneous_snapshots_have_only_one_successful_save() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("vault");
+        let (public, identity) = generate_keypair();
+        let (vault, key) = Vault::create(&public).unwrap();
+        vault.save(&path, &key).unwrap();
+        let identities = vec![identity];
+        let first = Vault::unlock(Vault::load_ciphertext(&path).unwrap(), &identities).unwrap();
+        let second = Vault::unlock(Vault::load_ciphertext(&path).unwrap(), &identities).unwrap();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let handles = [first, second]
+            .into_iter()
+            .enumerate()
+            .map(|(index, (mut vault, key))| {
+                let path = path.clone();
+                let barrier = barrier.clone();
+                let key = Zeroizing::new(*key);
+                std::thread::spawn(move || {
+                    vault.profiles.set("test", "KEY", index.to_string());
+                    barrier.wait();
+                    vault.save(&path, &key).is_ok()
+                })
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            handles.len(),
+            2,
+            "both competing writers must start before either is joined"
+        );
+        let successes = handles
+            .into_iter()
+            .map(|handle| usize::from(handle.join().unwrap()))
+            .sum::<usize>();
+        assert_eq!(successes, 1);
+    }
+
+    #[test]
+    fn stale_writer_cannot_overwrite_newer_credentials() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("vault");
+        let (public, identity) = generate_keypair();
+        let (original, key) = Vault::create(&public).unwrap();
+        original.save(&path, &key).unwrap();
+        let identities = vec![identity];
+        let (mut first, first_key) =
+            Vault::unlock(Vault::load_ciphertext(&path).unwrap(), &identities).unwrap();
+        let (mut stale, stale_key) =
+            Vault::unlock(Vault::load_ciphertext(&path).unwrap(), &identities).unwrap();
+        first.profiles.set("test", "KEY", "first".to_owned());
+        first.save(&path, &first_key).unwrap();
+        stale.profiles.set("test", "KEY", "stale".to_owned());
+        let error = stale.save(&path, &stale_key).unwrap_err();
+        assert!(error.downcast_ref::<VaultWriteConflict>().is_some());
+        let (current, _) =
+            Vault::unlock(Vault::load_ciphertext(&path).unwrap(), &identities).unwrap();
+        assert_eq!(current.profiles.profiles["test"]["KEY"], "first");
+        // A successfully saved instance can be saved again, but cannot recreate
+        // a file deleted by another actor without explicit reload/recreation.
+        first.save(&path, &first_key).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert!(first.save(&path, &first_key).is_err());
+    }
 
     /// Generate a fresh `ssh-ed25519` keypair on demand, returning
     /// `(openssh_pubkey_line, age_identity)`.
