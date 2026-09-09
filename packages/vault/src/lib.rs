@@ -540,10 +540,33 @@ impl Vault {
         data_key: DataKey,
         passphrase: Option<&str>,
     ) -> Result<(Self, DataKey)> {
-        let payload_key_factors = payload_key_factors_for_metadata(
+        Self::unlock_with_data_key_and_device_factor(
+            ciphertext,
+            data_key,
+            passphrase,
+            device_seal_factor_key,
+        )
+    }
+
+    /// Unlock the real vault payload and profiles with caller-selected device custody.
+    ///
+    /// The callback must enforce custody for the supplied metadata. Errors propagate without
+    /// native device fallback. Passphrase and remote factors retain their existing behavior;
+    /// this API alone does not establish control of remote-factor effects.
+    ///
+    /// # Errors
+    /// Returns factor retrieval, payload decoding, or profile decryption errors.
+    pub fn unlock_with_data_key_and_device_factor(
+        ciphertext: CiphertextVault,
+        data_key: DataKey,
+        passphrase: Option<&str>,
+        mut derive: impl FnMut(&UnlockFactorV2) -> Result<Zeroizing<[u8; DATA_KEY_LEN]>>,
+    ) -> Result<(Self, DataKey)> {
+        let payload_key_factors = payload_key_factors_for_metadata_with(
             ciphertext.policy_metadata.as_ref(),
             passphrase,
             ciphertext.generation(),
+            &mut derive,
         )?;
         let payload_key = payload_key_for_data_key(data_key.as_slice(), &payload_key_factors);
 
@@ -555,11 +578,12 @@ impl Vault {
         let (profiles, profile_factor_keys) = if plaintext.is_empty() {
             (ProfileMap::default(), BTreeMap::new())
         } else {
-            decode_profiles_from_payload(
+            decode_profiles_from_payload_with(
                 &plaintext,
                 payload_key.as_slice(),
                 &payload_key_factors,
                 passphrase,
+                &mut derive,
             )?
         };
 
@@ -1826,15 +1850,25 @@ fn copy_data_key(data_key: &[u8]) -> Zeroizing<[u8; DATA_KEY_LEN]> {
     Zeroizing::new(out)
 }
 
-fn decode_profiles_from_payload(
+fn decode_profiles_from_payload_with(
     payload: &[u8],
     payload_key: &[u8],
     payload_key_factors: &[PayloadKeyFactor],
     passphrase: Option<&str>,
+    derive: &mut impl FnMut(&UnlockFactorV2) -> Result<Zeroizing<[u8; DATA_KEY_LEN]>>,
 ) -> Result<(ProfileMap, BTreeMap<String, Vec<PayloadKeyFactor>>)> {
     let mut profiles: ProfileMap =
         serde_json::from_slice(payload).context("decrypted vault payload was not valid JSON")?;
-    let profile_factor_keys = profile_factor_keys_for_profiles(&profiles, passphrase)?;
+    let profile_factor_keys = profiles
+        .profile_policies
+        .iter()
+        .map(|(profile, policy)| {
+            Ok((
+                profile.clone(),
+                profile_factor_keys_for_policy_with(policy, passphrase, derive)?,
+            ))
+        })
+        .collect::<Result<BTreeMap<_, _>>>()?;
     if profiles.profile_entries.is_empty() {
         return Ok((profiles, profile_factor_keys));
     }
@@ -2031,29 +2065,6 @@ fn decrypt_profile_entry(
     .with_context(|| format!("failed to decrypt profile payload for {profile}"))?;
     serde_json::from_slice(&profile_plaintext)
         .with_context(|| format!("profile payload for {profile} was not valid JSON"))
-}
-
-fn profile_factor_keys_for_profiles(
-    profiles: &ProfileMap,
-    passphrase: Option<&str>,
-) -> Result<BTreeMap<String, Vec<PayloadKeyFactor>>> {
-    profiles
-        .profile_policies
-        .iter()
-        .map(|(profile, policy)| {
-            Ok((
-                profile.clone(),
-                profile_factor_keys_for_policy(policy, passphrase)?,
-            ))
-        })
-        .collect()
-}
-
-fn profile_factor_keys_for_policy(
-    policy: &sshenv_vault_models::ProfilePolicy,
-    passphrase: Option<&str>,
-) -> Result<Vec<PayloadKeyFactor>> {
-    profile_factor_keys_for_policy_with(policy, passphrase, &mut device_seal_factor_key)
 }
 
 fn profile_factor_keys_for_policy_with(
@@ -2277,6 +2288,20 @@ fn payload_key_factors_for_metadata(
     passphrase: Option<&str>,
     vault_generation: Option<u64>,
 ) -> Result<Vec<PayloadKeyFactor>> {
+    payload_key_factors_for_metadata_with(
+        metadata,
+        passphrase,
+        vault_generation,
+        &mut device_seal_factor_key,
+    )
+}
+
+fn payload_key_factors_for_metadata_with(
+    metadata: Option<&VaultPolicyMetadataV2>,
+    passphrase: Option<&str>,
+    vault_generation: Option<u64>,
+    derive: &mut impl FnMut(&UnlockFactorV2) -> Result<Zeroizing<[u8; DATA_KEY_LEN]>>,
+) -> Result<Vec<PayloadKeyFactor>> {
     let mut factors = Vec::new();
     let Some(metadata) = metadata else {
         return Ok(factors);
@@ -2292,7 +2317,7 @@ fn payload_key_factors_for_metadata(
             }
             UnlockFactorKindV2::DeviceSeal => factors.push(PayloadKeyFactor {
                 kind: UnlockFactorKindV2::DeviceSeal,
-                key: device_seal_factor_key(factor)?,
+                key: derive(factor)?,
             }),
             UnlockFactorKindV2::RemoteKms => factors.push(PayloadKeyFactor {
                 kind: UnlockFactorKindV2::RemoteKms,
