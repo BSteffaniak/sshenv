@@ -443,13 +443,25 @@ impl Vault {
     pub fn load_ciphertext(path: &Path) -> Result<CiphertextVault> {
         let bytes = fs::read(path)
             .with_context(|| format!("failed to read vault file {}", path.display()))?;
-        let parsed = parse(&bytes)?;
+        Self::decode_ciphertext(&bytes)
+    }
+
+    /// Decode caller-acquired ciphertext without filesystem access.
+    ///
+    /// Preserves the source digest used by optimistic write-conflict detection. The caller
+    /// owns acquisition and its size limits; decoding does not decrypt or establish write authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the bytes have an invalid or unsupported vault format.
+    pub fn decode_ciphertext(bytes: &[u8]) -> Result<CiphertextVault> {
+        let parsed = parse(bytes)?;
         Ok(CiphertextVault {
             header: parsed.header,
             policy_metadata: parsed.policy_metadata,
             recipients: parsed.recipients,
             payload_ciphertext: parsed.payload,
-            source_digest: vault_digest(&bytes),
+            source_digest: vault_digest(bytes),
         })
     }
 
@@ -1535,6 +1547,82 @@ impl Vault {
         data_key: &[u8; DATA_KEY_LEN],
         expected_digest: Option<[u8; 32]>,
     ) -> Result<()> {
+        self.save_with_commit(data_key, expected_digest, |encoded, expected| {
+            let _writer = lock_vault_writer(path)?;
+            let current = match fs::read(path) {
+                Ok(bytes) => Some(vault_digest(&bytes)),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => return Err(error.into()),
+            };
+            if current != expected {
+                return Err(VaultWriteConflict.into());
+            }
+            atomic_write_with_overwrite(path, encoded, 0o600, expected.is_some())
+        })
+    }
+
+    /// Encrypt and commit through caller-owned storage without native file access here.
+    ///
+    /// The commit effect must exclusively compare the current ciphertext's SHA-256 digest
+    /// with `expected` (`None` means absent), then atomically publish the supplied ciphertext.
+    /// It must preserve private-file protection and report conflicts without overwriting.
+    /// The vault advances its tracked digest only after the effect reports success.
+    /// Encryption may still acquire native entropy for profile-key creation or rotation.
+    ///
+    /// # Errors
+    ///
+    /// Returns encoding, encryption, or storage commit errors.
+    pub fn save_with_storage(
+        &self,
+        data_key: &[u8; DATA_KEY_LEN],
+        commit: impl FnOnce(&[u8], Option<[u8; 32]>) -> Result<()>,
+    ) -> Result<()> {
+        self.save_with_commit(data_key, self.source_digest.get(), commit)
+    }
+
+    /// Save using caller-selected storage and profile-key generation.
+    ///
+    /// The commit contract is identical to [`Self::save_with_storage`]. Production callers
+    /// must supply cryptographically secure, fresh keys; deterministic sources are only for
+    /// isolated simulations, never real credentials. No native entropy is acquired by this save.
+    ///
+    /// # Errors
+    /// Returns key-generation, encoding, encryption, or commit errors.
+    pub fn save_with_effects(
+        &self,
+        data_key: &[u8; DATA_KEY_LEN],
+        mut generate_key: impl FnMut() -> Result<DataKey>,
+        commit: impl FnOnce(&[u8], Option<[u8; 32]>) -> Result<()>,
+    ) -> Result<()> {
+        self.save_with_commit_and_keys(
+            data_key,
+            self.source_digest.get(),
+            &mut generate_key,
+            commit,
+        )
+    }
+
+    fn save_with_commit(
+        &self,
+        data_key: &[u8; DATA_KEY_LEN],
+        expected_digest: Option<[u8; 32]>,
+        commit: impl FnOnce(&[u8], Option<[u8; 32]>) -> Result<()>,
+    ) -> Result<()> {
+        self.save_with_commit_and_keys(
+            data_key,
+            expected_digest,
+            &mut || Ok(generate_data_key()),
+            commit,
+        )
+    }
+
+    fn save_with_commit_and_keys(
+        &self,
+        data_key: &[u8; DATA_KEY_LEN],
+        expected_digest: Option<[u8; 32]>,
+        generate_key: &mut dyn FnMut() -> Result<DataKey>,
+        commit: impl FnOnce(&[u8], Option<[u8; 32]>) -> Result<()>,
+    ) -> Result<()> {
         let payload_key = payload_key_for_data_key(data_key.as_slice(), &self.payload_key_factors);
         let plaintext = encode_profiles_for_payload(
             &self.profiles,
@@ -1543,6 +1631,7 @@ impl Vault {
             &self.profile_key_rotations,
             &self.payload_key_factors,
             &self.profile_factor_keys,
+            generate_key,
         )?;
         let plaintext = Zeroizing::new(plaintext);
         let aad = payload_aad_for_version(self.header.version)?;
@@ -1561,16 +1650,7 @@ impl Vault {
             }
             version => return Err(VaultModelsError::UnsupportedVersion(version).into()),
         };
-        let _writer = lock_vault_writer(path)?;
-        let current = match fs::read(path) {
-            Ok(bytes) => Some(vault_digest(&bytes)),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-            Err(error) => return Err(error.into()),
-        };
-        if current != expected_digest {
-            return Err(VaultWriteConflict.into());
-        }
-        atomic_write_with_overwrite(path, &encoded, 0o600, expected_digest.is_some())?;
+        commit(&encoded, expected_digest)?;
         self.source_digest.set(Some(vault_digest(&encoded)));
         Ok(())
     }
@@ -1722,6 +1802,7 @@ fn encode_profiles_for_payload(
     profile_key_rotations: &BTreeSet<String>,
     payload_key_factors: &[PayloadKeyFactor],
     profile_factor_keys: &BTreeMap<String, Vec<PayloadKeyFactor>>,
+    generate_key: &mut dyn FnMut() -> Result<DataKey>,
 ) -> Result<Vec<u8>> {
     if !profile_keys_enabled {
         let mut encoded = profiles.clone();
@@ -1755,6 +1836,7 @@ fn encode_profiles_for_payload(
                 requirements,
                 payload_key_factors,
                 profile_factor_keys.get(profile).map_or(&[], Vec::as_slice),
+                generate_key()?,
             )?
         };
         encoded.profile_entries.insert(profile.clone(), entry);
@@ -1777,8 +1859,8 @@ fn encrypt_profile_entry(
     requirements: &[ProfileFactorRequirement],
     payload_key_factors: &[PayloadKeyFactor],
     profile_factor_keys: &[PayloadKeyFactor],
+    profile_key: DataKey,
 ) -> Result<ProfileEntry> {
-    let profile_key = generate_data_key();
     let profile_payload_key = profile_payload_key_for_requirements(
         profile_key.as_slice(),
         requirements,
@@ -2590,6 +2672,87 @@ mod tests {
         assert_eq!(
             store.get_secret("test", "KEY").unwrap().unwrap().as_str(),
             "first"
+        );
+    }
+
+    #[test]
+    fn controlled_save_repeats_ciphertext_and_preserves_digest_on_failure() {
+        let (public, identity) = generate_keypair();
+        let (mut vault, key) = Vault::create(&public).unwrap();
+        vault.migrate_to_v2(&[public]).unwrap();
+        vault.enable_profile_keys().unwrap();
+        vault.profiles.set("test", "KEY", "value".into());
+        let mut first = Vec::new();
+        let mut generated = 0;
+        vault
+            .save_with_effects(
+                &key,
+                || {
+                    generated += 1;
+                    Ok(DataKey::new([7; DATA_KEY_LEN]))
+                },
+                |bytes, expected| {
+                    assert!(expected.is_none());
+                    first = bytes.to_vec();
+                    Ok(())
+                },
+            )
+            .unwrap();
+        assert_eq!(generated, 1);
+        let digest = vault_digest(&first);
+        let failure = vault.save_with_effects(
+            &key,
+            || Ok(DataKey::new([7; DATA_KEY_LEN])),
+            |bytes, expected| {
+                assert_eq!(expected, Some(digest));
+                assert_eq!(bytes, first);
+                Err(VaultWriteConflict.into())
+            },
+        );
+        assert!(failure.is_err());
+        assert_eq!(vault.source_digest.get(), Some(digest));
+        let (mut opened, _) =
+            Vault::unlock(Vault::decode_ciphertext(&first).unwrap(), &[identity]).unwrap();
+        opened
+            .save_with_effects(
+                &key,
+                || panic!("unchanged entries reuse their key"),
+                |bytes, expected| {
+                    assert_eq!(expected, Some(digest));
+                    assert_eq!(bytes, first);
+                    Ok(())
+                },
+            )
+            .unwrap();
+        opened.rotate_profile_key("test").unwrap();
+        assert!(
+            opened
+                .save_with_effects(
+                    &key,
+                    || Err(anyhow!("entropy unavailable")),
+                    |_, _| { panic!("entropy failure must precede commit") }
+                )
+                .is_err()
+        );
+        assert_eq!(opened.source_digest.get(), Some(digest));
+        opened
+            .save_with_effects(
+                &key,
+                || Ok(DataKey::new([8; DATA_KEY_LEN])),
+                |bytes, expected| {
+                    assert_eq!(expected, Some(digest));
+                    assert_ne!(bytes, first);
+                    Ok(())
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            opened
+                .profiles
+                .get("test")
+                .and_then(|values| values.get("KEY"))
+                .map(String::as_str),
+            Some("value")
         );
     }
 
