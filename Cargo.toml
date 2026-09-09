@@ -14,17 +14,17 @@ authors    = ["Braden Steffaniak"]
 edition    = "2024"
 license    = "MPL-2.0"
 repository = "https://github.com/BSteffaniak/sshenv"
-version    = "0.0.1-alpha.3"
+version    = "0.0.1-alpha.4"
 
 [workspace.dependencies]
 switchy_age = { git = "https://github.com/MoosicBox/MoosicBox.git", branch = "master", default-features = false }
 # Internal
-sshenv_cli          = { version = "0.0.1-alpha.3", path = "packages/cli" }
-sshenv_cli_models   = { version = "0.0.1-alpha.3", path = "packages/cli/models" }
-sshenv_shims        = { version = "0.0.1-alpha.3", path = "packages/shims" }
-sshenv_shims_models = { version = "0.0.1-alpha.3", path = "packages/shims/models" }
-sshenv_vault        = { version = "0.0.1-alpha.3", path = "packages/vault" }
-sshenv_vault_models = { version = "0.0.1-alpha.3", path = "packages/vault/models" }
+sshenv_cli          = { version = "0.0.1-alpha.4", path = "packages/cli" }
+sshenv_cli_models   = { version = "0.0.1-alpha.4", path = "packages/cli/models" }
+sshenv_shims        = { version = "0.0.1-alpha.4", path = "packages/shims" }
+sshenv_shims_models = { version = "0.0.1-alpha.4", path = "packages/shims/models" }
+sshenv_vault        = { version = "0.0.1-alpha.4", path = "packages/vault" }
+sshenv_vault_models = { version = "0.0.1-alpha.4", path = "packages/vault/models" }
 
 # Crypto
 aes-siv = { version = "0.8.0", default-features = false }

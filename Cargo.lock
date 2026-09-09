@@ -2015,7 +2015,7 @@ dependencies = [
 
 [[package]]
 name = "sshenv"
-version = "0.0.1-alpha.3"
+version = "0.0.1-alpha.4"
 dependencies = [
  "age",
  "anyhow",
@@ -2038,14 +2038,14 @@ dependencies = [
 
 [[package]]
 name = "sshenv_cli_models"
-version = "0.0.1-alpha.3"
+version = "0.0.1-alpha.4"
 dependencies = [
  "clap",
 ]
 
 [[package]]
 name = "sshenv_shims"
-version = "0.0.1-alpha.3"
+version = "0.0.1-alpha.4"
 dependencies = [
  "anyhow",
  "dirs",
@@ -2056,7 +2056,7 @@ dependencies = [
 
 [[package]]
 name = "sshenv_shims_models"
-version = "0.0.1-alpha.3"
+version = "0.0.1-alpha.4"
 dependencies = [
  "serde",
  "thiserror 2.0.20",
@@ -2064,7 +2064,7 @@ dependencies = [
 
 [[package]]
 name = "sshenv_vault"
-version = "0.0.1-alpha.3"
+version = "0.0.1-alpha.4"
 dependencies = [
  "aes-siv",
  "age",
@@ -2095,7 +2095,7 @@ dependencies = [
 
 [[package]]
 name = "sshenv_vault_models"
-version = "0.0.1-alpha.3"
+version = "0.0.1-alpha.4"
 dependencies = [
  "serde",
  "thiserror 2.0.20",
