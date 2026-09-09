@@ -1098,14 +1098,33 @@ impl Vault {
         &mut self,
         options: device::DeviceSealOptions,
     ) -> Result<()> {
+        self.enable_device_seal_factor_with(|| device::create_factor_with_options(options))
+    }
+
+    /// Enable an outer-payload seal through caller-selected device custody.
+    ///
+    /// The caller must supply fresh cryptographic key material and enforce device custody.
+    /// Deterministic keys are only suitable for isolated simulations without real secrets.
+    /// Version and duplicate checks precede creation; failed creation leaves metadata unchanged.
+    ///
+    /// # Errors
+    /// Returns unsupported version, duplicate factor, creation, or invalid factor-kind errors.
+    #[cfg(feature = "device-seal")]
+    pub fn enable_device_seal_factor_with(
+        &mut self,
+        create: impl FnOnce() -> Result<(UnlockFactorV2, Zeroizing<[u8; DATA_KEY_LEN]>)>,
+    ) -> Result<()> {
         ensure_v2_for_device_seal(self.header.version)?;
         if self.device_seal_factor_enabled() {
             return Err(anyhow!("device-seal factor is already enabled"));
         }
+        let (factor, factor_key) = create()?;
+        if factor.kind != UnlockFactorKindV2::DeviceSeal {
+            return Err(anyhow!("selected device factor has an invalid kind"));
+        }
         let metadata = self
             .policy_metadata
             .get_or_insert_with(|| policy_metadata_from_recipients(&self.recipients));
-        let (factor, factor_key) = device::create_factor_with_options(options)?;
         metadata.policies.push(sshenv_vault_models::UnlockPolicyV2 {
             id: "ssh+device-seal".to_string(),
             threshold: None,
@@ -2799,6 +2818,23 @@ mod tests {
             })
             .unwrap();
         assert_eq!(created, 1);
+        let before = vault.policy_metadata.clone();
+        assert!(
+            vault
+                .enable_device_seal_factor_with(|| Err(anyhow!("unavailable")))
+                .is_err()
+        );
+        assert_eq!(vault.policy_metadata, before);
+        vault
+            .enable_device_seal_factor_with(|| {
+                Ok((factor.clone(), Zeroizing::new([9; DATA_KEY_LEN])))
+            })
+            .unwrap();
+        assert!(
+            vault
+                .enable_device_seal_factor_with(|| panic!("duplicate must not acquire custody"))
+                .is_err()
+        );
         let mut bytes = Vec::new();
         vault
             .save_with_effects(
@@ -2825,7 +2861,7 @@ mod tests {
                     Ok(Zeroizing::new([9; DATA_KEY_LEN]))
                 },
             );
-            assert_eq!(derived, 1);
+            assert_eq!(derived, if fail { 1 } else { 2 });
             if fail {
                 assert!(opened.is_err());
             } else {
