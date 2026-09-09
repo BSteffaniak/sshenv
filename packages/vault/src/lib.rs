@@ -619,10 +619,33 @@ impl Vault {
     ) -> Result<(Self, DataKey)> {
         let data_key = recipient::unwrap_data_key(&ciphertext.recipients, identities)
             .context("no configured SSH identity could unwrap the vault data key")?;
-        let payload_key_factors = payload_key_factors_for_metadata(
+        Self::unlock_metadata_with_data_key_and_device_factor(
+            ciphertext,
+            data_key,
+            passphrase,
+            device_seal_factor_key,
+        )
+    }
+
+    /// Open only outer metadata using an already acquired key and selected device custody.
+    ///
+    /// Profile entries remain encrypted until explicitly unlocked. The caller must enforce
+    /// custody for supplied factor metadata; failures never fall back to native device access.
+    /// Passphrase and remote factors retain their existing behavior.
+    ///
+    /// # Errors
+    /// Returns factor retrieval, payload decryption, or metadata decoding errors.
+    pub fn unlock_metadata_with_data_key_and_device_factor(
+        ciphertext: CiphertextVault,
+        data_key: DataKey,
+        passphrase: Option<&str>,
+        mut derive: impl FnMut(&UnlockFactorV2) -> Result<Zeroizing<[u8; DATA_KEY_LEN]>>,
+    ) -> Result<(Self, DataKey)> {
+        let payload_key_factors = payload_key_factors_for_metadata_with(
             ciphertext.policy_metadata.as_ref(),
             passphrase,
             ciphertext.generation(),
+            &mut derive,
         )?;
         let payload_key = payload_key_for_data_key(data_key.as_slice(), &payload_key_factors);
         let aad = payload_aad_for_version(ciphertext.header.version)?;
@@ -2302,19 +2325,6 @@ fn add_profile_policy_factor_repair_action(
     }
 }
 
-fn payload_key_factors_for_metadata(
-    metadata: Option<&VaultPolicyMetadataV2>,
-    passphrase: Option<&str>,
-    vault_generation: Option<u64>,
-) -> Result<Vec<PayloadKeyFactor>> {
-    payload_key_factors_for_metadata_with(
-        metadata,
-        passphrase,
-        vault_generation,
-        &mut device_seal_factor_key,
-    )
-}
-
 fn payload_key_factors_for_metadata_with(
     metadata: Option<&VaultPolicyMetadataV2>,
     passphrase: Option<&str>,
@@ -2846,6 +2856,32 @@ mod tests {
                 },
             )
             .unwrap();
+        let (mut metadata_only, _) = Vault::unlock_metadata_with_data_key_and_device_factor(
+            Vault::decode_ciphertext(&bytes).unwrap(),
+            DataKey::new(*key),
+            None,
+            |metadata| {
+                assert_eq!(metadata, &factor);
+                Ok(Zeroizing::new([9; DATA_KEY_LEN]))
+            },
+        )
+        .unwrap();
+        assert!(metadata_only.profiles.get("test").is_none());
+        assert!(
+            metadata_only
+                .unlock_profile_with_device_factor("test", &key, None, |_| Err(anyhow!(
+                    "custody unavailable"
+                )))
+                .is_err()
+        );
+        assert!(metadata_only.profiles.get("test").is_none());
+        metadata_only
+            .unlock_profile_with_device_factor("test", &key, None, |metadata| {
+                assert_eq!(metadata, &factor);
+                Ok(Zeroizing::new([9; DATA_KEY_LEN]))
+            })
+            .unwrap();
+        assert_eq!(metadata_only.profiles.get("test").unwrap()["KEY"], "value");
         for fail in [true, false] {
             let mut derived = 0;
             let opened = Vault::unlock_with_data_key_and_device_factor(
@@ -3636,10 +3672,11 @@ mod tests {
         v.save(&path, &key).expect("save factor-bound profile");
 
         let parsed = Vault::load_ciphertext(&path).expect("load ciphertext");
-        let factor_keys = payload_key_factors_for_metadata(
+        let factor_keys = payload_key_factors_for_metadata_with(
             parsed.policy_metadata.as_ref(),
             Some("profile passphrase"),
             parsed.generation(),
+            &mut device_seal_factor_key,
         )
         .expect("derive factors");
         let payload_key = payload_key_for_data_key(key.as_slice(), &factor_keys);
