@@ -36,8 +36,8 @@ use sshenv_vault_models::{
     ProfileFactorRequirement, ProfileMap, ProfilePolicy, ProfilePolicyCheck, ProfilePolicyFinding,
     ProfilePolicyFindingCode, ProfilePolicyPreset, ProfilePolicyRepairAction,
     ProfilePolicyRepairApplyResult, ProfilePolicyRepairPlan, ProfilePolicyValidation,
-    RecipientEntry, RecipientMetadataV2, UnlockFactorKindV2, V2_PAYLOAD_AAD, V2_PROFILE_KEY_AAD,
-    V2_PROFILE_PAYLOAD_AAD, VERSION, VERSION_V2, VaultHeader, VaultModelsError,
+    RecipientEntry, RecipientMetadataV2, UnlockFactorKindV2, UnlockFactorV2, V2_PAYLOAD_AAD,
+    V2_PROFILE_KEY_AAD, V2_PROFILE_PAYLOAD_AAD, VERSION, VERSION_V2, VaultHeader, VaultModelsError,
     VaultPolicyMetadataV2,
 };
 use zeroize::Zeroizing;
@@ -638,6 +638,28 @@ impl Vault {
         data_key: &[u8; DATA_KEY_LEN],
         passphrase: Option<&str>,
     ) -> Result<()> {
+        self.unlock_profile_with_device_factor(
+            profile,
+            data_key,
+            passphrase,
+            device_seal_factor_key,
+        )
+    }
+
+    /// Unlock a profile using caller-selected device factor retrieval.
+    ///
+    /// Metadata and factor requirements remain vault-owned. The caller must enforce device
+    /// custody for the supplied metadata; errors never fall back to the native backend.
+    ///
+    /// # Errors
+    /// Returns missing profile, unavailable factors, or profile decryption errors.
+    pub fn unlock_profile_with_device_factor(
+        &mut self,
+        profile: &str,
+        data_key: &[u8; DATA_KEY_LEN],
+        passphrase: Option<&str>,
+        mut derive: impl FnMut(&UnlockFactorV2) -> Result<Zeroizing<[u8; DATA_KEY_LEN]>>,
+    ) -> Result<()> {
         if self.profiles.profiles.contains_key(profile) {
             return Ok(());
         }
@@ -647,8 +669,10 @@ impl Vault {
             .get(profile)
             .ok_or_else(|| VaultModelsError::MissingProfile(profile.to_string()))?
             .clone();
-        let profile_factor_keys =
-            profile_factor_keys_for_profile(&self.profiles, profile, passphrase)?;
+        let profile_factor_keys = self.profiles.profile_policies.get(profile).map_or_else(
+            || Ok(Vec::new()),
+            |policy| profile_factor_keys_for_policy_with(policy, passphrase, &mut derive),
+        )?;
         let payload_key = payload_key_for_data_key(data_key.as_slice(), &self.payload_key_factors);
         let vars = decrypt_profile_entry(
             profile,
@@ -914,6 +938,25 @@ impl Vault {
         profile: &str,
         options: device::DeviceSealOptions,
     ) -> Result<()> {
+        self.require_profile_device_seal_with(profile, || {
+            device::create_factor_with_options(options)
+        })
+    }
+
+    /// Require a profile device seal using caller-owned factor creation.
+    ///
+    /// The caller must preserve device custody and supply fresh cryptographic key material.
+    /// The effect is called only after profile/version checks. Failure leaves policy unchanged.
+    /// Deterministic factors are suitable only for isolated simulation without real secrets.
+    ///
+    /// # Errors
+    /// Returns incompatible vault/profile, factor creation, or invalid factor-kind errors.
+    #[cfg(feature = "device-seal")]
+    pub fn require_profile_device_seal_with(
+        &mut self,
+        profile: &str,
+        create: impl FnOnce() -> Result<(UnlockFactorV2, Zeroizing<[u8; DATA_KEY_LEN]>)>,
+    ) -> Result<()> {
         ensure_v2_for_device_seal(self.header.version)?;
         if !self.profile_keys_enabled() {
             return Err(anyhow!(
@@ -930,7 +973,10 @@ impl Vault {
                 factor_metadata: Vec::new(),
             },
         );
-        let (factor, factor_key) = device::create_factor_with_options(options)?;
+        let (factor, factor_key) = create()?;
+        if factor.kind != UnlockFactorKindV2::DeviceSeal {
+            return Err(anyhow!("selected device factor has an invalid kind"));
+        }
         policy
             .factor_metadata
             .retain(|factor| factor.kind != UnlockFactorKindV2::DeviceSeal);
@@ -2003,20 +2049,17 @@ fn profile_factor_keys_for_profiles(
         .collect()
 }
 
-fn profile_factor_keys_for_profile(
-    profiles: &ProfileMap,
-    profile: &str,
-    passphrase: Option<&str>,
-) -> Result<Vec<PayloadKeyFactor>> {
-    profiles.profile_policies.get(profile).map_or_else(
-        || Ok(Vec::new()),
-        |policy| profile_factor_keys_for_policy(policy, passphrase),
-    )
-}
-
 fn profile_factor_keys_for_policy(
     policy: &sshenv_vault_models::ProfilePolicy,
     passphrase: Option<&str>,
+) -> Result<Vec<PayloadKeyFactor>> {
+    profile_factor_keys_for_policy_with(policy, passphrase, &mut device_seal_factor_key)
+}
+
+fn profile_factor_keys_for_policy_with(
+    policy: &sshenv_vault_models::ProfilePolicy,
+    passphrase: Option<&str>,
+    derive: &mut impl FnMut(&UnlockFactorV2) -> Result<Zeroizing<[u8; DATA_KEY_LEN]>>,
 ) -> Result<Vec<PayloadKeyFactor>> {
     policy
         .factor_metadata
@@ -2028,7 +2071,7 @@ fn profile_factor_keys_for_policy(
             }),
             UnlockFactorKindV2::DeviceSeal => Ok(PayloadKeyFactor {
                 kind: UnlockFactorKindV2::DeviceSeal,
-                key: device_seal_factor_key(factor)?,
+                key: derive(factor)?,
             }),
             _ => Err(anyhow!(
                 "unsupported profile factor kind: {:?}",
