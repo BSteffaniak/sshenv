@@ -6,12 +6,16 @@
 //! list of `age::Identity` objects (which in practice are
 //! `age::ssh::Identity` values constructed from on-disk SSH private keys).
 
-use std::io::{Read, Write};
+use std::io::Read;
+#[cfg(feature = "age-plugin-recipient")]
+use std::io::Write;
 use std::iter;
 use std::str::FromStr;
 
+use age::Decryptor;
+#[cfg(feature = "age-plugin-recipient")]
+use age::Encryptor;
 use age::ssh::Recipient as SshRecipient;
-use age::{Decryptor, Encryptor};
 use anyhow::{Context, Result, bail};
 use sha2::{Digest, Sha256};
 use sshenv_vault_models::{DATA_KEY_LEN, RecipientEntry, UnlockFactorKindV2};
@@ -154,22 +158,11 @@ pub fn build_entry_for_public_key_line(
 
     let fingerprint = fingerprint_for_public_key(key_body);
 
-    let ssh_recipient = SshRecipient::from_str(public_key_line.trim())
+    SshRecipient::from_str(public_key_line.trim())
         .map_err(|err| anyhow::anyhow!("invalid SSH public key: {err:?}"))?;
 
-    let encryptor = Encryptor::with_recipients(iter::once(&ssh_recipient as &dyn age::Recipient))
-        .context("failed to initialize age encryptor")?;
-
-    let mut wrapped = Vec::new();
-    {
-        let mut writer = encryptor
-            .wrap_output(&mut wrapped)
-            .context("failed to start age wrapping")?;
-        writer
-            .write_all(data_key)
-            .context("failed to write data key to wrapper")?;
-        writer.finish().context("failed to finish age wrapping")?;
-    }
+    let wrapped = switchy_age::wrap(public_key_line.trim(), data_key)
+        .context("failed to wrap data key for SSH recipient")?;
 
     Ok(RecipientEntry {
         fingerprint,

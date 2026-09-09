@@ -2057,6 +2057,7 @@ dependencies = [
  "sha2 0.11.0",
  "ssh-key",
  "sshenv_vault_models",
+ "switchy_age",
  "tempfile",
  "thiserror 2.0.20",
  "windows-sys 0.61.2",
@@ -2082,6 +2083,15 @@ name = "subtle"
 version = "2.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
+
+[[package]]
+name = "switchy_age"
+version = "0.4.0"
+source = "git+https://github.com/MoosicBox/MoosicBox.git?branch=master#9a59d6e2af9f700e04d80d2b8b518e3e44f4216b"
+dependencies = [
+ "age",
+ "thiserror 2.0.20",
+]
 
 [[package]]
 name = "syn"

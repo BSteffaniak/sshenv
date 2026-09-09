@@ -17,6 +17,7 @@ repository = "https://github.com/BSteffaniak/sshenv"
 version    = "0.0.1-alpha.3"
 
 [workspace.dependencies]
+switchy_age = { git = "https://github.com/MoosicBox/MoosicBox.git", branch = "master", default-features = false }
 # Internal
 sshenv_cli          = { version = "0.0.1-alpha.3", path = "packages/cli" }
 sshenv_cli_models   = { version = "0.0.1-alpha.3", path = "packages/cli/models" }
