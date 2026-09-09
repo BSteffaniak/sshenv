@@ -327,12 +327,14 @@ pub fn unwrap_data_key(
 mod tests {
     use super::*;
 
+    #[cfg(not(feature = "simulator"))]
     #[test]
     fn rejects_empty_key_line() {
         let err = build_entry_for_public_key_line("", &[0_u8; DATA_KEY_LEN]).unwrap_err();
         assert!(err.to_string().contains("empty"));
     }
 
+    #[cfg(not(feature = "simulator"))]
     #[test]
     fn rejects_unsupported_key_type() {
         let err = build_entry_for_public_key_line("ssh-dss AAAA fake", &[0_u8; DATA_KEY_LEN])
@@ -340,6 +342,7 @@ mod tests {
         assert!(err.to_string().contains("unsupported"));
     }
 
+    #[cfg(not(feature = "simulator"))]
     #[test]
     fn rejects_wrong_key_length() {
         // Uses a real ed25519 pubkey so we reach the length check.

@@ -1,6 +1,22 @@
-#![cfg(feature = "simulator")]
+use crate::{DataKey, Vault, recipient::build_entry_for_public_key_line};
 
-use sshenv_vault::{DataKey, Vault};
+#[test]
+fn rejects_invalid_simulation_identities() {
+    for identity in ["", "sim-age:", "age:alice", "ssh-ed25519 real"] {
+        assert!(build_entry_for_public_key_line(identity, &[1; 32]).is_err());
+    }
+}
+
+#[test]
+fn rejects_invalid_simulation_key_lengths() {
+    for len in [0, 10, 31, 33] {
+        let err = build_entry_for_public_key_line("sim-age:alice", &vec![1; len]).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("invalid simulation data key length")
+        );
+    }
+}
 
 #[test]
 fn independent_simulated_vault_lifecycles_repeat_and_reject_wrong_identity() {

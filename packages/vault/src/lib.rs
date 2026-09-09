@@ -2663,7 +2663,10 @@ pub fn default_vault_path() -> PathBuf {
     )
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "simulator"))]
+mod simulator_tests;
+
+#[cfg(all(test, not(feature = "simulator")))]
 mod tests {
     use super::*;
     use sshenv_vault_models::MAGIC;
