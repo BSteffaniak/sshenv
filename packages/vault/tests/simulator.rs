@@ -7,6 +7,8 @@ fn independent_simulated_vault_lifecycles_repeat_and_reject_wrong_identity() {
     fn run() -> Vec<u8> {
         let (mut vault, key) =
             Vault::create_with_data_key("sim-age:alice", DataKey::new([1; 32])).unwrap();
+        vault.migrate_to_v2(&["sim-age:alice".into()]).unwrap();
+        vault.enable_profile_keys().unwrap();
         vault.profiles.set("provider", "TOKEN", "synthetic".into());
         let mut stored = Vec::new();
         vault
@@ -28,7 +30,7 @@ fn independent_simulated_vault_lifecycles_repeat_and_reject_wrong_identity() {
             )
             .is_err()
         );
-        let (opened, _) = Vault::unlock_with_identity_strings(
+        let (mut opened, reopened_key) = Vault::unlock_with_identity_strings(
             Vault::decode_ciphertext(&stored).unwrap(),
             &["sim-age:alice"],
             None,
@@ -42,6 +44,34 @@ fn independent_simulated_vault_lifecycles_repeat_and_reject_wrong_identity() {
                 .get("TOKEN")
                 .unwrap(),
             "synthetic"
+        );
+        assert!(opened.profile_keys_enabled());
+        opened.profiles.set("provider", "TOKEN", "updated".into());
+        opened
+            .save_with_effects(
+                &reopened_key,
+                || Ok(DataKey::new([3; 32])),
+                |bytes, expected| {
+                    assert!(expected.is_some());
+                    stored = bytes.to_vec();
+                    Ok(())
+                },
+            )
+            .unwrap();
+        let (updated, _) = Vault::unlock_with_identity_strings(
+            Vault::decode_ciphertext(&stored).unwrap(),
+            &["sim-age:alice"],
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            updated
+                .profiles
+                .get("provider")
+                .unwrap()
+                .get("TOKEN")
+                .unwrap(),
+            "updated"
         );
         stored
     }

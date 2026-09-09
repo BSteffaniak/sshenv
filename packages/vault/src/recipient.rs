@@ -96,6 +96,10 @@ pub fn recipient_descriptor_kind(descriptor: &str) -> UnlockFactorKindV2 {
 /// Returns an error if the descriptor is neither a supported SSH public key nor,
 /// with `age-plugin-recipient`, a valid age-plugin recipient.
 pub fn fingerprint_from_recipient_descriptor(descriptor: &str) -> Result<String> {
+    #[cfg(feature = "simulator")]
+    if descriptor.starts_with("sim-age:") {
+        return simulation_fingerprint(descriptor);
+    }
     let trimmed = descriptor.trim();
     if trimmed.starts_with("age1") {
         return fingerprint_from_age_plugin_recipient_descriptor(trimmed);
@@ -228,6 +232,20 @@ fn build_entry_for_age_plugin_recipient(
     bail!("this sshenv build was compiled without age-plugin-recipient support")
 }
 
+#[cfg(feature = "simulator")]
+fn simulation_fingerprint(descriptor: &str) -> Result<String> {
+    if descriptor
+        .strip_prefix("sim-age:")
+        .is_none_or(str::is_empty)
+    {
+        bail!("invalid simulation identity");
+    }
+    Ok(format!(
+        "SIM-AGE:{}",
+        hex::encode(Sha256::digest(descriptor.as_bytes()))
+    ))
+}
+
 /// Wrap a synthetic vault key for a simulation identity without native entropy.
 ///
 /// # Errors
@@ -242,10 +260,7 @@ pub fn build_entry_for_public_key_line(
     }
     let wrapped_key = switchy_age::wrap(public_key_line, data_key)?;
     Ok(RecipientEntry {
-        fingerprint: format!(
-            "SIM-AGE:{}",
-            hex::encode(Sha256::digest(public_key_line.as_bytes()))
-        ),
+        fingerprint: simulation_fingerprint(public_key_line)?,
         public_key_line: public_key_line.to_owned(),
         wrapped_key,
     })
