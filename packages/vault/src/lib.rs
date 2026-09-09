@@ -415,7 +415,20 @@ impl Vault {
     /// Returns an error if the recipient public key cannot be parsed or if
     /// the data key cannot be wrapped.
     pub fn create(recipient_public_key_line: &str) -> Result<(Self, DataKey)> {
-        let data_key = generate_data_key();
+        Self::create_with_data_key(recipient_public_key_line, generate_data_key())
+    }
+
+    /// Create a vault with a caller-owned key and compile-time selected recipient wrapping.
+    ///
+    /// Production keys must be fresh and cryptographically random. Simulator builds accept
+    /// only synthetic `sim-age:` identities; never provide real secrets to simulation.
+    ///
+    /// # Errors
+    /// Returns recipient validation or wrapping errors.
+    pub fn create_with_data_key(
+        recipient_public_key_line: &str,
+        data_key: DataKey,
+    ) -> Result<(Self, DataKey)> {
         let recipient = recipient::build_entry_for_public_key_line(
             recipient_public_key_line,
             data_key.as_slice(),
@@ -492,6 +505,22 @@ impl Vault {
     ) -> Result<(Self, DataKey)> {
         let data_key = recipient::unwrap_data_key(&ciphertext.recipients, identities)
             .context("no configured SSH identity could unwrap the vault data key")?;
+        Self::unlock_with_data_key_and_passphrase(ciphertext, data_key, passphrase)
+    }
+
+    /// Unlock using caller-supplied identity strings and the selected wrapping backend.
+    ///
+    /// Native builds accept SSH private keys; simulation accepts synthetic identities only.
+    /// Existing payload and profile factor requirements remain enforced.
+    ///
+    /// # Errors
+    /// Returns unwrap, factor-policy, or payload decryption errors.
+    pub fn unlock_with_identity_strings(
+        ciphertext: CiphertextVault,
+        identities: &[&str],
+        passphrase: Option<&str>,
+    ) -> Result<(Self, DataKey)> {
+        let data_key = recipient::unwrap_data_key_with_strings(&ciphertext.recipients, identities)?;
         Self::unlock_with_data_key_and_passphrase(ciphertext, data_key, passphrase)
     }
 

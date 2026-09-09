@@ -10,11 +10,13 @@ use std::io::Read;
 #[cfg(feature = "age-plugin-recipient")]
 use std::io::Write;
 use std::iter;
+#[cfg(not(feature = "simulator"))]
 use std::str::FromStr;
 
 use age::Decryptor;
 #[cfg(feature = "age-plugin-recipient")]
 use age::Encryptor;
+#[cfg(not(feature = "simulator"))]
 use age::ssh::Recipient as SshRecipient;
 use anyhow::{Context, Result, bail};
 use sha2::{Digest, Sha256};
@@ -24,6 +26,7 @@ use crate::LockedSecret;
 
 /// Supported SSH key types for recipients. Must match a subset of what
 /// `age`'s `ssh` feature supports.
+#[cfg(not(feature = "simulator"))]
 const SUPPORTED_KEY_TYPES: &[&str] = &["ssh-ed25519", "ssh-rsa"];
 
 /// Compute a stable fingerprint for an age-plugin recipient descriptor.
@@ -138,6 +141,7 @@ pub fn build_entry_for_recipient_descriptor(
 ///
 /// Returns an error if the key type is unsupported, the public key cannot
 /// be parsed by `age`, or wrapping fails.
+#[cfg(not(feature = "simulator"))]
 pub fn build_entry_for_public_key_line(
     public_key_line: &str,
     data_key: &[u8],
@@ -222,6 +226,50 @@ fn build_entry_for_age_plugin_recipient(
     _data_key: &[u8],
 ) -> Result<RecipientEntry> {
     bail!("this sshenv build was compiled without age-plugin-recipient support")
+}
+
+/// Wrap a synthetic vault key for a simulation identity without native entropy.
+///
+/// # Errors
+/// Returns an error for non-synthetic identities or invalid key lengths.
+#[cfg(feature = "simulator")]
+pub fn build_entry_for_public_key_line(
+    public_key_line: &str,
+    data_key: &[u8],
+) -> Result<RecipientEntry> {
+    if data_key.len() != DATA_KEY_LEN {
+        bail!("invalid simulation data key length");
+    }
+    let wrapped_key = switchy_age::wrap(public_key_line, data_key)?;
+    Ok(RecipientEntry {
+        fingerprint: format!(
+            "SIM-AGE:{}",
+            hex::encode(Sha256::digest(public_key_line.as_bytes()))
+        ),
+        public_key_line: public_key_line.to_owned(),
+        wrapped_key,
+    })
+}
+
+/// Unwrap through the selected backend using explicitly supplied identity strings.
+///
+/// # Errors
+/// Returns an error when no identity unwraps an exact-length data key.
+pub fn unwrap_data_key_with_strings(
+    recipients: &[RecipientEntry],
+    identities: &[&str],
+) -> Result<LockedSecret<DATA_KEY_LEN>> {
+    for recipient in recipients {
+        for identity in identities {
+            if let Ok(bytes) = switchy_age::unwrap(identity, &recipient.wrapped_key) {
+                let bytes = zeroize::Zeroizing::new(bytes);
+                if let Ok(key) = <[u8; DATA_KEY_LEN]>::try_from(bytes.as_slice()) {
+                    return Ok(LockedSecret::new(key));
+                }
+            }
+        }
+    }
+    bail!("no supplied identity could unwrap a recipient")
 }
 
 /// Try to unwrap any of the recipient entries using any of the provided
