@@ -80,12 +80,11 @@ windows-sys = { workspace = true, features = [
 zeroize = { workspace = true }
 
 [dev-dependencies]
-rand_core = { workspace = true }
 ssh-key = { workspace = true, features = [
     "std",
     "alloc",
     "ed25519",
-    "rand_core",
+    "getrandom",
 ] }
 
 [lints]

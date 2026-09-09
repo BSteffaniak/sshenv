@@ -53,7 +53,6 @@ use core_foundation_sys::{
     string::CFStringRef,
 };
 #[cfg(feature = "device-seal")]
-use rand_core::RngCore;
 #[cfg(all(feature = "macos-keychain", target_os = "macos"))]
 use security_framework_sys::access_control::kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly;
 #[cfg(feature = "secure-enclave")]
@@ -750,7 +749,7 @@ fn store_device_secret(backend: DeviceSealBackendSelection, secret: &[u8]) -> Re
 
 fn create_random_secret() -> Zeroizing<[u8; KEY_LEN]> {
     let mut secret = [0_u8; KEY_LEN];
-    rand_core::OsRng.fill_bytes(&mut secret);
+    getrandom::fill(&mut secret).expect("OS random number generator failed");
     Zeroizing::new(secret)
 }
 

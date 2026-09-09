@@ -2671,9 +2671,11 @@ mod tests {
     #[test]
     fn insert_if_absent_preserves_existing_value() {
         let temp = tempfile::tempdir().unwrap();
-        let private =
-            ssh_key::PrivateKey::random(&mut rand_core::OsRng, ssh_key::Algorithm::Ed25519)
-                .unwrap();
+        let private = ssh_key::PrivateKey::random(
+            &mut ssh_key::rand_core::OsRng,
+            ssh_key::Algorithm::Ed25519,
+        )
+        .unwrap();
         let private_path = temp.path().join("identity");
         std::fs::write(
             &private_path,
@@ -2894,7 +2896,7 @@ mod tests {
     /// Generate a fresh `ssh-ed25519` keypair on demand, returning
     /// `(openssh_pubkey_line, age_identity)`.
     fn generate_keypair() -> (String, Box<dyn age::Identity>) {
-        use rand_core::OsRng;
+        use ssh_key::rand_core::OsRng;
         use ssh_key::{Algorithm, PrivateKey};
         let priv_key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).expect("gen key");
         let pub_key_line = priv_key

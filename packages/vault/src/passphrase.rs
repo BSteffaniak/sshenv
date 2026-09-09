@@ -3,7 +3,6 @@
 use std::collections::BTreeMap;
 
 use anyhow::{Context, Result, bail};
-use rand_core::RngCore;
 use sshenv_vault_models::{UnlockFactorKindV2, UnlockFactorV2};
 use zeroize::Zeroizing;
 
@@ -26,7 +25,7 @@ const DEFAULT_P_COST: u32 = 1;
 /// Returns an error if Argon2 rejects the configured parameters.
 pub fn create_factor(passphrase: &str) -> Result<(UnlockFactorV2, Zeroizing<[u8; KEY_LEN]>)> {
     let mut salt = [0_u8; SALT_LEN];
-    rand_core::OsRng.fill_bytes(&mut salt);
+    getrandom::fill(&mut salt).expect("OS random number generator failed");
     let factor_key = derive_factor_key(
         passphrase,
         &salt,

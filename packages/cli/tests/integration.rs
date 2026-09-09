@@ -8,7 +8,7 @@ use std::process::Command;
 #[cfg(any(feature = "shamir-sharing", all(feature = "remote-factor", unix)))]
 use std::process::Stdio;
 
-use rand_core::OsRng;
+use ssh_key::rand_core::OsRng;
 use ssh_key::{Algorithm, LineEnding, PrivateKey};
 use sshenv_vault::recipient::fingerprint_from_line;
 

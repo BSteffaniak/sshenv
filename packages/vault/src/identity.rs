@@ -575,7 +575,7 @@ mod tests {
     use super::*;
     use std::fs;
 
-    use rand_core::OsRng;
+    use ssh_key::rand_core::OsRng;
     use ssh_key::{Algorithm, LineEnding, PrivateKey};
 
     fn write_keypair(dir: &Path, name: &str) -> (PathBuf, String, String) {

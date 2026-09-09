@@ -6,7 +6,6 @@ use aes_siv::aead::{Aead, KeyInit, Payload};
 use aes_siv::{Aes256SivAead, Key, Nonce};
 use anyhow::Result;
 use hkdf::Hkdf;
-use rand_core::RngCore;
 use sha2::Sha256;
 use sshenv_vault_models::{DATA_KEY_LEN, HKDF_INFO, HKDF_SALT, PAYLOAD_AAD, SIV_KEY_LEN};
 use zeroize::Zeroizing;
@@ -15,7 +14,7 @@ use zeroize::Zeroizing;
 #[must_use]
 pub fn generate_data_key() -> LockedSecret<DATA_KEY_LEN> {
     let mut key = [0_u8; DATA_KEY_LEN];
-    rand_core::OsRng.fill_bytes(&mut key);
+    getrandom::fill(&mut key).expect("OS random number generator failed");
     LockedSecret::new(key)
 }
 

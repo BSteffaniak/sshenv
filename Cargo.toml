@@ -29,7 +29,7 @@ sshenv_vault_models = { version = "0.0.1-alpha.3", path = "packages/vault/models
 # Crypto
 aes-siv = { version = "0.8.0", default-features = false }
 age     = { version = "0.12.1", default-features = false, features = ["ssh"] }
-argon2  = { version = "0.5.3", default-features = false, features = ["alloc"] }
+argon2  = { version = "0.6.0", default-features = false, features = ["alloc"] }
 hkdf    = { version = "0.13.0", default-features = false }
 sha2    = { version = "0.11.0", default-features = false }
 
@@ -47,13 +47,10 @@ clap = { version = "4.6.6", default-features = false, features = [
 ] }
 core-foundation = { version = "0.10.1", default-features = false }
 core-foundation-sys = { version = "0.8.7", default-features = false }
-dirs = { version = "6.0.0", default-features = false }
+dirs = { version = "7.0.0", default-features = false }
+getrandom = { version = "0.4.3", default-features = false }
 hex = { version = "0.4.3", default-features = false, features = ["std"] }
 libc = { version = "0.2.189", default-features = false }
-rand_core = { version = "0.6.4", default-features = false, features = [
-    "std",
-    "getrandom",
-] }
 rpassword = { version = "7.5.4", default-features = false }
 security-framework = { version = "3.7.0", default-features = false }
 security-framework-sys = { version = "2.17.0", default-features = false }

@@ -209,7 +209,7 @@ pub fn split_secret_shamir(
 
     for &secret_byte in secret {
         let mut coefficients = vec![0_u8; usize::from(threshold.saturating_sub(1))];
-        rand_core::RngCore::fill_bytes(&mut rand_core::OsRng, &mut coefficients);
+        getrandom::fill(&mut coefficients).expect("OS random number generator failed");
         for share in &mut shares {
             share
                 .value
