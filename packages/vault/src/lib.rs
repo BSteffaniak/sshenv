@@ -2777,6 +2777,73 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "device-seal")]
+    #[test]
+    fn selected_device_factor_survives_encrypted_profile_round_trip() {
+        let (public, _) = generate_keypair();
+        let (mut vault, key) = Vault::create(&public).unwrap();
+        vault.migrate_to_v2(&[public]).unwrap();
+        vault.enable_profile_keys().unwrap();
+        vault.profiles.set("test", "KEY", "value".into());
+        let factor = UnlockFactorV2 {
+            id: "controlled-device".into(),
+            kind: UnlockFactorKindV2::DeviceSeal,
+            recipient_fingerprint: None,
+            params: BTreeMap::new(),
+        };
+        let mut created = 0;
+        vault
+            .require_profile_device_seal_with("test", || {
+                created += 1;
+                Ok((factor.clone(), Zeroizing::new([9; DATA_KEY_LEN])))
+            })
+            .unwrap();
+        assert_eq!(created, 1);
+        let mut bytes = Vec::new();
+        vault
+            .save_with_effects(
+                &key,
+                || Ok(DataKey::new([7; DATA_KEY_LEN])),
+                |value, _| {
+                    bytes = value.to_vec();
+                    Ok(())
+                },
+            )
+            .unwrap();
+        for fail in [true, false] {
+            let mut derived = 0;
+            let opened = Vault::unlock_with_data_key_and_device_factor(
+                Vault::decode_ciphertext(&bytes).unwrap(),
+                DataKey::new(*key),
+                None,
+                |metadata| {
+                    derived += 1;
+                    assert_eq!(metadata, &factor);
+                    if fail {
+                        return Err(anyhow!("selected custody unavailable"));
+                    }
+                    Ok(Zeroizing::new([9; DATA_KEY_LEN]))
+                },
+            );
+            assert_eq!(derived, 1);
+            if fail {
+                assert!(opened.is_err());
+            } else {
+                let (opened, _) = opened.unwrap();
+                assert_eq!(opened.profiles.get("test").unwrap()["KEY"], "value");
+            }
+        }
+        assert!(
+            Vault::unlock_with_data_key_and_device_factor(
+                Vault::decode_ciphertext(&bytes).unwrap(),
+                DataKey::new(*key),
+                None,
+                |_| Ok(Zeroizing::new([8; DATA_KEY_LEN])),
+            )
+            .is_err()
+        );
+    }
+
     #[test]
     fn controlled_save_repeats_ciphertext_and_preserves_digest_on_failure() {
         let (public, identity) = generate_keypair();
