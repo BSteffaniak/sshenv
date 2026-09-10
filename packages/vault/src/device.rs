@@ -346,6 +346,164 @@ pub fn create_factor() -> Result<(UnlockFactorV2, Zeroizing<[u8; KEY_LEN]>)> {
     create_factor_with_options(DeviceSealOptions::default())
 }
 
+/// Retrieve an operation-scoped macOS factor without creating or replacing it.
+///
+/// The caller must authorize the operation and retain its unique identity. These records use
+/// a separate device-only Keychain namespace and never use the legacy fallback file.
+///
+/// # Errors
+/// Returns an error for invalid identities, unavailable Keychain access, or malformed keys.
+#[cfg(all(feature = "macos-keychain", target_os = "macos"))]
+pub fn retrieve_operation_factor(operation: &str) -> Result<Zeroizing<[u8; KEY_LEN]>> {
+    let options = operation_password_options(operation)?;
+    let bytes = Zeroizing::new(
+        security_framework::passwords::generic_password(options)
+            .map_err(|_| anyhow::anyhow!("operation factor unavailable"))?,
+    );
+    let key: [u8; KEY_LEN] = bytes
+        .as_slice()
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("invalid operation factor"))?;
+    Ok(Zeroizing::new(key))
+}
+
+/// Create or retrieve an immutable operation-scoped device-only Keychain factor.
+///
+/// Reusing an identity retrieves the same key, including after interrupted creation. Callers
+/// must allocate unique identities and must never reuse one for a different authorized operation.
+/// No update/delete or legacy fallback path is used. This does not reconcile absent operations.
+///
+/// # Errors
+/// Rejects invalid identities and all read failures except verified item absence. Creation or
+/// subsequent retrieval failures are ambiguous and must be reconciled by retrieval, not replacement.
+#[cfg(all(feature = "macos-keychain", target_os = "macos"))]
+pub fn provision_operation_factor(operation: &str) -> Result<Zeroizing<[u8; KEY_LEN]>> {
+    use security_framework_sys::base::errSecItemNotFound;
+    match security_framework::passwords::generic_password(operation_password_options(operation)?) {
+        Ok(bytes) => {
+            let bytes = Zeroizing::new(bytes);
+            return bytes
+                .as_slice()
+                .try_into()
+                .map(Zeroizing::new)
+                .map_err(|_| anyhow::anyhow!("invalid operation factor"));
+        }
+        Err(error) if error.code() == errSecItemNotFound => {}
+        Err(_) => bail!("operation factor unavailable"),
+    }
+    let key = create_random_secret();
+    add_operation_record(operation, key.as_slice())?;
+    retrieve_operation_factor(operation)
+}
+
+/// Outcome of explicit operation reconciliation. Existing keys are never removed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OperationFactorReconciliation {
+    /// A retrievable immutable key won the operation slot.
+    Present,
+    /// An immutable tombstone won; late provisioning cannot create a key for this identity.
+    Cancelled,
+}
+
+/// Reconcile an operation by preserving its key or atomically fencing verified absence.
+///
+/// Must be explicitly authorized. A concurrent provision and reconciliation use the same
+/// add-only slot: the winner is read back, never overwritten. Repeated reconciliation is safe.
+///
+/// # Errors
+/// Unavailable, malformed, or ambiguous Keychain state remains unresolved; no fallback is used.
+#[cfg(all(feature = "macos-keychain", target_os = "macos"))]
+pub fn reconcile_operation_factor(operation: &str) -> Result<OperationFactorReconciliation> {
+    use security_framework_sys::base::errSecItemNotFound;
+    match security_framework::passwords::generic_password(operation_password_options(operation)?) {
+        Ok(bytes) => return classify_operation_record(&Zeroizing::new(bytes)),
+        Err(error) if error.code() == errSecItemNotFound => {}
+        Err(_) => bail!("operation factor unavailable"),
+    }
+    add_operation_record(operation, b"sshenv-operation-cancelled-v1")?;
+    let bytes = Zeroizing::new(
+        security_framework::passwords::generic_password(operation_password_options(operation)?)
+            .map_err(|_| anyhow::anyhow!("operation reconciliation unavailable"))?,
+    );
+    classify_operation_record(&bytes)
+}
+
+#[cfg(all(feature = "macos-keychain", target_os = "macos"))]
+fn classify_operation_record(bytes: &[u8]) -> Result<OperationFactorReconciliation> {
+    if bytes == b"sshenv-operation-cancelled-v1" {
+        return Ok(OperationFactorReconciliation::Cancelled);
+    }
+    if bytes.len() == KEY_LEN {
+        return Ok(OperationFactorReconciliation::Present);
+    }
+    bail!("invalid operation factor")
+}
+
+#[cfg(all(feature = "macos-keychain", target_os = "macos"))]
+fn add_operation_record(operation: &str, bytes: &[u8]) -> Result<()> {
+    use core_foundation::data::CFData;
+    use security_framework_sys::{
+        base::{errSecDuplicateItem, errSecSuccess},
+        item::kSecValueData,
+        keychain_item::SecItemAdd,
+    };
+    let mut options = operation_password_options(operation)?;
+    // SAFETY: the Security framework key and owned CFData are valid query entries.
+    #[allow(deprecated)]
+    let query = {
+        options.query.push(unsafe {
+            (
+                CFString::wrap_under_get_rule(kSecValueData),
+                CFData::from_buffer(bytes).as_CFType(),
+            )
+        });
+        core_foundation::dictionary::CFDictionary::from_CFType_pairs(&options.query)
+    };
+    // SAFETY: query remains live; a null result pointer requests no returned object.
+    let status = unsafe { SecItemAdd(query.as_concrete_TypeRef(), ptr::null_mut()) };
+    if status != errSecSuccess && status != errSecDuplicateItem {
+        bail!("operation factor creation unavailable");
+    }
+    Ok(())
+}
+
+#[cfg(all(feature = "macos-keychain", target_os = "macos"))]
+fn operation_password_options(
+    operation: &str,
+) -> Result<security_framework::passwords::PasswordOptions> {
+    if operation.len() != 64 || !operation.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        bail!("operation identity must be 64 hexadecimal characters");
+    }
+    let mut options = device_seal_password_options("sshenv.operation-factor.v1", operation);
+    set_macos_device_only_accessibility(&mut options);
+    Ok(options)
+}
+
+#[test]
+#[cfg(all(feature = "macos-keychain", target_os = "macos"))]
+fn operation_factor_rejects_invalid_identity_before_keychain_access() {
+    for invalid in ["", "../legacy", "operation", &"z".repeat(64)] {
+        assert!(provision_operation_factor(invalid).is_err());
+        assert!(retrieve_operation_factor(invalid).is_err());
+        assert!(reconcile_operation_factor(invalid).is_err());
+    }
+}
+
+#[test]
+#[cfg(all(feature = "macos-keychain", target_os = "macos"))]
+fn operation_record_distinguishes_keys_tombstones_and_damage() {
+    assert_eq!(
+        classify_operation_record(&[42; KEY_LEN]).unwrap(),
+        OperationFactorReconciliation::Present
+    );
+    assert_eq!(
+        classify_operation_record(b"sshenv-operation-cancelled-v1").unwrap(),
+        OperationFactorReconciliation::Cancelled
+    );
+    assert!(classify_operation_record(b"sshenv-operation-cancelled-v2").is_err());
+    assert!(classify_operation_record(&[]).is_err());
+}
+
 /// Create metadata for a selected device-seal factor and return the factor key.
 ///
 /// # Errors
