@@ -288,6 +288,13 @@ fn backend_satisfies_options(
 }
 
 fn factor_storage_matches(params: &BTreeMap<String, String>) -> bool {
+    if params.contains_key("operation")
+        || params
+            .get(KEYCHAIN_SERVICE)
+            .is_some_and(|service| service == "sshenv.operation-factor.v1")
+    {
+        return operation_metadata_matches(params);
+    }
     params
         .get(BACKEND)
         .is_none_or(|backend| match backend.as_str() {
@@ -298,6 +305,18 @@ fn factor_storage_matches(params: &BTreeMap<String, String>) -> bool {
                 any_application_keychain_service_matches(params)
             }
             _ => true,
+        })
+}
+
+fn operation_metadata_matches(params: &BTreeMap<String, String>) -> bool {
+    params
+        .get(BACKEND)
+        .is_some_and(|value| value == BACKEND_MACOS_KEYCHAIN_DEVICE_ONLY)
+        && params
+            .get(KEYCHAIN_SERVICE)
+            .is_some_and(|value| value == "sshenv.operation-factor.v1")
+        && params.get("operation").is_some_and(|value| {
+            value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
         })
 }
 
@@ -394,6 +413,45 @@ pub fn provision_operation_factor(operation: &str) -> Result<Zeroizing<[u8; KEY_
     let key = create_random_secret();
     add_operation_record(operation, key.as_slice())?;
     retrieve_operation_factor(operation)
+}
+
+/// Provision an operation key and its canonical device-seal metadata under explicit policy.
+///
+/// # Errors
+/// Rejects incompatible backend policy before Keychain access, or returns provisioning failures.
+#[cfg(all(feature = "macos-keychain", target_os = "macos"))]
+pub fn create_operation_factor(
+    operation: &str,
+    options: DeviceSealOptions,
+) -> Result<(UnlockFactorV2, Zeroizing<[u8; KEY_LEN]>)> {
+    let factor = operation_factor_metadata(operation, options)?;
+    let key = provision_operation_factor(operation)?;
+    Ok((factor, key))
+}
+
+#[cfg(all(feature = "macos-keychain", target_os = "macos"))]
+fn operation_factor_metadata(
+    operation: &str,
+    options: DeviceSealOptions,
+) -> Result<UnlockFactorV2> {
+    let mut params = BTreeMap::from([
+        (BACKEND.into(), BACKEND_MACOS_KEYCHAIN_DEVICE_ONLY.into()),
+        (KEYCHAIN_SERVICE.into(), "sshenv.operation-factor.v1".into()),
+        ("operation".into(), operation.into()),
+    ]);
+    if options.strict {
+        params.insert(STRICT.into(), "true".into());
+    }
+    let factor = UnlockFactorV2 {
+        id: format!("device-seal-operation-{operation}"),
+        kind: UnlockFactorKindV2::DeviceSeal,
+        recipient_fingerprint: None,
+        params,
+    };
+    if !factor_matches_options(&factor, options) {
+        bail!("operation factor policy unsupported");
+    }
+    Ok(factor)
 }
 
 /// Outcome of explicit operation reconciliation. Existing keys are never removed.
@@ -504,6 +562,26 @@ fn operation_record_distinguishes_keys_tombstones_and_damage() {
     assert!(classify_operation_record(&[]).is_err());
 }
 
+#[test]
+#[cfg(all(feature = "macos-keychain", target_os = "macos"))]
+fn operation_metadata_rejects_legacy_storage_and_invalid_identity() {
+    let options = DeviceSealOptions {
+        selection: DeviceSealSelection::Backend(
+            DeviceSealBackendSelection::MacosKeychainDeviceOnly,
+        ),
+        strict: true,
+    };
+    let mut factor = operation_factor_metadata(&"a".repeat(64), options).unwrap();
+    assert!(factor_matches_options(&factor, options));
+    factor.params.insert(
+        KEYCHAIN_SERVICE.into(),
+        MACOS_DEVICE_ONLY_KEYCHAIN_SERVICE.into(),
+    );
+    assert!(!factor_matches_options(&factor, options));
+    assert!(derive_factor_from_metadata(&factor).is_err());
+    assert!(create_operation_factor("invalid", options).is_err());
+}
+
 /// Create metadata for a selected device-seal factor and return the factor key.
 ///
 /// # Errors
@@ -590,6 +668,19 @@ fn load_device_secret_from_metadata(
     backend: DeviceSealBackendSelection,
     params: &BTreeMap<String, String>,
 ) -> Result<Zeroizing<[u8; KEY_LEN]>> {
+    if params.contains_key("operation")
+        || params
+            .get(KEYCHAIN_SERVICE)
+            .is_some_and(|service| service == "sshenv.operation-factor.v1")
+    {
+        if !operation_metadata_matches(params) {
+            bail!("invalid operation factor metadata");
+        }
+        #[cfg(all(feature = "macos-keychain", target_os = "macos"))]
+        return retrieve_operation_factor(&params["operation"]);
+        #[cfg(not(all(feature = "macos-keychain", target_os = "macos")))]
+        bail!("operation factor backend unavailable");
+    }
     #[cfg(all(feature = "macos-keychain", target_os = "macos"))]
     {
         if matches!(
