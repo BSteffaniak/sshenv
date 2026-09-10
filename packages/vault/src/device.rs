@@ -520,7 +520,7 @@ fn add_operation_record(operation: &str, bytes: &[u8]) -> Result<()> {
     // SAFETY: query remains live; a null result pointer requests no returned object.
     let status = unsafe { SecItemAdd(query.as_concrete_TypeRef(), ptr::null_mut()) };
     if status != errSecSuccess && status != errSecDuplicateItem {
-        bail!("operation factor creation unavailable");
+        bail!("operation factor creation unavailable (OSStatus {status})");
     }
     Ok(())
 }
@@ -535,6 +535,50 @@ fn operation_password_options(
     let mut options = device_seal_password_options("sshenv.operation-factor.v1", operation);
     set_macos_device_only_accessibility(&mut options);
     Ok(options)
+}
+
+#[test]
+#[ignore = "writes disposable native Keychain records; requires explicit authorization"]
+#[cfg(all(feature = "macos-keychain", target_os = "macos"))]
+fn operation_native_lifecycle() {
+    use sha2::Digest as _;
+    struct Records(Vec<String>);
+    impl Drop for Records {
+        fn drop(&mut self) {
+            for operation in &self.0 {
+                let result = security_framework::passwords::delete_generic_password(
+                    "sshenv.operation-factor.v1",
+                    operation,
+                );
+                assert!(
+                    result.is_ok(),
+                    "failed to clean up disposable operation record {operation}"
+                );
+            }
+        }
+    }
+    let first = hex::encode(sha2::Sha256::digest(create_random_secret().as_slice()));
+    let second = hex::encode(sha2::Sha256::digest(create_random_secret().as_slice()));
+    let mut records = Records(Vec::new());
+    let key = provision_operation_factor(&first).expect("native provisioning");
+    records.0.push(first.clone());
+    assert_eq!(*retrieve_operation_factor(&first).unwrap(), *key);
+    assert_eq!(*provision_operation_factor(&first).unwrap(), *key);
+    assert_eq!(
+        reconcile_operation_factor(&first).unwrap(),
+        OperationFactorReconciliation::Present
+    );
+    assert_eq!(
+        reconcile_operation_factor(&second).unwrap(),
+        OperationFactorReconciliation::Cancelled
+    );
+    records.0.push(second.clone());
+    assert!(provision_operation_factor(&second).is_err());
+    assert!(retrieve_operation_factor(&second).is_err());
+    assert_eq!(
+        reconcile_operation_factor(&second).unwrap(),
+        OperationFactorReconciliation::Cancelled
+    );
 }
 
 #[test]
