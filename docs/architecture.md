@@ -17,8 +17,9 @@ A single file containing everything secret:
 
 The payload uses AES-256-SIV with an AAD tag `"sshenv:v1:payload"`. The
 same key is used for every write; the SIV mode tolerates deterministic
-encryption and rejects ciphertext tampering. Integrity binding to the
-tag prevents a downgrade attack that swaps in an older vault's body.
+encryption and rejects ciphertext tampering. The version tag prevents
+cross-version payload substitution, not replay of an older valid vault.
+Rollback detection requires v2 generations and separately recorded state.
 
 Key derivation: `HKDF-SHA-256(repo_key, salt=b"sshenv:v1", info=b"payload")`
 produces the 512-bit AES-256-SIV key.
@@ -50,7 +51,7 @@ registry.
 ### `sshenv init --recipient-key KEY`
 
 1. Read SSH public key line.
-2. Generate a 32-byte data key via `OsRng`.
+2. Generate a 32-byte data key using the OS CSPRNG via `getrandom`.
 3. Wrap the data key for the supplied recipient using `age::Encryptor`
    with an `age::ssh::Recipient`.
 4. Encrypt an empty `ProfileMap` with AES-256-SIV using the derived key.
@@ -58,15 +59,21 @@ registry.
 
 ### `sshenv add-recipient --key KEY`
 
-1. Unwrap the existing data key using the current SSH identity (via
-   `ssh-agent` or an on-disk key).
+1. Unwrap the existing data key using an authorized private-key file (or an
+   explicitly configured optional plugin identity).
 2. Re-wrap the **same** data key for the new recipient.
 3. Append a new recipient entry to the vault. Payload ciphertext
    unchanged.
 
 This means anyone who ever held a wrapped copy of the data key retains
 the ability to decrypt — classic asymmetric recipient model. Rotation
-(changing the data key) is a planned follow-up.
+(changing the data key) is implemented by `rotate-key`. It cannot revoke
+historical plaintext or ciphertext/key material already retained by a recipient.
+
+New vaults use v1. Explicit v2 migration adds generation and factor metadata;
+profile encryption can add independently protected entries. CLI rollback tracking
+and runtime hardening are not automatically part of the embedded `SshenvStore`
+API. See [the security model](../SECURITY.md) for those boundaries.
 
 ### `sshenv set PROFILE VAR`
 

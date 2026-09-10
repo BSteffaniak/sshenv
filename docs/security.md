@@ -33,9 +33,11 @@ reporting contact.
 
 1. **Root on the machine.** Root can read the SSH key, hijack the agent,
    `ptrace` sshenv, read `/dev/mem`. Nothing stops this.
-2. **A compromised ssh-agent.** Possession of the agent is, by design, the
-   unlock factor.
-3. **A compromised SSH private key.** Same.
+2. **A compromised external identity provider.** Optional plugin identities
+   have their own trust boundary. The default loader uses private-key files,
+   not an identity available only in `ssh-agent`.
+3. **A compromised SSH private key.** An attacker with the required key and
+   configured factors can unlock the vault.
 4. **Memory-forensic attacks against a running process.** `zeroize`
    scrubs known buffers on clean drops, and runtime hardening reduces common
    dump paths, but a sufficiently privileged hostile memory dump captures
@@ -49,30 +51,31 @@ reporting contact.
 
 v1 remains the stable compatibility format. v2 is only written through an
 explicit migration command and adds policy metadata plus recipient public
-metadata. That metadata is non-secret and exists so future policy factors and
-rekey operations can preserve the intended recipient set safely.
+metadata. It supports configured factors, per-profile keys, and generation checks.
+Some policy commands can migrate v1 explicitly as part of their operation; see
+command help. The manifest and lockfile define current dependency versions.
 
 ## Crypto summary
 
-- **Recipient wrapping**: `age 0.11.1` with the `ssh` feature. The
+- **Recipient wrapping**: Switchy Age with native SSH support (`age` compatibility). The
   wrapped blob is a full `age`-encrypted message; any holder of the
   corresponding SSH private key can decrypt via `age::Decryptor`.
-- **Body encryption**: `aes-siv 0.7` (AES-256-SIV) with versioned AAD
+- **Body encryption**: `aes-siv` (AES-256-SIV) with versioned AAD
   (`"sshenv:v1:payload"` or `"sshenv:v2:payload"`). Deterministic; rejects
   tampering; immune to nonce-reuse because it derives a synthetic IV internally.
-- **Key derivation**: `hkdf 0.12` over `sha2 0.10`, salt
+- **Key derivation**: `hkdf` over `sha2`, salt
   `"sshenv:v1"`, info `"payload"`. Expands 32 input bytes to the 64
   bytes AES-256-SIV wants. For opt-in passphrase-protected v2 vaults, an
   additional HKDF step binds the SSH-unwrapped data key to an Argon2id-derived
   passphrase factor before payload encryption/decryption.
-- **Passphrase factor**: `argon2 0.5` using Argon2id. This is an opt-in v2
+- **Passphrase factor**: `argon2` using Argon2id. This is an opt-in v2
   factor; it requires both an authorized SSH recipient and the passphrase.
 - **Device-seal factor**: optional v2 factor plumbing. The macOS Keychain
   backend stores a random factor in Keychain, Linux builds can use Secret
   Service or TPM backends when feature-enabled, and Windows builds can use
   DPAPI when feature-enabled. The local-file backend is for development/testing
   only and is not theft-resistant.
-- **RNG for data key**: `OsRng` at `init` time.
+- **RNG for data key**: the OS CSPRNG through `getrandom` at `init` time.
 
 ## Recipient semantics
 
@@ -86,7 +89,9 @@ public key blob, matching `ssh-keygen -lf`.
 Each recipient gets an independent wrapped copy of the same 32-byte
 data key. Removing a recipient deletes their wrapped copy. **Past
 decrypts they performed are not revoked** — the data key has not
-changed. To revoke past access, rotate the data key (planned).
+changed. `sshenv rotate-key` is implemented (default CLI `rekey` feature)
+and protects newly encrypted state; it cannot revoke previously obtained
+plaintext or historical ciphertext/key material.
 
 ## Per-profile encryption and policy metadata
 
@@ -141,7 +146,16 @@ generation seen for each local vault path in `~/.sshenv/rollback.toml` (or
 `$SSHENV_ROLLBACK`). This detects an older valid vault copy being restored on
 the same machine. The state is plaintext and contains only vault path identity
 and generation numbers. It is local best-effort protection, not a TPM-backed or
-remote monotonic counter.
+remote monotonic counter. v1 vaults have no generation and are not checked.
+New paths/machines have no prior baseline, and replacing both vault and local
+state defeats local detection. Optional synchronized/command-backed baselines
+need separately trusted storage. Library `SshenvStore` calls do not automatically
+perform the CLI's baseline checks.
+
+Long-lived data keys and decrypted payloads use dedicated locked buffers where
+supported, with zeroizing wrappers for short-lived secrets. Runtime protections
+apply to sshenv; a subsequent `exec` can change memory-lock/non-dumpable state.
+Neither `show`/`export` nor child programs are prevented from writing plaintext.
 
 ## Session registry security considerations
 

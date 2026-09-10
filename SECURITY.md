@@ -1,101 +1,45 @@
 # Security model
 
-## Threat model
+sshenv is early-alpha, security-sensitive software. This document describes intended boundaries, not an independent security certification.
 
-**In scope:**
+## Protection and assumptions
 
-1. An attacker reads arbitrary files in your home directory (e.g. stolen
-   backup, stolen laptop disk image). They must not be able to recover any
-   secret values from the vault file alone.
-2. A sibling process running as your user reads your shell environment or
-   `/proc/<pid>/environ`. Secrets must not appear in the parent shell.
-3. A committer of this code is incentivized to avoid footguns that cause
-   plaintext secrets to leak to disk (e.g. swap, tempfiles, coredumps).
+The encrypted vault protects secret values in a copied vault file when the attacker lacks the authorized private key and any configured additional factors. A backup containing both the vault and an unencrypted authorized private key does not satisfy that assumption.
 
-**Out of scope:**
+The default identity loader reads private-key files. An SSH key available only in `ssh-agent` is not the default unlock mechanism. Optional plugin/hardware recipients have separate setup requirements.
 
-1. Root on the machine. Nothing protects you from root, and this tool does
-   not try to.
-2. A compromised SSH private key or compromised `ssh-agent`. Possession of
-   the private key (or the running agent) is the unlock factor, by design.
-3. Coldboot / memory-forensic attacks against a running process. `zeroize`
-   helps on clean exits; hostile dumps bypass it.
-4. Physical-access shoulder-surfing of `sshenv show`. Use `sshenv run`
-   instead.
+`sshenv run` supplies a profile to the executed command without modifying its parent shell. It does not protect against a compromised endpoint, privileged attacker, malicious child program, inherited child environments, debugger, terminal recording, or intentional disclosure through `show`/`export`.
 
-## How secrets live
+## Secret handling
 
-- **At rest**: inside `~/.sshenv/vault`, never plaintext. File permissions
-  are enforced to `0600` on every write.
-- **In transit to processes**: only as environment variables of the exact
-  child process spawned by `sshenv run`. The parent shell does not inherit
-  them; no temp file is ever written.
-- **In memory**: wrapped in `Zeroizing` where practical. Drops scrub the
-  memory. Heap reallocation during processing is the usual Rust caveat.
-- **Runtime hardening**: default CLI builds disable core dumps before `run`
-  decrypts and injects secrets. Linux builds also request non-dumpable process
-  state where supported.
+- Vault writes are encrypted and use Unix owner-only permissions or Windows current-user ACL handling.
+- Shims, bindings, session records, and rollback baselines contain non-secret metadata, not secret values.
+- Long-lived data keys and decrypted payloads use dedicated page-aligned locked buffers where supported; short-lived secret values use zeroizing wrappers. These reduce exposure but cannot promise that every intermediate copy is locked or that crash-time memory is erased.
+- Default CLI builds apply OS-specific runtime hardening before secret injection. Executing another program can change process protections; do not assume Linux non-dumpable state or locked memory persists across `exec`.
+- sshenv does not intentionally create plaintext secret temp files. `show`, `export`, shell redirection, child programs, and OS memory behavior are outside any “no plaintext on disk” guarantee.
 
-## Vault file format
+## Formats and optional features
 
-Binary, versioned. v1 is stable and immutable:
+New vaults use v1. Explicit migration enables v2 metadata, generation tracking, and additional factor support; do not reinterpret v1 files as v2.
 
-```
-MAGIC       "SSHE"          (4 bytes)
-VERSION     0x01            (1 byte)
-FLAGS       0x00            (1 byte, reserved)
-RECIP_LEN   u32 BE          (4 bytes)
-RECIPIENTS  (variable)      array of { fp_len u16 BE, fp utf8, wrap_len u32 BE, wrap bytes }
-PAYLOAD_LEN u32 BE          (4 bytes)
-PAYLOAD     (variable)      AES-256-SIV ciphertext, AAD = "sshenv:v1:payload"
-```
+Payloads use authenticated AES-256-SIV with versioned associated data and derived keys. SSH-recipient wrapping uses Switchy Age. Configured v2 passphrase factors use Argon2id. Optional device, remote, and recovery features must be built and configured explicitly. The local-file device-seal backend is for development/testing, not theft resistance.
 
-v2 is an explicit migration target for policy metadata and stores recipient
-public descriptors so future data-key rotation can preserve recipient sets
-without asking for every public key again. v2 also carries a monotonic
-best-effort generation used by local rollback protection. v2 can store profiles
-as independently encrypted profile entries with per-profile data keys, plus
-opt-in profile factor requirements that bind selected profile payloads to
-profile-specific or available vault-level factor keys. v2 payload AAD is
-`"sshenv:v2:payload"`.
+Advisory policy metadata alone does not enforce a cryptographic boundary. Use the actual factor-enforcement commands and inspect effective status.
 
-Plaintext payload is JSON: `{ "profiles": { "<name>": { "<VAR>": "<value>" } } }`.
+## Rollback detection
 
-The 32-byte data key is generated at `init` time with a CSPRNG and wrapped
-per recipient via `age`'s SSH support. Each recipient's wrapped blob is a
-complete `age`-encrypted message; any holder of the corresponding SSH
-private key (via `ssh-agent` or an on-disk identity) can unwrap.
+The default CLI's rollback feature records the highest observed **v2** generation for each local vault path. It can reject an older vault against that baseline. v1 has no generation, new machines/paths have no prior baseline, and an attacker able to replace both the vault and trusted state can evade local detection. Optional synchronized/command-backed state needs its own trust model.
 
-## Crypto choices
+The reusable vault store does not automatically perform the CLI's local-baseline tracking. Embedded callers must explicitly provide their own rollback policy and runtime-hardening lifecycle.
 
-- **AES-256-SIV** for the payload. Deterministic (no per-write nonce
-  state), authenticated, with AAD binding to the vault version tag. Keyed
-  via `HKDF-SHA-256` over the 32-byte data key with a static salt and
-  info string.
-- **`age`** with `ssh-ed25519` and `ssh-rsa` recipients for key wrapping.
-- **Argon2id passphrase factor** for opt-in v2 vaults. When enabled, the
-  payload encryption key is derived from both the SSH-unwrapped data key and
-  the passphrase-derived factor key, so either factor alone is insufficient.
-- **Device-seal factor** for opt-in v2 vaults. macOS builds can use Keychain;
-  the local-file backend exists only for development/testing and is not
-  theft-resistant.
-- **CSPRNG** (`OsRng` via `rand_core`) for the data key at `init` time.
+## Recipients and recovery
 
-## Recipient management
+Removing a recipient removes its current wrapped-key entry. `rotate-key` is implemented and enabled in default CLI builds; use it when changing access policy. Rotation protects newly encrypted state, not plaintext or historical ciphertext/key material already retained by a former recipient.
 
-Adding a recipient re-wraps the existing data key for the new SSH public
-key without changing the body ciphertext. Removing a recipient deletes
-their wrapped blob; prior copies of the ciphertext they've seen remain
-readable if they retained their wrapped key. **Rotate the data key** after
-removing recipients if past access is a concern (planned; not in v1).
+Shamir sharing is an optional feature. Treat recovery shares as sensitive key material, store them separately, and test recovery without exposing live secrets. Threshold metadata and cryptographic share recovery are distinct concepts.
 
-## Bindings and shims
-
-`~/.sshenv/bindings.toml` is **plaintext**. It contains profile/command
-name pairs, which are non-secret. The shim scripts it generates are also
-plaintext. Neither file contains any secret values.
+See [security details](docs/security.md) for implementation details and [architecture](docs/architecture.md) for ownership boundaries.
 
 ## Reporting
 
-Open a private security advisory at
-<https://github.com/BSteffaniak/sshenv/security/advisories/new>.
+Report privately at <https://github.com/BSteffaniak/sshenv/security/advisories/new> or email [bradensteffaniak@gmail.com](mailto:bradensteffaniak@gmail.com) if private reporting is unavailable. Include versions and a synthetic reproduction, not production keys, vaults, or secret values. No response-time or supported-version guarantee is implied.

@@ -1,190 +1,122 @@
 # sshenv
 
-SSH-key-backed encrypted vault for environment variables. Inject secrets into
-commands on demand, unlock via the SSH key already in your `ssh-agent`, keep
-zero plaintext on disk.
+**An SSH-key-backed encrypted vault that supplies secrets to commands without modifying the parent shell's environment.**
 
-## Why
+Store environment-variable profiles in an encrypted file, unlock with an authorized SSH private key, and run an application with only the selected profile injected. Optional shims make repeated commands convenient; the vault library can also be embedded in Rust applications.
 
-You have API tokens, AWS bearer tokens, database URLs, and other secrets that
-tools want in environment variables. You don't want them in your shell rc.
-You don't want them in your shell history. You don't want them scattered in
-`.env` files. You don't want a keychain daemon or a cloud subscription.
+> **Early alpha, security-sensitive software.** Read the [security model](SECURITY.md) before relying on it. Features and file formats are versioned, but this is not a claim of an independent security audit.
 
-What you _do_ have on every dev machine is an SSH key in a running
-`ssh-agent`. `sshenv` uses that key as the unlock factor for a single
-encrypted vault file.
+## Install
 
-## How it works
+For the published CLI (check [crates.io](https://crates.io/crates/sshenv) for available versions):
 
-- One encrypted file at `~/.sshenv/vault` (override with `$SSHENV_VAULT`).
-- Recipients are SSH public keys. The vault's data key is wrapped to each
-  recipient using [`age`](https://github.com/FiloSottile/age)'s SSH support.
-- Body is `{ profile: { VAR: value } }`, encrypted with AES-256-SIV using the
-  data key; the format version is bound via AAD.
-- To unlock: any SSH private key matching an authorized recipient
-  (discovered from `~/.ssh/`, passphrase-prompted interactively if
-  encrypted). v2 vaults can also opt into an additional sshenv passphrase
-  factor.
-- To run a command with a profile's env loaded, `sshenv run <profile> --
-<cmd> [args...]`. The command's env gets the profile's vars; your parent
-  shell never sees them. Default builds apply best-effort runtime hardening
-  such as disabling core dumps before injection.
-- To make invocation ergonomic, `sshenv shims bind <profile> --command <name>`
-  writes a platform-native shim in `~/.sshenv/bin` (POSIX `sh` on Unix,
-  `.cmd` on Windows) that runs `sshenv run <profile> -- <name> ...`. Add
-  `~/.sshenv/bin` to the front of your `PATH`; then typing `pi-bedrock` (or
-  whatever) transparently loads secrets before running.
+```sh
+cargo install sshenv --version 0.0.1-alpha.3 --locked
+```
+
+For the current repository version:
+
+```sh
+git clone https://github.com/BSteffaniak/sshenv.git
+cd sshenv
+cargo install --locked --path packages/cli
+```
+
+Use stable Rust and a native build toolchain. Published packages can lag `master`; use `sshenv --version` when reporting an issue. GitHub release automation defines binary targets, but that does not guarantee downloadable release artifacts exist.
 
 ## Quick start
 
+You need a supported SSH key pair (`ssh-ed25519` or `ssh-rsa`) and access to its **private-key file**. An identity loaded only in `ssh-agent` is not sufficient for the default loader. Encrypted private keys prompt interactively for their passphrase.
+
 ```sh
-# One-time setup on a new machine
 sshenv init --recipient-key ~/.ssh/id_ed25519.pub
-sshenv set pi-bedrock AWS_BEARER_TOKEN_BEDROCK    # prompts hidden
-sshenv set pi-openai  OPENAI_API_KEY
-sshenv shims bind pi-bedrock --command pi-bedrock
-sshenv shims bind pi-openai  --command pi-openai
-
-# Add to your shell rc (once)
-export PATH="$HOME/.sshenv/bin:$PATH"
-
-# Use — the shim injects the right secrets before exec'ing the real command
-pi-bedrock
-pi-openai
-```
-
-## Platform support
-
-| Feature | Linux | macOS | Windows |
-| --- | --- | --- | --- |
-| Vault/profile/recipient commands | Yes | Yes | Yes |
-| `sshenv run` command injection | `execve` | `execve` | spawn + wait |
-| Shims | POSIX `sh` | POSIX `sh` | `.cmd` via `PATHEXT` |
-| Session tracking | PID + `/proc` start token | PID + `proc_pidinfo` start token | PID + Win32 creation-time token |
-| `sessions kill` | `TERM`/`INT`/`HUP`/`KILL` | `TERM`/`INT`/`HUP`/`KILL` | `term`/`kill` only; `int`/`hup` are unsupported |
-| Private local files | `0600` | `0600` | protected current-user DACL |
-| Runtime hardening | core dumps off, non-dumpable, best-effort memory lock | core dumps off, best-effort memory lock | crash-dialog suppression, heap corruption termination |
-| Device seal | Secret Service or TPM when feature-enabled | Keychain when feature-enabled | DPAPI when feature-enabled |
-| Passphrase cache | unavailable today | Keychain | DPAPI |
-| Release artifacts | x64 + arm64 | x64 + arm64 | x64 |
-
-Windows notes:
-
-- Put the shim directory on `PATH`; `.cmd` shims are resolved through normal
-  Windows `PATHEXT` lookup.
-- `sshenv run` cannot replace itself with `execve` on Windows, so it spawns
-  the child and exits with the child's status.
-- `sessions kill --signal int|hup` is intentionally unsupported on Windows;
-  use `term` or `kill` for tracked top-level processes.
-
-## Commands
-
-```
-# Vault lifecycle
-sshenv init [--recipient-key <path-or-pubkey-line>] [--vault <path>]
+sshenv set development API_TOKEN             # hidden value prompt
+sshenv run development -- your-command       # replace with an installed command
 sshenv doctor
+```
+
+The default vault is `~/.sshenv/vault`; override it with `--vault` or `SSHENV_VAULT`. Never put real secret values in command-line arguments for convenience.
+
+New vaults use **v1**. To opt into v2 generation tracking and additional factor capabilities:
+
+```sh
+sshenv migrate-vault --to v2 --recipient-key ~/.ssh/id_ed25519.pub
 sshenv security status
-sshenv security enable-passphrase [--passphrase <v>]
-sshenv security change-passphrase [--old-passphrase <v>] [--new-passphrase <v>]
-sshenv security disable-passphrase [--passphrase <v>]
-sshenv security enable-device-seal
-sshenv security preset standard|recommended|portable|paranoid [--recipient-key <path-or-pubkey-line>]... [--passphrase <v>]
-sshenv security profile-policy list
-sshenv security profile-policy status <profile>
-sshenv security profile-policy apply <profile> --preset standard|recommended|portable|paranoid [--recipient-key <path-or-pubkey-line>]... [--passphrase <v>]
-sshenv security profile-policy repair <profile> [--recipient-key <path-or-pubkey-line>]... [--passphrase <v>]
-sshenv security profile-policy migrate
-sshenv security profile-policy rotate-key <profile>
-sshenv security profile-policy require-passphrase <profile> [--passphrase <v>]
-sshenv security profile-policy change-passphrase <profile> [--old-passphrase <v>] [--new-passphrase <v>]
-sshenv security profile-policy disable-passphrase <profile> [--passphrase <v>]
-sshenv security profile-policy require-device-seal <profile>
-sshenv security profile-policy disable-device-seal <profile>
-sshenv security profile-policy clear-requirements <profile>
-sshenv security profile-policy set <profile> --preset standard|recommended|portable|paranoid
-sshenv migrate-vault --to v2 [--recipient-key <path-or-pubkey-line>]...
-sshenv rotate-key [--recipient-key <path-or-pubkey-line>]...
+```
 
-# Recipients
-sshenv add-recipient --key <path-or-pubkey-line>
-sshenv list-recipients [--verbose]
-sshenv remove-recipient --fingerprint <fp> [--rotate] [--recipient-key <path-or-pubkey-line>]...
+Keep a recoverable encrypted backup and authorized key before changing recipients or factors. Local rollback protection rejects older v2 generations only when a newer baseline is available; it is not automatic protection against an attacker replacing both vault and local state.
 
-# Profiles
-sshenv set <profile> <VAR> [--value <v>]          # hidden prompt if --value omitted
-sshenv unset <profile> <VAR>
-sshenv list [--prefix <p>]                         # profile names
-sshenv list <profile>                              # VAR names in profile
-sshenv show <profile>                              # values (warns loudly)
-sshenv rename-profile <old> <new>                  # rename profile + shim bindings
-sshenv rm-profile <profile>
+### Optional command shims
 
-# Execution
+```sh
+sshenv shims bind development --command your-command
+# Add once to your shell configuration:
+export PATH="$HOME/.sshenv/bin:$PATH"
+```
+
+Replace `your-command` with an executable already installed on the machine. The generated shim contains command/profile names, not secret values. On Windows shims are `.cmd` files; add the shim directory to `PATH` using Windows configuration tools.
+
+## Capabilities and feature boundaries
+
+| Capability                                     | Scope                                                                                                           |
+| ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| Encrypted profiles and SSH recipients          | Base CLI/library functionality                                                                                  |
+| Key rotation, passphrase factors, profile keys | Enabled in the default CLI build; factors still require configuration                                           |
+| Generation-based rollback checks               | Default CLI feature, v2 vaults, recorded local baseline                                                         |
+| Core-dump/process hardening                    | Default CLI feature; OS-specific and not a child-program security boundary                                      |
+| Shamir recovery                                | Optional `shamir-sharing` Cargo feature                                                                         |
+| Device seals                                   | Optional platform features such as `macos-keychain`, `linux-secret-service`, `tpm-device-seal`, `windows-dpapi` |
+| External/hardware factors                      | Optional adapters with their own setup and trust requirements                                                   |
+
+For example, enable recovery in a source installation with:
+
+```sh
+cargo install --locked --path packages/cli --features shamir-sharing
+```
+
+Do not use `--all-features` as a recommended security preset: some features exist for testing or external adapters. Advisory policy metadata alone is not a cryptographic access boundary.
+
+## Common operations
+
+```text
 sshenv run <profile> -- <command> [args...]
-sshenv run --incognito <profile> -- <command>      # skip session tracking
-sshenv export <profile>                            # prints `export VAR=value` lines
-
-# Sessions (tracked `sshenv run` executions for the current vault)
-sshenv sessions list [--profile <profile>]
-sshenv sessions kill <profile> [--signal term|int|hup|kill]  # top-level tracked PIDs only
-sshenv sessions kill --all [--signal term|int|hup|kill]       # all profiles in current vault
-
-# Shims (auto-sync after bind/unbind)
-sshenv shims bind <profile> --command <name>
-sshenv shims unbind --command <name>
-sshenv shims rename --command <old> --to <new>
-sshenv shims list
-sshenv shims sync
-sshenv shims dir
-sshenv shims path
+sshenv set <profile> <VAR>
+sshenv show <profile>
+sshenv export <profile>
+sshenv add-recipient --key <public-key-path-or-line>
+sshenv remove-recipient --fingerprint <fingerprint>
+sshenv rotate-key --recipient-key <public-key-path-or-line>
+sshenv security status
+sshenv sessions list
 ```
 
-Environment variables: `SSHENV_VAULT`, `SSHENV_SHIM_DIR`, `SSHENV_BINDINGS`, `SSHENV_SESSIONS`, `SSHENV_ROLLBACK`.
+Use `sshenv --help` and each subcommand's `--help` as the complete CLI reference. `show` and `export` deliberately reveal secrets; avoid redirected output, terminal recording, and shell `eval` unless you intend that exposure.
 
-## Embedding sshenv in other apps
+## Platform behavior
 
-Applications can use `sshenv_vault` directly without storing anything under
-`~/.sshenv/`. Construct an explicit store config with the vault path and SSH
-identity paths the application wants to use:
+- **Linux/macOS:** `run` uses exec semantics. The parent shell remains unchanged; the executed program and its children can read or disclose injected values.
+- **Windows:** `run` spawns and waits for the child. Session signaling supports termination rather than Unix `INT`/`HUP` semantics.
+- **Private files:** Unix writes use owner-only permissions; Windows uses current-user ACL handling.
+- **Hardening:** supported memory locking and process protections reduce exposure in sshenv itself. They do not guarantee all decrypted copies or subsequently executed programs remain locked or non-dumpable.
 
-```rust
-use sshenv_vault::{SshenvStore, SshenvStoreConfig};
-use zeroize::Zeroizing;
+## Embed in Rust
 
-let store = SshenvStore::new(
-    SshenvStoreConfig::new("/path/to/app/state/auth.vault")
-        .with_private_key_paths(vec!["/home/me/.ssh/id_ed25519".into()]),
-);
+[`sshenv_vault`](packages/vault) exposes `SshenvStore` with caller-selected paths and private-key identities. It does not require CLI shims or global paths. The CLI's rollback-baseline tracking and runtime-hardening setup are **not automatically inherited** by every library caller.
 
-store.init_if_missing("ssh-ed25519 AAAA...")?;
-store.set_secret("openai", "OPENAI_API_KEY", Zeroizing::new("sk-...".to_string()))?;
-let key = store.get_secret("openai", "OPENAI_API_KEY")?;
+See [architecture](docs/architecture.md), [security details](docs/security.md), and [migration](docs/migration.md). Cryptography uses AES-256-SIV for payloads, SSH-recipient wrapping through Switchy Age, and Argon2id for configured passphrase factors. Long-lived key/payload buffers use dedicated locked storage where supported; short-lived secret values use zeroizing wrappers.
+
+## Development
+
+```sh
+cargo fmt --all
+cargo build --locked
+cargo test --all --locked
+cargo clippy --all-targets --all-features -- -D warnings
+cargo deny check
 ```
 
-The CLI defaults remain `~/.sshenv/*`, but the library API does not require
-those paths.
-
-## Status
-
-Early alpha (`0.0.1-alpha.0`). CLI surface is expected to be stable; vault
-file format is versioned and upgrades will be explicit.
-
-## Security model
-
-See [`SECURITY.md`](SECURITY.md) and [`docs/security.md`](docs/security.md).
-
-## Comparison
-
-|                         | `envchain`         | `op run`                     | `sshenv`                       |
-| ----------------------- | ------------------ | ---------------------------- | ------------------------------ |
-| Backing store           | OS keychain        | 1Password vault              | Encrypted file, SSH recipients |
-| Auth factor             | Keychain unlock    | 1Password unlock (biometric) | SSH key in `ssh-agent`         |
-| Cross-host sync         | None               | Automatic (cloud)            | Copy the ciphertext file       |
-| Cost                    | Free               | Subscription                 | Free                           |
-| Secrets on disk         | No (in keyring DB) | No                           | Ciphertext only                |
-| Works non-interactively | Yes                | Yes                          | Yes                            |
+Use [GitHub Issues](https://github.com/BSteffaniak/sshenv/issues) for non-sensitive bugs. Report vulnerabilities through the private contact in [SECURITY.md](SECURITY.md), never with real credentials or vault contents in a public issue.
 
 ## License
 
-MPL-2.0. See [`LICENSE`](LICENSE).
+[Mozilla Public License 2.0](LICENSE).
