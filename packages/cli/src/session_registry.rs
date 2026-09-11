@@ -73,7 +73,7 @@ pub fn default_sessions_path() -> PathBuf {
     if let Ok(p) = std::env::var("SSHENV_SESSIONS") {
         return PathBuf::from(p);
     }
-    dirs::home_dir().map_or_else(
+    switchy_fs::directories::home_dir().map_or_else(
         || PathBuf::from(".sshenv/sessions.toml"),
         |h| h.join(".sshenv").join("sessions.toml"),
     )

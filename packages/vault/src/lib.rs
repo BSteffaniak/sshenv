@@ -2754,7 +2754,7 @@ pub fn default_vault_path() -> PathBuf {
     if let Ok(p) = std::env::var("SSHENV_VAULT") {
         return PathBuf::from(p);
     }
-    dirs::home_dir().map_or_else(
+    switchy_fs::directories::home_dir().map_or_else(
         || PathBuf::from(".sshenv/vault"),
         |h| h.join(".sshenv").join("vault"),
     )

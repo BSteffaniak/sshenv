@@ -28,7 +28,7 @@ pub fn default_security_state_path() -> PathBuf {
     if let Ok(path) = std::env::var("SSHENV_SECURITY_STATE") {
         return PathBuf::from(path);
     }
-    dirs::home_dir().map_or_else(
+    switchy_fs::directories::home_dir().map_or_else(
         || PathBuf::from(".sshenv/security-state.toml"),
         |home| home.join(".sshenv").join("security-state.toml"),
     )

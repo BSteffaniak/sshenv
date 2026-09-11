@@ -107,6 +107,17 @@ See [architecture](docs/architecture.md), [security details](docs/security.md), 
 
 ## Development
 
+Directory discovery uses `switchy_fs` native platform lookup. The existing vault
+`simulator` feature remains crypto-only. The separate `simulated-directories`
+feature on vault, shims, or CLI selects caller-configured filesystem locations;
+Cargo feature unification also affects other consumers of `switchy_fs`.
+Use `Filesystem::with_directory_locations` with `with_filesystem` or
+`scope_filesystem`. Missing simulated locations retain existing relative fallbacks.
+Application environment overrides and explicit `HOME` precedence remain unchanged,
+so isolate the process environment when testing. This is not a filesystem sandbox:
+vault, device-seal, CLI, and shim I/O still use real files. Never initialize those
+stores against test locations unless real I/O is intentional.
+
 ```sh
 cargo fmt --all
 cargo build --locked

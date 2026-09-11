@@ -40,6 +40,11 @@ rollback-protection = []
 runtime-hardening = []
 secure-enclave = ["device-seal", "sshenv_vault/secure-enclave"]
 shamir-sharing = ["recovery-shares", "sshenv_vault/shamir-sharing"]
+simulated-directories = [
+    "switchy_fs/simulator",
+    "sshenv_vault/simulated-directories",
+    "sshenv_shims/simulated-directories",
+]
 ssh-hardening = ["sshenv_vault/ssh-hardening"]
 threshold-policies = ["sshenv_vault/threshold-policies"]
 tpm-device-seal = ["device-seal", "sshenv_vault/tpm-device-seal"]
@@ -57,13 +62,13 @@ sshenv_vault      = { workspace = true }
 age = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
-dirs = { workspace = true }
 hex = { workspace = true }
 libc = { workspace = true }
 rpassword = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 ssh-key = { workspace = true, features = ["ed25519"] }
+switchy_fs = { workspace = true, features = ["native-directories"] }
 tempfile = { workspace = true }
 toml = { workspace = true }
 windows-sys = { workspace = true, features = [

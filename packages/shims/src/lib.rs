@@ -27,7 +27,7 @@ pub fn default_bindings_path() -> PathBuf {
     if let Ok(p) = std::env::var("SSHENV_BINDINGS") {
         return PathBuf::from(p);
     }
-    dirs::home_dir().map_or_else(
+    switchy_fs::directories::home_dir().map_or_else(
         || PathBuf::from(".sshenv/bindings.toml"),
         |h| h.join(".sshenv").join("bindings.toml"),
     )
@@ -45,7 +45,7 @@ pub fn resolve_shim_dir(bindings: &BindingsFile) -> PathBuf {
     if let Ok(dir) = std::env::var("SSHENV_SHIM_DIR") {
         return PathBuf::from(dir);
     }
-    dirs::home_dir().map_or_else(
+    switchy_fs::directories::home_dir().map_or_else(
         || PathBuf::from(".sshenv/bin"),
         |h| h.join(".sshenv").join("bin"),
     )
@@ -334,7 +334,7 @@ fn set_mode_on_file(_file: &fs::File, _mode: u32) -> Result<()> {
 
 fn shellexpand_tilde(path: &str) -> PathBuf {
     if let Some(rest) = path.strip_prefix("~/")
-        && let Some(home) = dirs::home_dir()
+        && let Some(home) = switchy_fs::directories::home_dir()
     {
         return home.join(rest);
     }

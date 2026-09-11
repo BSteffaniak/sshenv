@@ -1050,7 +1050,7 @@ fn discover_age_plugin_identity_paths() -> Vec<PathBuf> {
         }
     }
 
-    if let Some(home) = dirs::home_dir() {
+    if let Some(home) = switchy_fs::directories::home_dir() {
         let file = home.join(".sshenv").join("age-plugin-identities");
         if file.is_file() {
             paths.insert(file);

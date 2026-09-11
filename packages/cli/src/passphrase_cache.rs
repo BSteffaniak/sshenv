@@ -341,7 +341,7 @@ fn sshenv_cache_dir() -> PathBuf {
     std::env::var_os("APPDATA")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
-        .or_else(dirs::home_dir)
+        .or_else(switchy_fs::directories::home_dir)
         .map_or_else(|| PathBuf::from(".sshenv"), |base| base.join("sshenv"))
 }
 

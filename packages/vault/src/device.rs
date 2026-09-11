@@ -1475,7 +1475,7 @@ fn run_tpm2(command: &mut Command, action: &str) -> Result<()> {
 
 #[cfg(all(feature = "tpm-device-seal", target_os = "linux"))]
 fn tpm_state_dir() -> PathBuf {
-    dirs::home_dir().map_or_else(
+    switchy_fs::directories::home_dir().map_or_else(
         || PathBuf::from(".sshenv/device-seal-tpm"),
         |home| home.join(".sshenv").join("device-seal-tpm"),
     )
@@ -1521,7 +1521,7 @@ fn store_windows_dpapi_secret(secret: &[u8]) -> Result<()> {
 
 #[cfg(all(feature = "windows-dpapi", target_os = "windows"))]
 fn windows_dpapi_secret_path() -> PathBuf {
-    dirs::home_dir().map_or_else(
+    switchy_fs::directories::home_dir().map_or_else(
         || PathBuf::from(r".sshenv\device-seal-dpapi"),
         |home| home.join(".sshenv").join("device-seal-dpapi"),
     )
@@ -2197,8 +2197,11 @@ fn create_macos_any_application_generic_password(
 
 #[cfg(all(feature = "macos-keychain", target_os = "macos"))]
 fn macos_keychain_fallback_path() -> Result<PathBuf> {
-    let base = dirs::data_local_dir()
-        .or_else(|| dirs::home_dir().map(|home| home.join("Library").join("Application Support")))
+    let base = switchy_fs::directories::data_local_dir()
+        .or_else(|| {
+            switchy_fs::directories::home_dir()
+                .map(|home| home.join("Library").join("Application Support"))
+        })
         .context("could not resolve user data directory for device-seal fallback")?;
     Ok(base
         .join("sshenv")
@@ -2329,7 +2332,7 @@ fn parse_binary_secret(bytes: &[u8], label: &str) -> Result<Zeroizing<[u8; KEY_L
 
 #[cfg(feature = "device-seal-file")]
 fn local_file_secret_path() -> PathBuf {
-    dirs::home_dir().map_or_else(
+    switchy_fs::directories::home_dir().map_or_else(
         || PathBuf::from(".sshenv/device-seal"),
         |home| home.join(".sshenv").join("device-seal"),
     )

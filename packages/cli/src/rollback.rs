@@ -67,7 +67,7 @@ fn sshenv_home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
-        .or_else(dirs::home_dir)
+        .or_else(switchy_fs::directories::home_dir)
 }
 
 /// Ensure the loaded generation is not older than local state.
