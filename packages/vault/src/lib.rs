@@ -1807,6 +1807,64 @@ fn vault_digest(bytes: &[u8]) -> [u8; 32] {
     sha2::Sha256::digest(bytes).into()
 }
 
+/// Retained native writer ownership for a bounded read/modify/publish transaction.
+///
+/// Acquire before loading credentials and retain through any remote rotation and save.
+/// Ordinary native saves use the same lock. Never call ordinary `Vault::save` while
+/// retaining this owner; use [`Self::save`] to avoid reacquiring the lock.
+pub struct VaultWriter {
+    path: std::path::PathBuf,
+    _lock: std::fs::File,
+}
+
+impl VaultWriter {
+    /// Acquire exclusive ownership of the selected vault's native writer lock.
+    ///
+    /// # Errors
+    /// Returns filesystem or locking errors. Lock acquisition can block.
+    pub fn acquire(path: &Path) -> Result<Self> {
+        let lock = lock_vault_writer(path)?;
+        let parent = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."))
+            .canonicalize()?;
+        let name = path
+            .file_name()
+            .ok_or_else(|| anyhow::anyhow!("vault filename is missing"))?;
+        Ok(Self {
+            path: parent.join(name),
+            _lock: lock,
+        })
+    }
+
+    /// Load current encrypted bytes under retained writer ownership.
+    ///
+    /// # Errors
+    /// Returns filesystem or vault decoding errors.
+    pub fn load_ciphertext(&self) -> Result<CiphertextVault> {
+        Vault::load_ciphertext(&self.path)
+    }
+
+    /// Atomically save a vault loaded under this owner without reacquiring its lock.
+    ///
+    /// # Errors
+    /// Returns encryption, filesystem, or stale-snapshot conflict errors.
+    pub fn save(&self, vault: &Vault, data_key: &[u8; DATA_KEY_LEN]) -> Result<()> {
+        vault.save_with_storage(data_key, |encoded, expected| {
+            let current = match fs::read(&self.path) {
+                Ok(bytes) => Some(vault_digest(&bytes)),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => return Err(error.into()),
+            };
+            if current != expected {
+                return Err(VaultWriteConflict.into());
+            }
+            atomic_write_with_overwrite(&self.path, encoded, 0o600, expected.is_some())
+        })
+    }
+}
+
 fn lock_vault_writer(path: &Path) -> Result<std::fs::File> {
     let parent = path
         .parent()
@@ -3059,6 +3117,34 @@ mod tests {
         first.save(&path, &first_key).unwrap();
         std::fs::remove_file(&path).unwrap();
         assert!(first.save(&path, &first_key).is_err());
+    }
+
+    #[test]
+    fn retained_writer_publishes_without_relocking_and_rejects_stale_data() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("vault");
+        let (public, identity) = generate_keypair();
+        let (original, key) = Vault::create(&public).unwrap();
+        original.save(&path, &key).unwrap();
+        let identities = vec![identity];
+        let (mut stale, stale_key) =
+            Vault::unlock(Vault::load_ciphertext(&path).unwrap(), &identities).unwrap();
+        let owner = VaultWriter::acquire(&path).unwrap();
+        let (mut current, current_key) =
+            Vault::unlock(owner.load_ciphertext().unwrap(), &identities).unwrap();
+        current.profiles.set("test", "KEY", "current".to_owned());
+        owner.save(&current, &current_key).unwrap();
+        owner.save(&current, &current_key).unwrap();
+        stale.profiles.set("test", "KEY", "stale".to_owned());
+        assert!(
+            owner
+                .save(&stale, &stale_key)
+                .unwrap_err()
+                .downcast_ref::<VaultWriteConflict>()
+                .is_some()
+        );
+        let (saved, _) = Vault::unlock(owner.load_ciphertext().unwrap(), &identities).unwrap();
+        assert_eq!(saved.profiles.profiles["test"]["KEY"], "current");
     }
 
     #[test]
