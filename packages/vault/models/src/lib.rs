@@ -193,6 +193,8 @@ pub struct UnlockFactorV2 {
 pub enum UnlockFactorKindV2 {
     /// Current SSH-recipient wrapping model.
     SshRecipient,
+    /// Native age X25519 recipient (not a hardware/plugin factor).
+    AgeRecipient,
     /// User-supplied passphrase-derived wrapping material.
     Passphrase,
     /// Device-local secret from OS keychain, DPAPI, Secret Service, or TPM.

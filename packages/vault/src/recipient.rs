@@ -1,20 +1,17 @@
-//! SSH-recipient key wrapping and unwrapping via `age`.
+//! SSH, native age X25519, and optional plugin recipient key wrapping.
 //!
-//! The vault's 32-byte data key is wrapped independently for each
-//! authorized SSH public key. Wrapping uses `age::Encryptor` with an
-//! `age::ssh::Recipient`; unwrapping uses `age::Decryptor` with any of a
-//! list of `age::Identity` objects (which in practice are
-//! `age::ssh::Identity` values constructed from on-disk SSH private keys).
+//! The vault's 32-byte data key is wrapped independently for each authorized
+//! recipient using `age`. Native X25519 recipients work without plugins; SSH
+//! recipients and optional plugin recipients retain their existing wrapping.
+//! Unwrapping accepts typed `age::Identity` objects or explicit native/SSH
+//! identity strings without invoking ambient identity discovery.
 
-use std::io::Read;
-#[cfg(feature = "age-plugin-recipient")]
-use std::io::Write;
+use std::io::{Read, Write};
 use std::iter;
 #[cfg(not(feature = "simulator"))]
 use std::str::FromStr;
 
 use age::Decryptor;
-#[cfg(feature = "age-plugin-recipient")]
 use age::Encryptor;
 #[cfg(not(feature = "simulator"))]
 use age::ssh::Recipient as SshRecipient;
@@ -28,6 +25,15 @@ use crate::LockedSecret;
 /// `age`'s `ssh` feature supports.
 #[cfg(not(feature = "simulator"))]
 const SUPPORTED_KEY_TYPES: &[&str] = &["ssh-ed25519", "ssh-rsa"];
+
+fn fingerprint_for_native_age_recipient(recipient: &age::x25519::Recipient) -> String {
+    use base64::Engine as _;
+    let hash = Sha256::digest(recipient.to_string().as_bytes());
+    format!(
+        "AGE-X25519-SHA256:{}",
+        base64::engine::general_purpose::STANDARD_NO_PAD.encode(hash)
+    )
+}
 
 /// Compute a stable fingerprint for an age-plugin recipient descriptor.
 #[must_use]
@@ -82,7 +88,9 @@ pub fn fingerprint_from_line(public_key_line: &str) -> Result<String> {
 /// Determine the v2 factor kind for a persisted public recipient descriptor.
 #[must_use]
 pub fn recipient_descriptor_kind(descriptor: &str) -> UnlockFactorKindV2 {
-    if descriptor.trim().starts_with("age1") {
+    if descriptor.trim().parse::<age::x25519::Recipient>().is_ok() {
+        UnlockFactorKindV2::AgeRecipient
+    } else if descriptor.trim().starts_with("age1") {
         UnlockFactorKindV2::HardwareRecipient
     } else {
         UnlockFactorKindV2::SshRecipient
@@ -93,14 +101,17 @@ pub fn recipient_descriptor_kind(descriptor: &str) -> UnlockFactorKindV2 {
 ///
 /// # Errors
 ///
-/// Returns an error if the descriptor is neither a supported SSH public key nor,
-/// with `age-plugin-recipient`, a valid age-plugin recipient.
+/// Returns an error if the descriptor is neither a native age X25519 recipient nor a supported
+/// SSH public key nor, with `age-plugin-recipient`, a valid age-plugin recipient.
 pub fn fingerprint_from_recipient_descriptor(descriptor: &str) -> Result<String> {
     #[cfg(feature = "simulator")]
     if descriptor.starts_with("sim-age:") {
         return simulation_fingerprint(descriptor);
     }
     let trimmed = descriptor.trim();
+    if let Ok(recipient) = trimmed.parse::<age::x25519::Recipient>() {
+        return Ok(fingerprint_for_native_age_recipient(&recipient));
+    }
     if trimmed.starts_with("age1") {
         return fingerprint_from_age_plugin_recipient_descriptor(trimmed);
     }
@@ -132,6 +143,23 @@ pub fn build_entry_for_recipient_descriptor(
     data_key: &[u8],
 ) -> Result<RecipientEntry> {
     let trimmed = descriptor.trim();
+    #[cfg(not(feature = "simulator"))]
+    if let Ok(recipient) = trimmed.parse::<age::x25519::Recipient>() {
+        if data_key.len() != DATA_KEY_LEN {
+            bail!("invalid native age data key length");
+        }
+        let encryptor = Encryptor::with_recipients(iter::once(&recipient as &dyn age::Recipient))
+            .context("failed to initialize native age encryptor")?;
+        let mut wrapped_key = Vec::new();
+        let mut writer = encryptor.wrap_output(&mut wrapped_key)?;
+        writer.write_all(data_key)?;
+        writer.finish()?;
+        return Ok(RecipientEntry {
+            fingerprint: fingerprint_for_native_age_recipient(&recipient),
+            public_key_line: recipient.to_string(),
+            wrapped_key,
+        });
+    }
     if trimmed.starts_with("age1") {
         return build_entry_for_age_plugin_recipient(trimmed, data_key);
     }
@@ -274,6 +302,15 @@ pub fn unwrap_data_key_with_strings(
     recipients: &[RecipientEntry],
     identities: &[&str],
 ) -> Result<LockedSecret<DATA_KEY_LEN>> {
+    #[cfg(not(feature = "simulator"))]
+    for identity in identities {
+        if let Ok(identity) = identity.trim().parse::<age::x25519::Identity>() {
+            let identity: Box<dyn age::Identity> = Box::new(identity);
+            if let Ok(key) = unwrap_data_key(recipients, &[identity]) {
+                return Ok(key);
+            }
+        }
+    }
     for recipient in recipients {
         for identity in identities {
             if let Ok(bytes) = switchy_age::unwrap(identity, &recipient.wrapped_key) {
@@ -307,17 +344,17 @@ pub fn unwrap_data_key(
             let Ok(mut reader) = decryptor.decrypt(iter::once(identity.as_ref())) else {
                 continue;
             };
-            let mut out = [0_u8; DATA_KEY_LEN];
+            let mut out = zeroize::Zeroizing::new([0_u8; DATA_KEY_LEN]);
             // Read exactly DATA_KEY_LEN bytes.
-            if reader.read_exact(&mut out).is_err() {
+            if reader.read_exact(out.as_mut()).is_err() {
                 continue;
             }
             // Confirm EOF.
-            let mut one = [0_u8; 1];
-            if reader.read(&mut one).ok() != Some(0) {
+            let mut one = zeroize::Zeroizing::new([0_u8; 1]);
+            if reader.read(one.as_mut()).ok() != Some(0) {
                 continue;
             }
-            return Ok(LockedSecret::new(out));
+            return Ok(LockedSecret::new(*out));
         }
     }
     bail!("no identity could unwrap any recipient blob")
@@ -326,6 +363,104 @@ pub fn unwrap_data_key(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(not(feature = "simulator"))]
+    use age::secrecy::ExposeSecret as _;
+
+    #[cfg(not(feature = "simulator"))]
+    #[test]
+    fn native_age_round_trip_and_identity_selection() {
+        let identity = age::x25519::Identity::generate();
+        let descriptor = identity.to_public().to_string();
+        let key = zeroize::Zeroizing::new([42_u8; DATA_KEY_LEN]);
+        let entry =
+            build_entry_for_recipient_descriptor(&format!("  {descriptor}  "), key.as_ref())
+                .unwrap();
+        assert_eq!(entry.public_key_line, descriptor);
+        assert_eq!(
+            recipient_descriptor_kind(&descriptor),
+            UnlockFactorKindV2::AgeRecipient
+        );
+        assert_eq!(
+            entry.fingerprint,
+            fingerprint_from_recipient_descriptor(&descriptor).unwrap()
+        );
+        assert!(entry.fingerprint.starts_with("AGE-X25519-SHA256:"));
+        let wrong = age::x25519::Identity::generate().to_string();
+        let secret = identity.to_string();
+        let entries = [entry];
+        assert!(unwrap_data_key_with_strings(&entries, &[wrong.expose_secret()]).is_err());
+        let unlocked = unwrap_data_key_with_strings(
+            &entries,
+            &["invalid", wrong.expose_secret(), secret.expose_secret()],
+        )
+        .unwrap();
+        assert_eq!(&*unlocked, &*key);
+        let mut damaged = entries;
+        let last = damaged[0].wrapped_key.len() - 1;
+        damaged[0].wrapped_key[last] ^= 1;
+        assert!(unwrap_data_key_with_strings(&damaged, &[secret.expose_secret()]).is_err());
+    }
+
+    #[cfg(not(feature = "simulator"))]
+    #[test]
+    fn native_age_rejects_malformed_keys_and_wrong_payload_lengths() {
+        let identity = age::x25519::Identity::generate();
+        let descriptor = identity.to_public().to_string();
+        assert!(build_entry_for_recipient_descriptor(&descriptor, &[0; 31]).is_err());
+        assert!(build_entry_for_recipient_descriptor(&descriptor, &[0; 33]).is_err());
+        let malformed = format!("{descriptor}invalid");
+        assert!(fingerprint_from_recipient_descriptor(&malformed).is_err());
+        assert!(build_entry_for_recipient_descriptor(&malformed, &[0; DATA_KEY_LEN]).is_err());
+        for length in [31, 33] {
+            let recipient = identity.to_public();
+            let encryptor =
+                Encryptor::with_recipients(iter::once(&recipient as &dyn age::Recipient)).unwrap();
+            let mut ciphertext = Vec::new();
+            let mut writer = encryptor.wrap_output(&mut ciphertext).unwrap();
+            writer
+                .write_all(&zeroize::Zeroizing::new(vec![0; length]))
+                .unwrap();
+            writer.finish().unwrap();
+            let entry = RecipientEntry {
+                fingerprint: String::new(),
+                public_key_line: descriptor.clone(),
+                wrapped_key: ciphertext,
+            };
+            assert!(
+                unwrap_data_key_with_strings(&[entry], &[identity.to_string().expose_secret()])
+                    .is_err()
+            );
+        }
+    }
+
+    #[cfg(not(feature = "simulator"))]
+    #[test]
+    fn ssh_descriptor_and_string_identity_still_round_trip() {
+        let private = ssh_key::PrivateKey::random(
+            &mut ssh_key::rand_core::OsRng,
+            ssh_key::Algorithm::Ed25519,
+        )
+        .unwrap();
+        let public = private.public_key().to_openssh().unwrap();
+        let secret = private.to_openssh(ssh_key::LineEnding::LF).unwrap();
+        let key = zeroize::Zeroizing::new([23_u8; DATA_KEY_LEN]);
+        let entry = build_entry_for_recipient_descriptor(&public, key.as_ref()).unwrap();
+        assert_eq!(
+            recipient_descriptor_kind(&public),
+            UnlockFactorKindV2::SshRecipient
+        );
+        assert_eq!(entry.fingerprint, fingerprint_from_line(&public).unwrap());
+        let unwrapped = unwrap_data_key_with_strings(&[entry], &[secret.as_str()]).unwrap();
+        assert_eq!(&*unwrapped, &*key);
+    }
+
+    #[cfg(not(feature = "age-plugin-recipient"))]
+    #[test]
+    fn plugin_descriptors_still_require_explicit_feature() {
+        let descriptor = "age1yubikey1q2w3e4r5t6y7u8i9o0p";
+        assert!(fingerprint_from_recipient_descriptor(descriptor).is_err());
+        assert!(build_entry_for_recipient_descriptor(descriptor, &[0; DATA_KEY_LEN]).is_err());
+    }
 
     #[cfg(not(feature = "simulator"))]
     #[test]

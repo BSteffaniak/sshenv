@@ -429,7 +429,7 @@ impl Vault {
         recipient_public_key_line: &str,
         data_key: DataKey,
     ) -> Result<(Self, DataKey)> {
-        let recipient = recipient::build_entry_for_public_key_line(
+        let recipient = recipient::build_entry_for_recipient_descriptor(
             recipient_public_key_line,
             data_key.as_slice(),
         )?;
@@ -3244,6 +3244,49 @@ mod tests {
             unlocked.profiles.get("p").unwrap().get("K").unwrap(),
             "value"
         );
+    }
+
+    #[cfg(not(feature = "simulator"))]
+    #[test]
+    fn native_age_vault_round_trip_preserves_versions_and_metadata() {
+        use age::secrecy::ExposeSecret as _;
+        let identity = age::x25519::Identity::generate();
+        let public = identity.to_public().to_string();
+        let secret = identity.to_string();
+        let directory = tempfile::tempdir().unwrap();
+        for version in [VERSION, VERSION_V2] {
+            let path = directory.path().join(format!("vault-{version}"));
+            let (mut vault, key) = Vault::create(&public).unwrap();
+            vault
+                .profiles
+                .set("subscription", "TOKEN", "test-value".into());
+            if version == VERSION_V2 {
+                vault.migrate_to_v2(std::slice::from_ref(&public)).unwrap();
+                assert_eq!(
+                    vault.policy_metadata.as_ref().unwrap().recipients[0].kind,
+                    UnlockFactorKindV2::AgeRecipient
+                );
+            }
+            vault.save(&path, &key).unwrap();
+            let ciphertext = Vault::load_ciphertext(&path).unwrap();
+            assert_eq!(ciphertext.header.version, version);
+            let recovered = recipient::unwrap_data_key_with_strings(
+                &ciphertext.recipients,
+                &[secret.expose_secret()],
+            )
+            .unwrap();
+            let (unlocked, _) =
+                Vault::unlock_with_data_key_and_passphrase(ciphertext, recovered, None).unwrap();
+            assert_eq!(
+                unlocked
+                    .profiles
+                    .get("subscription")
+                    .unwrap()
+                    .get("TOKEN")
+                    .unwrap(),
+                "test-value"
+            );
+        }
     }
 
     #[test]

@@ -76,6 +76,18 @@ cargo install --locked --path packages/cli --features shamir-sharing
 
 Do not use `--all-features` as a recommended security preset: some features exist for testing or external adapters. Advisory policy metadata alone is not a cryptographic access boundary.
 
+## Native age recipients
+
+The vault library accepts native age X25519 public recipients (`age1…`) through
+`build_entry_for_recipient_descriptor` and native secret identities through
+`unwrap_data_key_with_strings`. This support does not require `age-plugin-recipient`;
+plugin/hardware descriptors still require that feature. Native recipients have
+canonical `AGE-X25519-SHA256:` fingerprints and v2 `age-recipient` metadata, not
+hardware metadata. Existing SSH and plugin fingerprints and vault version bytes
+are unchanged. Readers predating native recipient support may reject the new v2
+metadata kind; do not open such vaults with older readers. This library support does
+not change CLI SSH-key discovery or automatically provision identity files.
+
 ## Common operations
 
 ```text
