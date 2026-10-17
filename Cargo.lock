@@ -2147,8 +2147,9 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "switchy_age"
-version = "0.4.0"
-source = "git+https://github.com/MoosicBox/MoosicBox.git?branch=master#5626b800db0d31deea3b4e1c16880bc2c4080cba"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2f948ee9e9f624e055e687e94ff99b8596d3acb5c060841370ddd4b845493ce9"
 dependencies = [
  "age",
  "sha2 0.11.0",
@@ -2157,8 +2158,9 @@ dependencies = [
 
 [[package]]
 name = "switchy_async"
-version = "0.4.0"
-source = "git+https://github.com/MoosicBox/MoosicBox.git?branch=master#5626b800db0d31deea3b4e1c16880bc2c4080cba"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "207d054c34cf69f21e7b5469bf5dd38ffc8a193772e64bb00ae0f86e6fd421a6"
 dependencies = [
  "flume",
  "futures",
@@ -2175,8 +2177,9 @@ dependencies = [
 
 [[package]]
 name = "switchy_async_macros"
-version = "0.4.0"
-source = "git+https://github.com/MoosicBox/MoosicBox.git?branch=master#5626b800db0d31deea3b4e1c16880bc2c4080cba"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2ffb9ab355ce8c161586662035a52eef5dc93d9228b03731f3aa6b0c01163adf"
 dependencies = [
  "log",
  "proc-macro-crate",
@@ -2187,8 +2190,9 @@ dependencies = [
 
 [[package]]
 name = "switchy_fs"
-version = "0.4.0"
-source = "git+https://github.com/MoosicBox/MoosicBox.git?branch=master#5626b800db0d31deea3b4e1c16880bc2c4080cba"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8dcf16a0a6988f098d228570f63958843126179a0f92066f0d8207b118b89afa"
 dependencies = [
  "bytes",
  "libc",
@@ -2199,8 +2203,9 @@ dependencies = [
 
 [[package]]
 name = "switchy_random"
-version = "0.4.0"
-source = "git+https://github.com/MoosicBox/MoosicBox.git?branch=master#5626b800db0d31deea3b4e1c16880bc2c4080cba"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a0bb656d3a75379c438a030a39292c7590c736468168406ec7d44764148f6178"
 dependencies = [
  "log",
  "rand",
@@ -2208,8 +2213,9 @@ dependencies = [
 
 [[package]]
 name = "switchy_time"
-version = "0.4.0"
-source = "git+https://github.com/MoosicBox/MoosicBox.git?branch=master#5626b800db0d31deea3b4e1c16880bc2c4080cba"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "41e60e992342b7a80f46da07e14c72858a79e48cac9d98efcf35012f64baa1f6"
 dependencies = [
  "log",
  "scoped-tls",

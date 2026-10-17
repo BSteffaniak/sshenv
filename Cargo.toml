@@ -17,7 +17,7 @@ repository = "https://github.com/BSteffaniak/sshenv"
 version    = "0.0.1-alpha.5"
 
 [workspace.dependencies]
-switchy_age = { git = "https://github.com/MoosicBox/MoosicBox.git", branch = "master", default-features = false }
+switchy_age = { version = "0.5.0", default-features = false }
 # Internal
 sshenv_cli          = { version = "0.0.1-alpha.5", path = "packages/cli" }
 sshenv_cli_models   = { version = "0.0.1-alpha.5", path = "packages/cli/models" }
@@ -64,7 +64,7 @@ ssh-key = { version = "0.6.7", default-features = false, features = [
     "std",
     "alloc",
 ] }
-switchy_fs = { git = "https://github.com/MoosicBox/MoosicBox.git", branch = "master", default-features = false }
+switchy_fs = { version = "0.5.0", default-features = false }
 tempfile = { version = "3.27.0", default-features = false }
 thiserror = { version = "2.0.20", default-features = false }
 toml = { version = "1.1.5", default-features = false, features = [
