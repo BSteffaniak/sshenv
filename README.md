@@ -115,6 +115,8 @@ Use `sshenv --help` and each subcommand's `--help` as the complete CLI reference
 
 [`sshenv_vault`](packages/vault) exposes `SshenvStore` with caller-selected paths and private-key identities. It does not require CLI shims or global paths. The CLI's rollback-baseline tracking and runtime-hardening setup are **not automatically inherited** by every library caller.
 
+Applications that keep their own secrets can enable the `app-vault` feature and use `sshenv_vault::app::AppVault`: one vault file per application, unlocked by a generated Ed25519 identity stored beside it (`<vault>.keys/`, never the user's SSH keys), so reads are prompt-free and work from background jobs. Writes create the vault on demand with per-profile encryption and reconcile an optional device seal (`Off`, `Preferred`, or `Required`); `inspect` reports a profile's security state without mutating it.
+
 See [architecture](docs/architecture.md), [security details](docs/security.md), and [migration](docs/migration.md). Cryptography uses AES-256-SIV for payloads, SSH-recipient wrapping through Switchy Age, and Argon2id for configured passphrase factors. Long-lived key/payload buffers use dedicated locked storage where supported; short-lived secret values use zeroizing wrappers.
 
 ## Development
