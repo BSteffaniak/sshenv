@@ -554,7 +554,11 @@ impl AppVault {
         if self.exists() {
             self.load_metadata()?;
         } else {
-            if let Some(parent) = self.config.vault_path.parent() {
+            // Only tighten a directory created here; never change one the user already owns.
+            if let Some(parent) = self.config.vault_path.parent()
+                && !parent.as_os_str().is_empty()
+                && !parent.exists()
+            {
                 fs::create_dir_all(parent).map_err(|e| AppVaultError::Write(e.to_string()))?;
                 restrict_permissions(parent, 0o700)?;
             }
@@ -1146,6 +1150,23 @@ mod tests {
         let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode(&v.identity_dir()), 0o700);
         assert_eq!(mode(&v.private_key_path()), 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn existing_parent_directory_permissions_are_left_alone() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let parent = dir.path().join("shared");
+        fs::create_dir(&parent).unwrap();
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o755)).unwrap();
+        let v = AppVault::new(
+            AppVaultConfig::new("testapp", parent.join("vault"))
+                .with_device_seal(AppDeviceSealOptions::off()),
+        );
+        v.set("p", "K", Zeroizing::new("a".into())).unwrap();
+        let mode = fs::metadata(&parent).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o755);
     }
 
     #[test]
