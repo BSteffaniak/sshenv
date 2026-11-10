@@ -9,6 +9,8 @@
 
 #![allow(clippy::multiple_crate_versions)]
 
+#[cfg(feature = "app-vault")]
+pub mod app;
 pub mod crypto;
 #[cfg(feature = "device-seal")]
 pub mod device;

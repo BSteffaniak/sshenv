@@ -9,6 +9,7 @@ version.workspace    = true
 
 [features]
 age-plugin-recipient  = ["hardware-recipient", "age/plugin"]
+app-vault             = ["device-seal", "profile-keys", "ssh-key/getrandom"]
 default               = ["ssh-hardening", "rekey", "passphrase-factor", "profile-keys"]
 device-seal           = []
 device-seal-file      = ["device-seal"]

@@ -633,7 +633,10 @@ impl ProfileMap {
         };
         let removed = vars.remove(var).is_some();
         if vars.is_empty() {
+            // Drop the encrypted copy too, or saving would resurrect the old values.
             self.profiles.remove(profile);
+            self.profile_entries.remove(profile);
+            self.profile_policies.remove(profile);
         }
         removed
     }
@@ -780,6 +783,22 @@ mod tests {
 
         assert!(!m.rename_profile("same", "same").unwrap());
         assert_eq!(m.get("same").unwrap().get("K").unwrap(), "v");
+    }
+
+    #[test]
+    fn unsetting_last_var_drops_encrypted_entry() {
+        let mut m = ProfileMap::new();
+        m.set("p", "K", "v".into());
+        m.profile_entries.insert(
+            "p".to_string(),
+            ProfileEntry {
+                wrapped_key: vec![1],
+                ciphertext: vec![2],
+            },
+        );
+        assert!(m.unset("p", "K"));
+        assert!(m.get("p").is_none());
+        assert!(!m.profile_entries.contains_key("p"));
     }
 
     #[test]
